@@ -1,0 +1,34 @@
+# Character Reference Builder — Agent 指引
+
+本文件补充全局约定，只保留项目判断与按需阅读入口。
+
+## 工程判断
+
+- **优先复用社区成果。** 以成熟社区项目为起点，按实际需求复用或扩展，将自研投入到现有方案无法满足的部分。
+- **围绕生产结果组织实现。** 将当前任务拆成可验证的完整用户路径，例如“指定部件 → 提取 → 参考生成 → 选择 → 导出”；逐步扩展能力时保持已有路径可用。
+- **让关键假设可被证伪。** 涉及原画、视角、部件归属或生成上下文时，用具体输入与预期结果检验假设。例如只有正面图时，背面细节应作为推测信息处理；已有背面图时，应使用该设计依据。
+- **用用户能否继续工作判断失败处理。** 评估节点重跑、上游改动和云端请求失败时，关注已选结果能否保留、下游引用是否仍有效，以及重试是否引入额外付费。
+- **按变化原因划分边界。** 角色与服装的设计规则、工作流执行和云端能力接入应各有归属；用实际调用关系决定模块大小，让更换供应商无需重写拆件与一致性规则。
+- 可提交的配置和脚本通过项目相对路径、环境变量或参数定位资源。
+- 每个提交围绕一个逻辑改动组织，便于独立审查和回退。
+
+## 按需定位
+
+- 产品范围和候选方案：[文档索引](docs/README.md)。其中 PRD 是草案，评审状态和第三方核验状态以索引为准。
+- 工程结构、运行与验证入口：[README.md](README.md)。
+- 领域概念：[CONTEXT.md](CONTEXT.md)。
+- 工作流、提示词与参考模板：[预设说明](presets/README.md)。
+
+## Agent skills
+
+### Issue tracker
+
+使用 `Alexis-Li/Character-Reference-Builder` 的 GitHub Issues。详见 [issue-tracker.md](docs/agents/issue-tracker.md)。
+
+### Triage labels
+
+复用 `question` 和 `wontfix`，其余三个角色使用默认名称并记录远端未创建状态。详见 [triage-labels.md](docs/agents/triage-labels.md)。
+
+### Domain docs
+
+采用 single-context：根目录 `CONTEXT.md` 与按需建立的 `docs/adr/`。详见 [domain.md](docs/agents/domain.md)。
