@@ -6,7 +6,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Get-Item -LiteralPath (Join-Path $PSScriptRoot "..")).FullName
-$runtimeDirectory = Join-Path $repoRoot "data\runtime"
+. (Join-Path $PSScriptRoot "resolve-temp-root.ps1")
+$tempRoot = Get-CrbTempRoot -RepoRoot $repoRoot
+$runtimeDirectory = Join-Path $tempRoot "runtime"
 $statePath = Join-Path $runtimeDirectory "server-$Port.json"
 
 if (-not (Test-Path -LiteralPath $statePath)) {

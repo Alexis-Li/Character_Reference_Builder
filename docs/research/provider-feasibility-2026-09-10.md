@@ -7,7 +7,7 @@
 - **已执行**：读取官方 OpenAI / Google 文档；通过 GitHub API 固定两个第三方项目的源码版本；下载并追踪请求构造、路由、上游调用及响应处理。
 - **未执行**：登录、读取本机私有凭据、发送云端生成请求、付费调用、真实角色质量评审。
 - 官方文档证明公开接口声明；源码证明适配器如何构造请求。两者均不能替代本账户的可用性、实际出图与成本验证。
-- `git clone` 因网络连接失败，改用 GitHub API 和固定 SHA 的 raw 源码，成功取得研究材料。临时材料位于 `data/validation/provider-research/`，不作为项目运行依赖。
+- `git clone` 因网络连接失败，改用 GitHub API 和固定 SHA 的 raw 源码，成功取得研究材料。临时材料现位于 `CRB_TEMP_ROOT/validation/provider-research/`，不作为项目运行依赖。
 
 ## 能力对照
 

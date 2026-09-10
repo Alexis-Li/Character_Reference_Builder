@@ -13,7 +13,7 @@
 - 标签：`gh issue edit <number> --repo Alexis-Li/Character-Reference-Builder --add-label "..."` 或 `--remove-label "..."`。
 - 关闭：`gh issue close <number> --repo Alexis-Li/Character-Reference-Builder`。
 
-多行正文先写入临时 UTF-8 文件，再通过 `--body-file` 传入，使用后清理。不要将正文拼接进 shell 命令。
+多行正文先在 `CRB_TEMP_ROOT/scratch/` 写入临时 UTF-8 文件，再通过 `--body-file` 传入，使用后清理。不要将正文拼接进 shell 命令，也不要在仓库根目录建立临时正文。
 
 Skill 所说的“发布到 issue tracker”指创建 GitHub Issue；“读取相关 ticket”指读取对应 Issue 及评论。写操作必须在当前任务授权范围内，本配置不授予创建 Issue、评论或变更标签的额外权限。若当前环境无法访问 GitHub，可先准备本地草稿并说明未发布，不自动切换任务系统。
 

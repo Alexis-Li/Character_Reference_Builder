@@ -26,8 +26,10 @@ __pycache__/
 htmlcov/
 *.tsbuildinfo
 
-# Local runtime data and temporary output
+# Local user/project data (preserved, but never committed)
 /data/
+
+# In-repository fallback output; disposable work belongs under CRB_TEMP_ROOT
 /tmp/
 /logs/
 *.log

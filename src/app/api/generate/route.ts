@@ -4,7 +4,7 @@
  * TIMEOUT CONFIGURATION:
  * - maxDuration: Only applies on Vercel, not locally
  * - AbortSignal.timeout: Controls outgoing fetch to providers
- * - For local development, server.requestTimeout must be set in server.js (Node.js default is 5 minutes)
+ * - For local development, server.requestTimeout must be set in scripts/server.js (Node.js default is 5 minutes)
  * 
  * FAL.AI QUEUE API NOTE:
  * Uses generateWithFalQueue with async queue submission + polling.

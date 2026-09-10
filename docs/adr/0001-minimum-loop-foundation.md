@@ -14,7 +14,7 @@
 
 ### 应用底座
 
-从 Node Banana `5c0e0ae6150f29a6de819f8d6f1dedba15151f7c` 建立受控二次开发基线，保留来源和许可证。下一阶段再正式导入应用源码，本轮临时归档不是已经建立的产品 fork。
+从 Node Banana `5c0e0ae6150f29a6de819f8d6f1dedba15151f7c` 建立受控二次开发基线，保留来源和许可证。该固定快照已在 CRB-01 导入产品源码；外置临时目录中的原始候选快照只作为复跑证据，不是另一份产品源码。
 
 复用 TypeScript、React、Next.js、本地 WebUI、React Flow、Zustand 和 Konva。首先保留上游锁文件的已构建版本，不同时升级全部依赖。状态管理库可复用，但不把上游通用 workflow store 直接当作角色项目领域模型。
 

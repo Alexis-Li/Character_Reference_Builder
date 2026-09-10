@@ -4,17 +4,20 @@
 
 ## 环境与固定输入
 
-实测 Windows、Node 24.16.0、npm 11.13.0、Python 3.13。候选为 Node Banana `5c0e0ae6150f29a6de819f8d6f1dedba15151f7c`；可从[固定源码归档](https://github.com/shrimbly/node-banana/archive/5c0e0ae6150f29a6de819f8d6f1dedba15151f7c.zip)取得。解压到项目 `data/validation/`，不要覆盖已有工作目录。Git 获取受限时使用归档即可，不要求修改网络设置。
+实测 Windows、Node 24.16.0、npm 11.13.0、Python 3.13。候选为 Node Banana `5c0e0ae6150f29a6de819f8d6f1dedba15151f7c`；可从[固定源码归档](https://github.com/shrimbly/node-banana/archive/5c0e0ae6150f29a6de819f8d6f1dedba15151f7c.zip)取得。解压到外置的 `CRB_TEMP_ROOT/validation/`，不要覆盖产品源码。Git 获取受限时使用归档即可，不要求修改网络设置。
 
 从项目根目录运行 PowerShell：
 
 ```powershell
-$candidate = Join-Path (Get-Location) 'data/validation/node-banana-5c0e0ae6150f29a6de819f8d6f1dedba15151f7c'
+. ./scripts/resolve-temp-root.ps1
+$tempRoot = Get-CrbTempRoot -RepoRoot (Get-Location).Path
+$validationRoot = Join-Path $tempRoot 'validation'
+$candidate = Join-Path $validationRoot 'node-banana-5c0e0ae6150f29a6de819f8d6f1dedba15151f7c'
 Push-Location -LiteralPath $candidate
 npm ci --no-audit --no-fund
 npm run build
 Pop-Location
-python scripts/validation/run_node_banana_probes.py $candidate --report data/validation/node-banana-requirement-probes.json
+python scripts/validation/run_node_banana_probes.py $candidate --report (Join-Path $validationRoot 'node-banana-requirement-probes.json')
 ```
 
 `run_node_banana_probes.py` 会临时复制探针到候选测试目录，用其 Vitest 和真实 store／执行器运行，最后删除这一个临时文件。不会修改上游生产代码；目标已有同名文件时拒绝覆盖。所有 `fetch` 都被模拟，未预设的请求失败关闭。
@@ -38,10 +41,10 @@ node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 3210
 另一个终端回到本项目根目录：
 
 ```powershell
-python scripts/validation/probe_local_storage.py --base-url http://127.0.0.1:3210 --output data/validation
+python scripts/validation/probe_local_storage.py --base-url http://127.0.0.1:3210 --output $validationRoot
 ```
 
-脚本只接受回环 HTTP 地址，创建新的 `storage-<随机标识>/` 子目录。使用纯色 PNG，调用候选的本地图片／工作流保存与加载路由；检查二进制内容和 JSON 往返。每次保留独立结果，不删除旧实验；结果文件列出每项通过状态，并单独记录正斜杠路径是否接受。
+脚本只接受回环 HTTP 地址，在外置验证目录创建新的 `storage-<随机标识>/` 子目录。使用纯色 PNG，调用候选的本地图片／工作流保存与加载路由；检查二进制内容和 JSON 往返。每次保留独立结果，不删除旧实验；结果文件列出每项通过状态，并单独记录正斜杠路径是否接受。
 
 退出码：0 原生路径存储检查通过；1 检查失败；2 本地准备错误。正斜杠路径是单独的特征记录，不计入原生路径通过数。控制台和 `result.json` 返回本次结果位置。服务用 Ctrl+C 停止，不会作为计划任务或开机服务安装。
 

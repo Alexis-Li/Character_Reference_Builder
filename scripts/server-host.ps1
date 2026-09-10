@@ -8,6 +8,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $resolvedRepoRoot = (Get-Item -LiteralPath $RepoRoot).FullName
+. (Join-Path $PSScriptRoot "resolve-temp-root.ps1")
+$tempRoot = Get-CrbTempRoot -RepoRoot $resolvedRepoRoot
 $mutexName = "Local\CharacterReferenceBuilder.Server.$Port"
 $createdNew = $false
 $serverMutex = [System.Threading.Mutex]::new($false, $mutexName, [ref]$createdNew)
@@ -17,7 +19,7 @@ if (-not $createdNew) {
   exit 2
 }
 
-$runtimeDirectory = Join-Path $resolvedRepoRoot "data\runtime"
+$runtimeDirectory = Join-Path $tempRoot "runtime"
 New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
 $standardOutput = Join-Path $runtimeDirectory "server-$Port.out.log"
 $standardError = Join-Path $runtimeDirectory "server-$Port.err.log"
@@ -29,7 +31,7 @@ try {
   $env:NODE_ENV = "development"
   $serverProcess = Start-Process `
     -FilePath $nodePath `
-    -ArgumentList @("server.js") `
+    -ArgumentList @("scripts/server.js") `
     -WorkingDirectory $resolvedRepoRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput $standardOutput `

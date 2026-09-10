@@ -6,7 +6,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Get-Item -LiteralPath (Join-Path $PSScriptRoot "..")).FullName
-$runtimeDirectory = Join-Path $repoRoot "data\runtime"
+. (Join-Path $PSScriptRoot "resolve-temp-root.ps1")
+$tempRoot = Get-CrbTempRoot -RepoRoot $repoRoot
+$runtimeDirectory = Join-Path $tempRoot "runtime"
 $statePath = Join-Path $runtimeDirectory "server-$Port.json"
 $hostScript = Join-Path $PSScriptRoot "server-host.ps1"
 $url = "http://127.0.0.1:$Port"
@@ -70,7 +72,7 @@ if (Test-Path -LiteralPath $statePath) {
         }
       }
 
-      Write-Error "The managed server did not become ready. Check data\runtime\server-$Port.err.log."
+      Write-Error "The managed server did not become ready. Check $runtimeDirectory\server-$Port.err.log."
       exit 1
     }
 
@@ -127,5 +129,5 @@ while ((Get-Date) -lt $deadline) {
   }
 }
 
-Write-Error "The server did not become ready within 45 seconds. Check data\runtime\server-$Port.err.log."
+Write-Error "The server did not become ready within 45 seconds. Check $runtimeDirectory\server-$Port.err.log."
 exit 1

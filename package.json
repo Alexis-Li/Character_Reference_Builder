@@ -3,7 +3,7 @@
   "version": "1.9.0",
   "private": true,
   "scripts": {
-    "dev": "node server.js",
+    "dev": "node scripts/server.js",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 3210",
     "start:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/start-windows.ps1",
