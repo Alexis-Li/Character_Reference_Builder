@@ -490,6 +490,28 @@ describe("WorkflowCanvas", () => {
       expect(screen.getByText("Drop image to create node")).toBeInTheDocument();
     });
 
+    it("should not advertise audio files as a node creation drop target", () => {
+      render(
+        <TestWrapper>
+          <WorkflowCanvas />
+        </TestWrapper>
+      );
+
+      const canvas = document.querySelector(".bg-canvas-bg") as HTMLElement;
+      fireEvent.dragOver(canvas, {
+        dataTransfer: {
+          types: ["Files"],
+          items: [{ kind: "file", type: "audio/wav" }],
+          dropEffect: "",
+          effectAllowed: "",
+          getData: vi.fn(),
+        },
+      });
+
+      expect(screen.queryByText("Drop audio to create node")).not.toBeInTheDocument();
+      expect(screen.queryByText("Drop image to create node")).not.toBeInTheDocument();
+    });
+
     it("should show drop overlay when dragging workflow JSON over canvas", () => {
       render(
         <TestWrapper>
@@ -574,6 +596,84 @@ describe("WorkflowCanvas", () => {
       });
 
       expect(mockAddNode).toHaveBeenCalledWith("prompt", expect.any(Object));
+    });
+
+    it.each(["generateVideo", "generateAudio", "videoInput", "comfyApp"])(
+      "should reject excluded %s node drops",
+      (nodeType) => {
+        render(
+          <TestWrapper>
+            <WorkflowCanvas />
+          </TestWrapper>
+        );
+
+        const canvas = document.querySelector(".bg-canvas-bg") as HTMLElement;
+        fireEvent.drop(canvas, {
+          dataTransfer: {
+            types: ["application/node-type"],
+            items: [],
+            files: [],
+            dropEffect: "",
+            effectAllowed: "",
+            getData: vi.fn().mockReturnValue(nodeType),
+          },
+          clientX: 500,
+          clientY: 300,
+        });
+
+        expect(mockAddNode).not.toHaveBeenCalled();
+      }
+    );
+
+    it("should not create an audio node when an audio file is dropped", () => {
+      const readAsDataURL = vi.spyOn(FileReader.prototype, "readAsDataURL");
+      render(
+        <TestWrapper>
+          <WorkflowCanvas />
+        </TestWrapper>
+      );
+
+      const canvas = document.querySelector(".bg-canvas-bg") as HTMLElement;
+      const audioFile = new File(["audio"], "sample.wav", { type: "audio/wav" });
+      fireEvent.drop(canvas, {
+        dataTransfer: {
+          types: ["Files"],
+          items: [{ kind: "file", type: "audio/wav" }],
+          files: [audioFile],
+          getData: vi.fn().mockReturnValue(""),
+        },
+        clientX: 500,
+        clientY: 300,
+      });
+
+      expect(readAsDataURL).not.toHaveBeenCalled();
+      expect(mockAddNode).not.toHaveBeenCalled();
+      readAsDataURL.mockRestore();
+    });
+
+    it("should still load an existing Node Banana workflow", async () => {
+      render(
+        <TestWrapper>
+          <WorkflowCanvas />
+        </TestWrapper>
+      );
+
+      const workflow = { version: 1, name: "Existing", nodes: [], edges: [] };
+      const workflowFile = new File([JSON.stringify(workflow)], "existing.json", {
+        type: "application/json",
+      });
+      const canvas = document.querySelector(".bg-canvas-bg") as HTMLElement;
+      fireEvent.drop(canvas, {
+        dataTransfer: {
+          types: ["Files"],
+          items: [{ kind: "file", type: "application/json" }],
+          files: [workflowFile],
+          getData: vi.fn().mockReturnValue(""),
+        },
+      });
+
+      await waitFor(() => expect(mockLoadWorkflow).toHaveBeenCalledWith(workflow));
+      expect(mockAddNode).not.toHaveBeenCalled();
     });
   });
 
@@ -665,16 +765,23 @@ describe("WorkflowCanvas", () => {
       expect(mockAddNode).toHaveBeenCalledWith("nanoBanana", expect.any(Object));
     });
 
-    it("should add llmGenerate node on Shift+L", () => {
+    it.each([
+      ["v", "generateVideo"],
+      ["l", "llmGenerate"],
+      ["t", "generateAudio"],
+      ["y", "videoInput"],
+      ["r", "router"],
+      ["c", "comfyApp"],
+    ])("should not add excluded %s shortcut node %s", (key) => {
       render(
         <TestWrapper>
           <WorkflowCanvas />
         </TestWrapper>
       );
 
-      fireEvent.keyDown(window, { key: "l", shiftKey: true });
+      fireEvent.keyDown(window, { key, shiftKey: true });
 
-      expect(mockAddNode).toHaveBeenCalledWith("llmGenerate", expect.any(Object));
+      expect(mockAddNode).not.toHaveBeenCalled();
     });
 
     it("should add annotation node on Shift+A", () => {

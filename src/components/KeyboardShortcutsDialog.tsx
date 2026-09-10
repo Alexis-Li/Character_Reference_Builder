@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { MINIMUM_LOOP_NODE_SHORTCUTS } from "@/config/minimumLoop";
 
 interface ShortcutItem {
   keys: string[];
@@ -29,18 +30,10 @@ const shortcutGroups: ShortcutGroup[] = [
   },
   {
     title: "Add Nodes",
-    shortcuts: [
-      { keys: ["Shift", "P"], description: "Add Prompt node" },
-      { keys: ["Shift", "I"], description: "Add Image Input node" },
-      { keys: ["Shift", "G"], description: "Add Generate Image node" },
-      { keys: ["Shift", "V"], description: "Add Generate Video node" },
-      { keys: ["Shift", "L"], description: "Add LLM Text node" },
-      { keys: ["Shift", "A"], description: "Add Annotation node" },
-      { keys: ["Shift", "T"], description: "Add Audio node" },
-      { keys: ["Shift", "Y"], description: "Add Video Input node" },
-      { keys: ["Shift", "R"], description: "Add Array node" },
-      { keys: ["Shift", "C"], description: "Add ComfyUI App node" },
-    ],
+    shortcuts: MINIMUM_LOOP_NODE_SHORTCUTS.map(({ key, description }) => ({
+      keys: ["Shift", key.toUpperCase()],
+      description,
+    })),
   },
   {
     title: "Layout (select 2+ nodes first)",
@@ -152,4 +145,3 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
     </div>
   );
 }
-

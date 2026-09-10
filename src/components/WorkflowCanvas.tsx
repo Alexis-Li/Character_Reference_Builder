@@ -94,6 +94,10 @@ import { createPortal } from "react-dom";
 import { useAnnotationStore } from "@/store/annotationStore";
 import { TutorialOverlay } from "./onboarding/TutorialOverlay";
 import { useFTUXStore } from "@/store/ftuxStore";
+import {
+  isMinimumLoopNodeType,
+  minimumLoopNodeTypeForShortcut,
+} from "@/config/minimumLoop";
 
 const rawNodeTypes: NodeTypes = {
   imageInput: ImageInputNode,
@@ -388,7 +392,7 @@ export function WorkflowCanvas() {
   const isCanvasOverview = useStore(selectCanvasOverview);
   const { show: showToast } = useToast();
   const [isDragOver, setIsDragOver] = useState(false);
-  const [dropType, setDropType] = useState<"image" | "audio" | "workflow" | "node" | null>(null);
+  const [dropType, setDropType] = useState<"image" | "workflow" | "node" | null>(null);
   const [connectionDrop, setConnectionDrop] = useState<ConnectionDropState | null>(null);
   // Searchable "add node" menu shown on double-clicking the empty canvas.
   const [nodeSearchMenu, setNodeSearchMenu] = useState<
@@ -1371,6 +1375,11 @@ export function WorkflowCanvas() {
 
       // Regular node creation
       const nodeType = selection.type as NodeType;
+      if (!isMinimumLoopNodeType(nodeType)) {
+        setConnectionDrop(null);
+        showToast("That node is not available in the minimum reference-image loop", "warning");
+        return;
+      }
 
       // A saved Comfy node is created with its workflow already on it, which is
       // what gives it handles for the dropped wire to land on.
@@ -1609,7 +1618,7 @@ export function WorkflowCanvas() {
 
       setConnectionDrop(null);
     },
-    [connectionDrop, addNode, onConnect, nodes, handleSplitGridAction, getImageFromNode, updateNodeData, tutorialActive]
+    [connectionDrop, addNode, onConnect, nodes, handleSplitGridAction, getImageFromNode, updateNodeData, tutorialActive, showToast]
   );
 
   const handleCloseDropMenu = useCallback(() => {
@@ -1654,7 +1663,7 @@ export function WorkflowCanvas() {
 
   const handleNodeSearchSelect = useCallback(
     (type: NodeType, savedNodeId?: string) => {
-      if (nodeSearchMenu) {
+      if (nodeSearchMenu && isMinimumLoopNodeType(type)) {
         const saved = savedNodeId ? getSavedComfyNode(savedNodeId) : null;
         addNode(
           type,
@@ -1738,41 +1747,7 @@ export function WorkflowCanvas() {
 
       // Handle node creation hotkeys (Shift + key)
       if (event.shiftKey && !event.ctrlKey && !event.metaKey) {
-        const key = event.key.toLowerCase();
-        let nodeType: NodeType | null = null;
-
-        switch (key) {
-          case "p":
-            nodeType = "prompt";
-            break;
-          case "r":
-            nodeType = "router";
-            break;
-          case "i":
-            nodeType = "imageInput";
-            break;
-          case "g":
-            nodeType = "nanoBanana";
-            break;
-          case "v":
-            nodeType = "generateVideo";
-            break;
-          case "l":
-            nodeType = "llmGenerate";
-            break;
-          case "a":
-            nodeType = "annotation";
-            break;
-          case "t":
-            nodeType = "generateAudio";
-            break;
-          case "y":
-            nodeType = "videoInput";
-            break;
-          case "c":
-            nodeType = "comfyApp";
-            break;
-        }
+        const nodeType = minimumLoopNodeTypeForShortcut(event.key);
 
         if (nodeType) {
           event.preventDefault();
@@ -2039,16 +2014,9 @@ export function WorkflowCanvas() {
       (item) => item.kind === "file" && item.type === "application/json"
     );
 
-    const hasAudioFile = items.some(
-      (item) => item.kind === "file" && item.type.startsWith("audio/")
-    );
-
     if (hasJsonFile) {
       setIsDragOver(true);
       setDropType("workflow");
-    } else if (hasAudioFile) {
-      setIsDragOver(true);
-      setDropType("audio");
     } else if (hasImageFile) {
       setIsDragOver(true);
       setDropType("image");
@@ -2070,6 +2038,10 @@ export function WorkflowCanvas() {
       // Check for node type drop from action bar
       const nodeType = event.dataTransfer.getData("application/node-type") as NodeType;
       if (nodeType) {
+        if (!isMinimumLoopNodeType(nodeType)) {
+          showToast("That node is not available in the minimum reference-image loop", "warning");
+          return;
+        }
         const position = screenToFlowPosition({
           x: event.clientX,
           y: event.clientY,
@@ -2113,8 +2085,6 @@ export function WorkflowCanvas() {
       const jsonFiles = allFiles.filter((file) => file.type === "application/json" || file.name.endsWith(".json"));
       if (jsonFiles.length > 0) {
         const file = jsonFiles[0];
-        // Captured now: the reader resolves after the drop event is recycled.
-        const dropPosition = screenToFlowPosition({ x: event.clientX, y: event.clientY });
         const reader = new FileReader();
         reader.onload = async (e) => {
           let parsed: unknown;
@@ -2135,14 +2105,10 @@ export function WorkflowCanvas() {
             }
             return;
           }
-          // A ComfyUI workflow becomes a node rather than replacing the canvas.
-          // The node reads it and opens the import dialog, so the inputs and
-          // outputs it will expose are still confirmed before it is usable.
+          // Node Banana saves remain load-compatible, but importing a ComfyUI
+          // graph would create a new excluded node in the first-loop UI.
           if (isComfyWorkflow(parsed)) {
-            const nodeId = addNode("comfyApp", dropPosition);
-            updateNodeData(nodeId, {
-              _pendingWorkflow: { workflow: parsed, filename: file.name },
-            });
+            showToast("ComfyUI imports are not available in the minimum reference-image loop", "warning");
             return;
           }
           alert("Invalid workflow file format");
@@ -2154,26 +2120,7 @@ export function WorkflowCanvas() {
       // Handle audio files
       const audioFiles = allFiles.filter((file) => file.type.startsWith("audio/"));
       if (audioFiles.length > 0) {
-        const position = screenToFlowPosition({
-          x: event.clientX,
-          y: event.clientY,
-        });
-        audioFiles.forEach((file, index) => {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const dataUrl = e.target?.result as string;
-            const nodeId = addNode("audioInput", {
-              x: position.x + index * 240,
-              y: position.y,
-            });
-            updateNodeData(nodeId, {
-              audioFile: dataUrl,
-              filename: file.name,
-              format: file.type,
-            });
-          };
-          reader.readAsDataURL(file);
-        });
+        showToast("Audio input is not available in the minimum reference-image loop", "warning");
         return;
       }
 
@@ -2214,7 +2161,7 @@ export function WorkflowCanvas() {
         reader.readAsDataURL(file);
       });
     },
-    [screenToFlowPosition, addNode, updateNodeData, loadWorkflow]
+    [screenToFlowPosition, addNode, updateNodeData, loadWorkflow, showToast]
   );
 
   return (
@@ -2236,8 +2183,6 @@ export function WorkflowCanvas() {
                 ? "Drop to load workflow"
                 : dropType === "node"
                 ? "Drop to create node"
-                : dropType === "audio"
-                ? "Drop audio to create node"
                 : "Drop image to create node"}
             </p>
           </div>
