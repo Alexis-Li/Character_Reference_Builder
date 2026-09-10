@@ -4,7 +4,7 @@
 
 | 文档 | 职责 | 当前状态 |
 | --- | --- | --- |
-| [产品需求](product-requirements.md) | 用户场景、功能、交互、MVP 范围及验收 | 需求评审稿；能力实现与质量待验证 |
+| [产品需求](product-requirements.md) | 用户场景、功能、交互、MVP 范围及验收 | 需求评审稿；图像参考范围已明确，能力实现与质量待验证 |
 | [开发任务](first-development-tasks.md) | 实施顺序、依赖与交付要求 | 总规格 #1 与开发任务 #2–#9 已发布并分配；完整前端建设后置 |
 | [技术决策](adr/0001-minimum-loop-foundation.md) | 原型底座及业务、Provider、资产边界的取舍 | 采用 Node Banana 固定快照作为起点；生产准入未通过 |
 | [最小闭环验证](validation/minimum-loop-2026-09-10.md) | 验证方法、实际通过项、失败及待验收项 | 工程验证已执行；真实生成质量与成本待验收 |

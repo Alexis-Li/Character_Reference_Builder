@@ -8,7 +8,7 @@
 
 | 任务 | Issue | 优先级 | 依赖 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| CRB-01 建立可复现的原型基线与 Windows 启动入口 | [#2](https://github.com/Alexis-Li/Character_Reference_Builder/issues/2) | P0 | 无 | 已分配；可开始 |
+| CRB-01 建立可复现的原型基线与 Windows 启动入口 | [#2](https://github.com/Alexis-Li/Character_Reference_Builder/issues/2) | P0 | 无 | 已实现并提交；Issue #2 待复审 |
 | CRB-02 角色项目、资产版本及人工选定结果 | [#3](https://github.com/Alexis-Li/Character_Reference_Builder/issues/3) | P0 | CRB-01 | 已分配；待依赖 |
 | CRB-03 能力化 Provider 及多参考输入契约 | [#4](https://github.com/Alexis-Li/Character_Reference_Builder/issues/4) | P0 | CRB-01 | 已分配；待依赖；真实调用另需账户 |
 | CRB-04 请求状态、费用授权及保守备用策略 | [#5](https://github.com/Alexis-Li/Character_Reference_Builder/issues/5) | P0 | CRB-03 | 已分配；待依赖 |
@@ -20,6 +20,8 @@
 建议先完成 CRB-01，再实现资产状态和 Provider 契约；在 CRB-04 费用保护完成后才将真实付费调用接入业务界面。无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
 
 [产品需求](product-requirements.md)统一定义功能与交互，本文件维护实施顺序。完整布局、主页、丰富节点库及视觉打磨后置；CRB-01 的启动入口、CRB-04 的状态与费用提示、CRB-05 的最小业务界面和 CRB-06 的保存导出交互仍随对应任务交付，优先复用底座已有能力。
+
+音频和视频永久不属于产品范围，不是首批隐藏、后续再启用的能力。上游快照中的相关实现只作为待清理迁移残留处理；后续任务不得为其新增界面、快捷键、工作流或 Provider 入口。LLM 与 ComfyUI 分别按图像理解、推理和可选执行后端的价值评估。
 
 ## CRB-01：建立可复现的原型基线与 Windows 启动入口
 
