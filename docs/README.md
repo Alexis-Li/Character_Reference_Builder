@@ -1,15 +1,25 @@
 # 文档索引
 
+产品需求统一维护在一个文件中，前端交互属于其中的一部分。按要回答的问题阅读：
+
 | 文档 | 职责 | 当前状态 |
 | --- | --- | --- |
-| [产品需求 V0.2](<AI Character Reference Builder 产品需求设计方案（PRD）V0.2.md>) | 当前产品目标、场景、节点职责、MVP 及验收要求 | 正式立项前需求评审稿；第三方已做公开资料核查，实际能力与使用条件待验证 |
-| [产品需求 V0.1](<AI Character Reference Builder 产品需求设计方案（PRD）.md>) | 初始产品设想 | 历史草案，保留原文；当前需求以 V0.2 为准 |
-| [领域词汇表](../CONTEXT.md) | 统一角色项目、部件、参考资料等术语 | 根据草案整理，不含实现方案 |
-| [Issue tracker](agents/issue-tracker.md) | GitHub Issues 的定位与操作约定 | 已配置 |
-| [Triage labels](agents/triage-labels.md) | 分诊角色到真实标签名称的映射 | 已检查远端，部分标签尚未创建 |
-| [Domain docs](agents/domain.md) | 领域词汇和 ADR 的阅读规则 | 单上下文布局 |
-| [预设说明](../presets/README.md) | 工作流、提示词和参考图模板的归档职责 | 目录就绪，格式与内容待设计 |
+| [产品需求](product-requirements.md) | 用户场景、功能、交互、MVP 范围及验收 | 需求评审稿；能力实现与质量待验证 |
+| [开发任务](first-development-tasks.md) | 实施顺序、依赖与交付要求 | 8 项本地任务草稿，尚未发布 Issues；完整前端建设后置 |
+| [技术决策](adr/0001-minimum-loop-foundation.md) | 原型底座及业务、Provider、资产边界的取舍 | 采用 Node Banana 固定快照作为起点；生产准入未通过 |
+| [最小闭环验证](validation/minimum-loop-2026-09-10.md) | 验证方法、实际通过项、失败及待验收项 | 工程验证已执行；真实生成质量与成本待验收 |
+| [可复用项目](research/reusable-projects.md) | 社区项目清单、来源与复用边界 | 保留已有研究，区分采用、候选、设计参考和排除方案 |
+| [Provider 证据](research/provider-feasibility-2026-09-10.md) | 官方接口与适配器源码核查 | 2026-09-10 核查记录；无真实云端调用 |
+| [验证脚本](../scripts/validation/README.md) | 复跑探针和真实文件检查 | 可运行；候选快照存在 4 项已复现需求缺口 |
+| [领域词汇表](../CONTEXT.md) | 角色项目、部件、参考资料等术语 | 统一沟通用语，不包含实现方案 |
+| [预设说明](../presets/README.md) | 工作流、提示词与参考模板职责 | 目录就绪，内容待实现 |
+| [Issue tracker](agents/issue-tracker.md) | GitHub Issues 操作约定 | 已配置 |
+| [Triage labels](agents/triage-labels.md) | 分诊角色与标签映射 | 远端状态以使用前检查为准 |
+| [Domain docs](agents/domain.md) | 领域文档消费规则 | 单上下文布局 |
 
-`docs/adr/` 按需记录真实且重要的架构取舍；本次仅整理工程，不创建技术选型 ADR。后续研究、规格和操作文档在有实际内容时新增，并更新此索引。
+## 维护方式
 
-Node Banana、OAuth 复用库及云端模型服务的公开资料核查见 PRD V0.2 附录。它们仍是候选，尚未完成账号登录、真实模型调用或完整用户路径验证，也未引入运行依赖。
+- 需求与交互变化直接修改产品需求对应章节，不新增版本副本、补充约束或独立前端需求。
+- 开发任务记录实施范围与验收落点，通过引用需求定位产品行为；技术决策记录取舍，验证报告记录证据。
+- 文件名保持稳定，需求历史交给 Git；只有独立决策或实测记录需要按编号或日期留存。
+- 需求描述不代表功能已实现。当前仅在隔离目录验证候选底座，尚无本项目可运行应用；真实角色生成、账号路径和 SAM 推理仍待验收。

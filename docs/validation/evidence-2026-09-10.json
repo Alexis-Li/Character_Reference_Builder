@@ -1,0 +1,259 @@
+{
+  "date": "2026-09-10",
+  "upstream": {
+    "repository": "https://github.com/shrimbly/node-banana",
+    "commit": "5c0e0ae6150f29a6de819f8d6f1dedba15151f7c",
+    "commit_date": "2026-08-06T18:18:10Z"
+  },
+  "package_version": "1.9.0",
+  "lock_sha256": "899f6962b230f962218a4123ceff8663131a5407997ebc4d55e0d0321343bdd6",
+  "platform": "Windows",
+  "node": "v24.16.0",
+  "gpu": "NVIDIA GeForce RTX 4060, 8188 MiB, driver 591.86",
+  "versions": {
+    "next": "16.1.6",
+    "react": "19.2.4",
+    "@xyflow/react": "12.9.3",
+    "zustand": "5.0.9",
+    "konva": "10.0.12",
+    "vitest": "4.0.16",
+    "typescript": "5.9.3"
+  },
+  "npm_ci": {
+    "exit_code": 0,
+    "added_packages": 476
+  },
+  "build": {
+    "exit_code": 0,
+    "typescript_checked": true
+  },
+  "focused_upstream": {
+    "total": 258,
+    "passed": 244,
+    "failed": 14,
+    "files": [
+      {
+        "path": "src/components/__tests__/AnnotationModal.test.tsx",
+        "total": 49,
+        "passed": 49,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "path": "src/components/__tests__/AnnotationNode.test.tsx",
+        "total": 21,
+        "passed": 21,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "path": "src/store/__tests__/workflowStore.integration.test.ts",
+        "total": 105,
+        "passed": 105,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "path": "src/store/execution/__tests__/nanoBananaExecutor.test.ts",
+        "total": 14,
+        "passed": 14,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "path": "src/store/execution/__tests__/runWithFallback.test.ts",
+        "total": 11,
+        "passed": 11,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "path": "src/store/utils/__tests__/connectedInputs.test.ts",
+        "total": 34,
+        "passed": 34,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "path": "src/app/api/workflow-images/__tests__/route.test.ts",
+        "total": 5,
+        "passed": 2,
+        "failed": 3,
+        "failures": [
+          {
+            "name": "/api/workflow-images route POST - Save workflow image should save image when workflow directory exists",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow-images route POST - Save workflow image should create missing workflow directory and save image",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow-images route POST - Save workflow image should reject dangerous system paths",
+            "status": "failed",
+            "failure": "AssertionError: expected 'Path contains traversal sequences' to be 'Access to /etc is not allowed' // Object.is equality"
+          }
+        ]
+      },
+      {
+        "path": "src/app/api/workflow/__tests__/route.test.ts",
+        "total": 19,
+        "passed": 8,
+        "failed": 11,
+        "failures": [
+          {
+            "name": "/api/workflow route POST - Save workflow should save workflow successfully",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should sanitize filename with special characters",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should create inputs and generations subfolders",
+            "status": "failed",
+            "failure": "AssertionError: expected \"vi.fn()\" to be called with arguments: [ '/test/dir/inputs', …(1) ]"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should reject non-directory path",
+            "status": "failed",
+            "failure": "AssertionError: expected 'Path contains traversal sequences' to be 'Path is not a directory' // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should create non-existent directory and continue saving",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should continue saving even if subfolder creation fails",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should return 500 on write failure",
+            "status": "failed",
+            "failure": "AssertionError: expected 400 to be 500 // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route POST - Save workflow should reject dangerous system paths",
+            "status": "failed",
+            "failure": "AssertionError: expected 'Path contains traversal sequences' to be 'Access to /etc is not allowed' // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route GET - Validate directory should return exists: true for existing directory",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route GET - Validate directory should return isDirectory: false for file path",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          },
+          {
+            "name": "/api/workflow route GET - Validate directory should return exists: false for non-existent path",
+            "status": "failed",
+            "failure": "AssertionError: expected false to be true // Object.is equality"
+          }
+        ]
+      }
+    ]
+  },
+  "requirement_probes": {
+    "total": 7,
+    "passed": 3,
+    "failed": 4,
+    "files": [
+      {
+        "path": "src/__tests__/crb-validation.probe.test.ts",
+        "tests": [
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P01: original + target -> candidate -> refinement retains original and candidate inputs",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P02: failed rerun without fallback retains existing output and makes one attempt",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P03: workflow JSON export/reload retains separate branch images without submitting generation",
+            "status": "passed",
+            "failure": null
+          },
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P04 REQUIREMENT: OpenAI adapter must send both original and retained-view reference",
+            "status": "failed",
+            "failure": "AssertionError: expected [ [ 'image', File{ …(1) } ] ] to have a length of 2 but got 1"
+          },
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P05 REQUIREMENT: unknown request outcome must not automatically invoke fallback",
+            "status": "failed",
+            "failure": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 2 times"
+          },
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P06 REQUIREMENT: failed primary and fallback must retain previously selected output",
+            "status": "failed",
+            "failure": "AssertionError: expected null to be 'data:image/png;base64,c3ludGhldGljLWZ…' // Object.is equality"
+          },
+          {
+            "name": "CRB minimum-loop engineering probes (not model-quality acceptance) P07 REQUIREMENT: successful rerun must not silently replace the previously chosen result",
+            "status": "failed",
+            "failure": "AssertionError: expected 'data:image/png;base64,c3ludGhldGljLXJ…' to be 'data:image/png;base64,c3ludGhldGljLWZ…' // Object.is equality"
+          }
+        ]
+      }
+    ]
+  },
+  "storage": {
+    "timestamp": "2026-09-10T06:56:54.427284+00:00",
+    "scope": "local synthetic storage only",
+    "cloud_calls": 0,
+    "checks": [
+      {
+        "name": "S01 native Windows input image write",
+        "passed": true,
+        "status": 200
+      },
+      {
+        "name": "S02 candidate image write",
+        "passed": true,
+        "status": 200
+      },
+      {
+        "name": "S03 candidate bytes survive reload",
+        "passed": true
+      },
+      {
+        "name": "S02 refined image write",
+        "passed": true,
+        "status": 200
+      },
+      {
+        "name": "S03 refined bytes survive reload",
+        "passed": true
+      },
+      {
+        "name": "S04 workflow JSON write",
+        "passed": true,
+        "status": 200
+      },
+      {
+        "name": "S05 workflow JSON round trip",
+        "passed": true,
+        "status": 200
+      }
+    ],
+    "path_observation": {
+      "posix_form_accepted": false,
+      "error": "Path contains traversal sequences"
+    },
+    "passed": true
+  },
+  "cloud_calls": 0,
+  "model_quality": "not_run_missing_user_references_and_provider_access"
+}

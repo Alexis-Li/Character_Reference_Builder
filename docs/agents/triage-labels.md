@@ -1,6 +1,6 @@
 # Triage Labels
 
-本机已安装 `triage`。以下映射基于 2026-09-09 对 `Alexis-Li/Character-Reference-Builder` 远端标签的只读检查。
+`triage` 是否可用以当前会话技能列表为准。以下映射基于 2026-09-09 对 `Alexis-Li/Character-Reference-Builder` 远端标签的只读检查。
 
 | Skill 中的角色 | 本仓库标签名称 | 含义 | 远端状态 |
 | --- | --- | --- | --- |
