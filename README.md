@@ -57,6 +57,18 @@
 - `assets/` 仅存放可提交的项目素材。用户上传、生成图像及其他运行时数据使用根目录 `data/`，该目录默认被 Git 忽略。
 - 本机环境配置使用 `.env` 或 `.env.*`；需要配置时提供无真实凭据的 `.env.example`。
 
+## CRB-01 本机运行
+
+Node Banana 固定快照、来源和锁文件记录在 [CRB-01 原型基线](docs/crb-01-baseline.md)。首次安装和验证：
+
+```powershell
+npm ci --no-audit --no-fund
+npm run build
+npm run test:run
+```
+
+Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windows.cmd` 停止服务。默认服务只绑定 `127.0.0.1:3210`；重复启动会复用已有实例，端口被其他程序占用时会给出进程号和换端口命令。也可运行 `npm run start:windows` 与 `npm run stop:windows`。
+
 ## 当前验证状态
 
 候选 Node Banana 安装、生产构建和本机启动通过；聚焦上游测试 258 项中 244 通过、14 项路径相关失败；新增需求探针 7 项中 3 通过、4 项不满足 PRD；真实本地文件检查 7 项通过。详见验证报告，不能将其解释为生产闭环已通过。

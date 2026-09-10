@@ -20,6 +20,7 @@ __pycache__/
 # Generated build and test output
 /dist/
 /build/
+/.next/
 /coverage/
 .coverage
 htmlcov/
