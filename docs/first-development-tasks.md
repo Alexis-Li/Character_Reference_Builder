@@ -2,20 +2,20 @@
 
 日期：2026-09-10。依据：[最小闭环实测](validation/minimum-loop-2026-09-10.md)、[ADR 0001](adr/0001-minimum-loop-foundation.md)。
 
-本文件是可直接转为 GitHub Issues 的任务草稿，**尚未发布远端 Issue，编号 CRB-xx 仅为本地计划标识**。2026-09-10 任务准备时记录远端 open Issues 列表为空；发布前需重新检查。任务准备完成不代表功能已实现；按项目约定，后续发布到 `Alexis-Li/Character-Reference-Builder`，不建立另一个任务系统。
+本文件已于 2026-09-10 发布为 GitHub [总规格 #1](https://github.com/Alexis-Li/Character_Reference_Builder/issues/1) 和开发任务 [#2–#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues?q=is%3Aissue%20state%3Aopen%20label%3Aready-for-agent)。全部任务已分配给 `Alexis-Li` 并标记 `ready-for-agent`；编号 CRB-xx 仍是稳定的本地计划标识，远端以 Issue 编号追踪。任务发布不代表功能已实现，也不建立另一个任务系统。
 
 ## 依赖与执行顺序
 
-| 任务 | 优先级 | 依赖 | 当前状态 |
-| --- | --- | --- | --- |
-| CRB-01 建立可复现的原型基线与 Windows 启动入口 | P0 | 无 | 可开始 |
-| CRB-02 角色项目、资产版本及人工选定结果 | P0 | CRB-01 | 待依赖 |
-| CRB-03 能力化 Provider 及多参考输入契约 | P0 | CRB-01 | 待依赖；真实调用另需账户 |
-| CRB-04 请求状态、费用授权及保守备用策略 | P0 | CRB-03 | 待依赖 |
-| CRB-05 单部件生成与连续优化的业务界面 | P0 | CRB-02、03、04 | 待依赖 |
-| CRB-06 可迁移保存、恢复和参考包导出 | P0 | CRB-02；整体集成依赖 CRB-05 | 待依赖 |
-| CRB-07 真实资料质量、成本与 Provider 替换验证 | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 | 等待用户资料、调用条件及人工评审 |
-| CRB-08 本地 SAM 精确提取专项验证 | P1 可选 | 有输入图片；集成依赖 CRB-02 | 单独排队，不阻塞默认生成 |
+| 任务 | Issue | 优先级 | 依赖 | 当前状态 |
+| --- | --- | --- | --- | --- |
+| CRB-01 建立可复现的原型基线与 Windows 启动入口 | [#2](https://github.com/Alexis-Li/Character_Reference_Builder/issues/2) | P0 | 无 | 已分配；可开始 |
+| CRB-02 角色项目、资产版本及人工选定结果 | [#3](https://github.com/Alexis-Li/Character_Reference_Builder/issues/3) | P0 | CRB-01 | 已分配；待依赖 |
+| CRB-03 能力化 Provider 及多参考输入契约 | [#4](https://github.com/Alexis-Li/Character_Reference_Builder/issues/4) | P0 | CRB-01 | 已分配；待依赖；真实调用另需账户 |
+| CRB-04 请求状态、费用授权及保守备用策略 | [#5](https://github.com/Alexis-Li/Character_Reference_Builder/issues/5) | P0 | CRB-03 | 已分配；待依赖 |
+| CRB-05 单部件生成与连续优化的业务界面 | [#6](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6) | P0 | CRB-02、03、04 | 已分配；待依赖 |
+| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 | 已分配；待依赖 |
+| CRB-07 真实资料质量、成本与 Provider 替换验证 | [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8) | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 | 已分配；等待用户资料、调用条件及人工评审 |
+| CRB-08 本地 SAM 精确提取专项验证 | [#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues/9) | P1 可选 | 有输入图片；集成依赖 CRB-02 | 已分配；单独排队，不阻塞默认生成 |
 
 建议先完成 CRB-01，再实现资产状态和 Provider 契约；在 CRB-04 费用保护完成后才将真实付费调用接入业务界面。无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
 

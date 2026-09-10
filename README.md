@@ -79,4 +79,4 @@ Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windo
 
 已配置 GitHub Issues、分诊标签映射和单上下文领域文档布局。`to-tickets`、`to-spec`、`triage` 等技能可通过 `AGENTS.md` 找到配置；实际调用取决于当前环境是否安装相应技能。
 
-配置可直接在 `docs/agents/` 修改。当前只设置本地约定，没有创建远端 Issue 或标签。
+配置可直接在 `docs/agents/` 修改。首批原型总规格与 8 项开发任务已发布到 GitHub Issues、分配给 `Alexis-Li`，并使用 `ready-for-agent` 标签；当前实现状态仍以各 Issue 和验证结果为准。
