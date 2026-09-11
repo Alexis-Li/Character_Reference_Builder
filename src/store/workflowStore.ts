@@ -111,6 +111,7 @@ import {
   adoptCandidate,
   approveCandidate,
   candidateAssetId,
+  clearSelection,
   createCharacterProject,
   definePart,
   markUpstreamChange,
@@ -141,6 +142,40 @@ const referenceIdForNode = (nodeId: string): string => `ref:${nodeId}`;
 
 const UPSTREAM_IMAGE_TYPES = new Set(["imageInput", "annotation"]);
 const GENERATION_TARGET_TYPES = new Set(["nanoBanana"]);
+
+function hashUpstreamContent(value: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+
+function fingerprintUpstreamData(type: string, data: Record<string, unknown>): string {
+  if (type === "imageInput") {
+    const image = typeof data.image === "string" ? (data.image as string) : "";
+    const ref = typeof data.imageRef === "string" ? (data.imageRef as string) : "";
+    const name = typeof data.filename === "string" ? (data.filename as string) : "";
+    if (!image && !ref) return "empty";
+    return `len:${(image || ref).length}#sha:${hashUpstreamContent(`${image}|${ref}|${name}`)}`;
+  }
+  const source = typeof data.sourceImage === "string" ? (data.sourceImage as string) : "";
+  const sourceRef = typeof data.sourceImageRef === "string" ? (data.sourceImageRef as string) : "";
+  const output = typeof data.outputImage === "string" ? (data.outputImage as string) : "";
+  const outputRef = typeof data.outputImageRef === "string" ? (data.outputImageRef as string) : "";
+  const annotations = JSON.stringify(data.annotations ?? []);
+  if (!source && !sourceRef && !output && !outputRef && annotations === "[]") return "empty";
+  return `len:${(source + output).length}#sha:${hashUpstreamContent(`${source}|${sourceRef}|${output}|${outputRef}|${annotations}`)}`;
+}
+
+function versionedSourceForUpstream(nodeId: string, type: string, data: Record<string, unknown>): string {
+  return `node:${nodeId}#${fingerprintUpstreamData(type, data)}`;
+}
 
 function upstreamContentChanged(
   node: WorkflowNode | undefined,
@@ -422,6 +457,8 @@ interface WorkflowStore {
   /** Explicit user pick of a node candidate: writes domain selection. */
   selectNodeCandidate: (nodeId: string, candidateId: string) => void;
   approveNodeCandidate: (nodeId: string, candidateId: string) => void;
+  /** Explicit user clear: drops the pinned version and its node projection together. */
+  clearNodeSelection: (nodeId: string) => void;
   updateCharacterLocks: (locks: DesignConstraint[], note?: string) => string[];
   updateCharacterReference: (
     id: string,
@@ -937,25 +974,45 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     const contentChanged = upstreamContentChanged(node, data);
     const prevProject = get().characterProject;
     let nextProject: CharacterProject | null = prevProject;
-    if (contentChanged && nextProject) {
+    if (contentChanged && nextProject && node) {
       const refId = referenceIdForNode(nodeId);
-      if (!nextProject.references.some((item) => item.id === refId)) {
+      const merged = { ...(node.data as Record<string, unknown>), ...(data as Record<string, unknown>) };
+      const versioned = versionedSourceForUpstream(nodeId, node.type, merged);
+      const existing = nextProject.references.find((item) => item.id === refId);
+      if (!existing) {
         nextProject = addReference(nextProject, {
           id: refId,
-          kind: node?.type === "imageInput" ? "original" : "auxiliary",
-          source: `node:${nodeId}`,
+          kind: node.type === "imageInput" ? "original" : "auxiliary",
+          source: versioned,
         });
+      } else if (existing.source !== versioned) {
+        nextProject = {
+          ...nextProject,
+          references: nextProject.references.map((item) =>
+            item.id === refId ? { ...item, source: versioned } : item,
+          ),
+        };
       }
       nextProject = markUpstreamChange(nextProject, {
         referenceIds: [refId],
         note: `upstream ${nodeId} changed`,
       }).project;
     }
+    const clearedOutput =
+      node?.type === "nanoBanana" &&
+      "outputImage" in data &&
+      (data as Record<string, unknown>).outputImage == null;
+    if (clearedOutput && nextProject) {
+      nextProject = clearSelection(nextProject, partIdForNode(nodeId), CHARACTER_DEFAULT_VIEW);
+    }
+    const nodePatch = clearedOutput
+      ? { ...data, selectedHistoryId: null, outputImageRef: undefined, selectedHistoryIndex: 0 }
+      : data;
 
     set((state) => ({
       nodes: state.nodes.map((entry) =>
         entry.id === nodeId
-          ? { ...entry, data: { ...entry.data, ...data } as WorkflowNodeData }
+          ? { ...entry, data: { ...entry.data, ...nodePatch } as WorkflowNodeData }
           : entry
       ) as WorkflowNode[],
       hasUnsavedChanges: true,
@@ -1770,18 +1827,29 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
         }
         // Upstream design basis: image inputs become original references so a
         // later reference update can mark exactly the runs built from them.
+        // Sources carry content versions; per-candidate snapshots preserve old
+        // bases even after later edits advance the live reference.
         const upstreamIds = [...new Set(state.edges.filter((edge) => edge.target === event.nodeId).map((edge) => edge.source))];
         const referenceIds: string[] = [];
         for (const sourceId of upstreamIds) {
           const source = state.nodes.find((n) => n.id === sourceId);
           if (!source || (source.type !== "imageInput" && source.type !== "annotation")) continue;
           const refId = referenceIdForNode(sourceId);
-          if (!project.references.some((item) => item.id === refId)) {
+          const versioned = versionedSourceForUpstream(sourceId, source.type, source.data as Record<string, unknown>);
+          const existing = project.references.find((item) => item.id === refId);
+          if (!existing) {
             project = addReference(project, {
               id: refId,
               kind: source.type === "imageInput" ? "original" : "auxiliary",
-              source: `node:${sourceId}`,
+              source: versioned,
             });
+          } else if (existing.source !== versioned) {
+            project = {
+              ...project,
+              references: project.references.map((item) =>
+                item.id === refId ? { ...item, source: versioned } : item,
+              ),
+            };
           }
           referenceIds.push(refId);
         }
@@ -2961,7 +3029,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
             project = addReference(project, {
               id: refId,
               kind: source.type === "imageInput" ? "original" : "auxiliary",
-              source: `node:${source.id}`,
+              source: versionedSourceForUpstream(source.id, source.type, source.data as Record<string, unknown>),
             });
           }
           upstreamRefIds.push(refId);
@@ -3128,18 +3196,17 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       setProtectedSessionIds([]);
       return;
     }
+    // Every candidate in the project stays operable (compare, reselect,
+    // branch) until it is saved to disk, so eviction must never silently
+    // drop one. Unprotected entries are only transient bytes with no
+    // candidate pointing at them. When everything is protected and the cache
+    // is over budget it is allowed to grow; save-time validation fails loudly
+    // instead of writing an unrecoverable project.
     const byId = new Map(project.candidates.map((candidate) => [candidate.id, candidate]));
     const keep = new Set<string>();
-    for (const id of Object.values(project.selection)) {
-      keep.add(id);
-      const selected = byId.get(id);
-      if (selected) keep.add(candidateAssetId(selected));
-    }
     for (const candidate of project.candidates) {
-      if (candidate.review === "approved" || candidate.review === "stale") {
-        keep.add(candidate.id);
-        keep.add(candidateAssetId(candidate));
-      }
+      keep.add(candidate.id);
+      keep.add(candidateAssetId(candidate));
       if (candidate.parentCandidateId && byId.has(candidate.parentCandidateId)) {
         keep.add(candidate.parentCandidateId);
         const parent = byId.get(candidate.parentCandidateId);
@@ -3165,6 +3232,33 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     project = approveCandidate(project, candidateId);
     set({ characterProject: project, hasUnsavedChanges: true });
     get().syncSessionProtection();
+  },
+
+  clearNodeSelection: (nodeId: string) => {
+    const partId = partIdForNode(nodeId);
+    const prevProject = get().characterProject;
+    const nextProject = prevProject ? clearSelection(prevProject, partId, CHARACTER_DEFAULT_VIEW) : prevProject;
+    set((state) => ({
+      nodes: state.nodes.map((entry) =>
+        entry.id === nodeId && entry.type === "nanoBanana"
+          ? {
+              ...entry,
+              data: {
+                ...entry.data,
+                outputImage: null,
+                outputImageRef: undefined,
+                selectedHistoryId: null,
+                selectedHistoryIndex: 0,
+                status: "idle",
+                error: null,
+              } as WorkflowNodeData,
+            }
+          : entry
+      ) as WorkflowNode[],
+      hasUnsavedChanges: true,
+      ...(nextProject !== prevProject ? { characterProject: nextProject } : {}),
+    }));
+    if (nextProject !== prevProject) get().syncSessionProtection();
   },
 
   updateCharacterLocks: (locks: DesignConstraint[], note?: string) => {
@@ -3364,6 +3458,46 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
             } catch (error) {
               console.error("[character-project] candidate media save failed:", error);
             }
+          }
+          // Never write an unrecoverable project: every candidate asset must
+          // resolve from session or disk before the workflow file is written.
+          const missing: string[] = [];
+          const generationsPath = get().generationsPath;
+          const isResolvable = async (assetId: string): Promise<boolean> => {
+            if (pending.has(assetId)) return true;
+            if (readSessionMedia(assetId)) return true;
+            try {
+              const params = new URLSearchParams({ workflowPath: saveDirectoryPath, imageId: assetId, folder: "generations" });
+              const response = await fetch(`/api/workflow-images?${params.toString()}`);
+              const result = await response.json();
+              if (result?.success) return true;
+            } catch {
+              // Fall through to the generations-folder check below.
+            }
+            if (generationsPath) {
+              try {
+                const response = await fetch("/api/load-generation", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ directoryPath: generationsPath, imageId: assetId }),
+                });
+                const result = await response.json();
+                if (result?.success) return true;
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          };
+          for (const candidate of project.candidates) {
+            const asset = candidateAssetId(candidate);
+            if (!(await isResolvable(candidate.id)) && !(await isResolvable(asset))) {
+              missing.push(candidate.id);
+            }
+          }
+          if (missing.length > 0) {
+            useToast.getState().show(`Save blocked: ${missing.length} candidate(s) have no recoverable media: ${missing.join(", ")}`, "error");
+            return false;
           }
         }
         workflow = await externalizeWorkflowMedia(workflow, saveDirectoryPath);

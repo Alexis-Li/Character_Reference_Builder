@@ -12,6 +12,7 @@ vi.mock("@/utils/deduplicatedFetch", () => ({
 
 // Mock the workflow store
 const mockUpdateNodeData = vi.fn();
+const mockClearNodeSelection = vi.fn();
 const mockRegenerateNode = vi.fn();
 const mockAddNode = vi.fn();
 const mockIncrementModalCount = vi.fn();
@@ -104,6 +105,7 @@ describe("GenerateImageNode", () => {
     mockUseWorkflowStore.mockImplementation((selector) => {
       const state = {
         updateNodeData: mockUpdateNodeData,
+        clearNodeSelection: mockClearNodeSelection,
         regenerateNode: mockRegenerateNode,
         addNode: mockAddNode,
         incrementModalCount: mockIncrementModalCount,
@@ -308,7 +310,7 @@ describe("GenerateImageNode", () => {
       expect(clearButton).toBeInTheDocument();
     });
 
-    it("should call updateNodeData to clear image when clear button is clicked", () => {
+    it("should clear the pinned selection when clear button is clicked", () => {
       render(
         <TestWrapper>
           <GenerateImageNode {...createNodeProps({
@@ -320,11 +322,7 @@ describe("GenerateImageNode", () => {
       const clearButton = screen.getByTitle("Clear image");
       fireEvent.click(clearButton);
 
-      expect(mockUpdateNodeData).toHaveBeenCalledWith("test-node-1", {
-        outputImage: null,
-        status: "idle",
-        error: null,
-      });
+      expect(mockClearNodeSelection).toHaveBeenCalledWith("test-node-1");
     });
   });
 

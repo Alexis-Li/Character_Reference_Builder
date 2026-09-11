@@ -314,9 +314,10 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
     [id, setNodes]
   );
 
+  const clearNodeSelection = useWorkflowStore((state) => state.clearNodeSelection);
   const handleClearImage = useCallback(() => {
-    updateNodeData(id, { outputImage: null, status: "idle", error: null });
-  }, [id, updateNodeData]);
+    clearNodeSelection(id);
+  }, [id, clearNodeSelection]);
 
   const regenerateNode = useWorkflowStore((state) => state.regenerateNode);
   const isRunning = useWorkflowStore((state) => state.isRunning);

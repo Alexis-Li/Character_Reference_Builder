@@ -65,6 +65,12 @@ export interface Candidate {
   /** Optimization chain: refine/branch always points at its input version. */
   parentCandidateId?: string;
   referenceIds: string[];
+  /**
+   * Source snapshot per reference at creation time. Global references may
+   * advance (new hashes, user corrections); old candidates keep their own
+   * basis here so provenance stays recoverable without inventing runs.
+   */
+  referenceSources?: Record<string, string>;
   inferenceNotes?: string;
   review: CandidateReviewState;
   /**
@@ -107,6 +113,22 @@ export function selectionKey(partId: string, view: string): string {
 /** Loadable blob for a candidate; legacy rows without assetId fall back to id. */
 export function candidateAssetId(candidate: Pick<Candidate, "id" | "assetId">): string {
   return candidate.assetId ?? candidate.id;
+}
+
+/**
+ * Source basis a candidate was built from. Snapshots win so later reference
+ * edits never rewrite history; falls back to the live reference for legacy
+ * rows adopted before snapshots existed.
+ */
+export function candidateReferenceSource(
+  project: CharacterProject,
+  candidateId: string,
+  referenceId: string,
+): string | undefined {
+  const candidate = project.candidates.find((item) => item.id === candidateId);
+  const snapshot = candidate?.referenceSources?.[referenceId];
+  if (snapshot != null) return snapshot;
+  return project.references.find((item) => item.id === referenceId)?.source;
 }
 
 /** Globally unique run/candidate ids that never collide within one millisecond. */
@@ -238,6 +260,12 @@ export function adoptCandidate(
       correctionHistory: [],
     });
   }
+  const sourceByRef = new Map(project.references.map((item) => [item.id, item.source]));
+  const snapshot: Record<string, string> = {};
+  for (const refId of input.referenceIds ?? []) {
+    const source = sourceByRef.get(refId);
+    if (source != null) snapshot[refId] = source;
+  }
   return touch({
     ...project,
     candidates: [
@@ -248,6 +276,7 @@ export function adoptCandidate(
         view: input.view,
         runId: "",
         referenceIds: [...(input.referenceIds ?? [])],
+        referenceSources: snapshot,
         review: "unreviewed" as CandidateReviewState,
         assetId: input.assetId ?? input.candidateId,
       },
@@ -389,17 +418,26 @@ export function recordSuccessfulRun(
       throw new Error(`Candidate ${output.candidateId} already exists.`);
     }
   }
-  const candidates: Candidate[] = input.outputs.map((output) => ({
-    id: output.candidateId,
-    partId: input.partId,
-    view: input.view,
-    runId: input.runId,
-    parentCandidateId: input.inputCandidateId,
-    referenceIds: [...output.referenceIds],
-    inferenceNotes: output.inferenceNotes,
-    review: "unreviewed",
-    assetId: output.assetId ?? output.candidateId,
-  }));
+  const sourceByRef = new Map(project.references.map((item) => [item.id, item.source]));
+  const candidates: Candidate[] = input.outputs.map((output) => {
+    const snapshot: Record<string, string> = {};
+    for (const refId of output.referenceIds) {
+      const source = sourceByRef.get(refId);
+      if (source != null) snapshot[refId] = source;
+    }
+    return {
+      id: output.candidateId,
+      partId: input.partId,
+      view: input.view,
+      runId: input.runId,
+      parentCandidateId: input.inputCandidateId,
+      referenceIds: [...output.referenceIds],
+      referenceSources: snapshot,
+      inferenceNotes: output.inferenceNotes,
+      review: "unreviewed",
+      assetId: output.assetId ?? output.candidateId,
+    };
+  });
   const run: ProjectRun = {
     id: input.runId,
     partId: input.partId,
@@ -457,6 +495,26 @@ export function selectCandidate(
       return item;
     }),
     selection: { ...project.selection, [key]: candidateId },
+  });
+}
+
+/** Explicit human clear. Removes the pinned version; node projection follows. */
+export function clearSelection(
+  project: CharacterProject,
+  partId: string,
+  view: string,
+): CharacterProject {
+  const key = selectionKey(partId, view);
+  const previousId = project.selection[key];
+  if (!previousId) return project;
+  const selection = { ...project.selection };
+  delete selection[key];
+  return touch({
+    ...project,
+    candidates: project.candidates.map((item) =>
+      item.id === previousId && item.review === "selected" ? { ...item, review: "unreviewed" } : item,
+    ),
+    selection,
   });
 }
 

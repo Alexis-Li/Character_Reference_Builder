@@ -11,7 +11,9 @@ import {
   rememberSessionMedia,
 } from "../execution/sessionMedia";
 import {
+  addReference,
   adoptCandidate,
+  candidateReferenceSource,
   createCharacterProject,
   definePart,
   newCharacterId,
@@ -20,6 +22,7 @@ import {
   selectCandidate,
   setCandidateAsset,
   updateProjectLocks,
+  updateReference,
   type CharacterProject,
 } from "@/lib/characterProject";
 import type { WorkflowNode, WorkflowEdge } from "@/types";
@@ -398,7 +401,7 @@ describe("review blocker 2: unselected media survives a real save and reopen", (
     const payload = (savedPayload as unknown as { workflow: WorkflowNode[] & Record<string, unknown> }).workflow as unknown as {
       nodes: WorkflowNode[];
       edges: WorkflowEdge[];
-      characterProject: ReturnType<typeof createCharacterProject>;
+      characterProject: CharacterProject;
     };
     await useWorkflowStore.getState().loadWorkflow(
       {
@@ -450,5 +453,139 @@ describe("review domain extras", () => {
       view: "front",
     });
     expect(project.candidates[0].assetId).toBe("legacy-1");
+  });
+});
+
+describe("third review: clear keeps node and domain joined", () => {
+  it("clear drops the pinned version; next success reselects jointly", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT));
+    await run("gen");
+    const firstId = (genData().imageHistory as Array<{ id: string }>)[0].id;
+    expect(useWorkflowStore.getState().characterProject?.selection).toEqual({ "gen@default": firstId });
+
+    useWorkflowStore.getState().clearNodeSelection("gen");
+    expect(genData().outputImage).toBeNull();
+    expect(genData().selectedHistoryId).toBeNull();
+    expect(useWorkflowStore.getState().characterProject?.selection).toEqual({});
+    expect(useWorkflowStore.getState().getConnectedInputs("consumer").images).toHaveLength(0);
+
+    mockFetch.mockResolvedValueOnce(ok(REVISED));
+    await run("gen");
+    const secondId = (genData().imageHistory as Array<{ id: string }>)[0].id;
+    expect(genData().outputImage).toBe(REVISED);
+    expect(useWorkflowStore.getState().characterProject?.selection).toEqual({ "gen@default": secondId });
+    expect(useWorkflowStore.getState().getConnectedInputs("consumer").images[0]).toBe(REVISED);
+  });
+
+  it("clear followed by failed rerun stays explicitly empty on both sides", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT));
+    await run("gen");
+    useWorkflowStore.getState().clearNodeSelection("gen");
+    mockFetch.mockRejectedValueOnce(new Error("upstream unavailable"));
+    await expect(run("gen")).rejects.toThrow();
+    expect(genData().outputImage).toBeNull();
+    expect(useWorkflowStore.getState().characterProject?.selection).toEqual({});
+    expect(useWorkflowStore.getState().characterProject?.candidates).toHaveLength(1);
+    expect(useWorkflowStore.getState().getConnectedInputs("consumer").images).toHaveLength(0);
+  });
+
+  it("direct output null writes also clear the domain selection", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT));
+    await run("gen");
+    useWorkflowStore.getState().updateNodeData("gen", { outputImage: null });
+    expect(useWorkflowStore.getState().characterProject?.selection).toEqual({});
+    expect(genData().selectedHistoryId).toBeNull();
+  });
+});
+
+describe("third review: provenance survives reference edits", () => {
+  it("per-candidate snapshots keep old and new bases distinct", async () => {
+    let project = createCharacterProject("char-1", 0);
+    project = definePart(project, { id: "belt", name: "Belt", requirements: [], correctionHistory: [] });
+    project = addReference(project, { id: "ref", kind: "original", source: "sha:old" });
+    project = recordSuccessfulRun(project, {
+      runId: "run-1",
+      partId: "belt",
+      view: "front",
+      outputs: [{ candidateId: "c1", referenceIds: ["ref"] }],
+    });
+    project = updateReference(project, "ref", { source: "sha:new" }).project;
+    project = recordSuccessfulRun(project, {
+      runId: "run-2",
+      partId: "belt",
+      view: "front",
+      outputs: [{ candidateId: "c2", referenceIds: ["ref"] }],
+    });
+    expect(candidateReferenceSource(project, "c1", "ref")).toBe("sha:old");
+    expect(candidateReferenceSource(project, "c2", "ref")).toBe("sha:new");
+  });
+
+  it("image content versions give each run its own traceable basis", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT));
+    await run("gen");
+    const first = useWorkflowStore.getState().characterProject!.candidates.find((c) => c.partId === "gen")!;
+    const basisBefore = candidateReferenceSource(useWorkflowStore.getState().characterProject!, first.id, "ref:img-a");
+    expect(basisBefore).toMatch(/^node:img-a#/);
+
+    useWorkflowStore.getState().updateNodeData("img-a", { image: ORIG_A2 });
+    mockFetch.mockResolvedValueOnce(ok(REVISED));
+    await run("gen");
+    const after = useWorkflowStore.getState().characterProject!;
+    const candidates = after.candidates.filter((c) => c.partId === "gen");
+    expect(candidates).toHaveLength(2);
+    const oldBasis = candidateReferenceSource(after, candidates[0].id, "ref:img-a");
+    const newBasis = candidateReferenceSource(after, candidates[1].id, "ref:img-a");
+    expect(oldBasis).toBe(basisBefore);
+    expect(newBasis).not.toBe(oldBasis);
+    expect(newBasis).toMatch(/^node:img-a#/);
+  });
+});
+
+describe("third review: operable media never silently lost", () => {
+  it("unreviewed candidates survive transient pressure", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT)).mockResolvedValueOnce(ok(REVISED));
+    await run("gen");
+    await run("gen");
+    const history = genData().imageHistory as Array<{ id: string }>;
+    const firstId = history[1].id;
+    const secondId = history[0].id;
+    useWorkflowStore.getState().selectNodeCandidate("gen", firstId);
+    for (let i = 0; i < 60; i++) {
+      rememberSessionMedia(`transient-${i}`, `data:image/png;base64,dHJhbnNpZW50-${i}`);
+    }
+    expect(readSessionMedia(firstId)).toBe(FRONT);
+    expect(readSessionMedia(secondId)).toBe(REVISED);
+  });
+
+  it("save fails loudly when a candidate has no recoverable bytes", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT));
+    await run("gen");
+    clearSessionMedia();
+    mockFetch.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.startsWith("/api/workflow-images?")) {
+        return { ok: true, json: async () => ({ success: false, notFound: true }) };
+      }
+      if (url === "/api/workflow-images") {
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      if (url === "/api/workflow") {
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      throw new Error(`Unexpected mock request: ${url}`);
+    });
+    useWorkflowStore.setState({
+      workflowId: "wf-missing",
+      workflowName: "crb-02-missing",
+      saveDirectoryPath: "/tmp/crb-02-missing",
+      useExternalImageStorage: true,
+    });
+    const saved = await useWorkflowStore.getState().saveToFile();
+    expect(saved).toBe(false);
   });
 });
