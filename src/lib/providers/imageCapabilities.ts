@@ -82,7 +82,9 @@ const MB = 1024 * 1024;
  * - OpenAI gpt-image edits accept up to 4 input images via `image[]`,
  *   each below 50MB, plus an optional mask.
  * CRB-07 real calls confirm or correct these numbers; entries here are the
- * single place to update.
+ * single place to update. Per-model deviations get their own entry below
+ * when real-call evidence justifies them — a shared provider default is
+ * never applied to an unlisted model.
  */
 const GEMINI_IMAGE_CAPABILITIES: ImageCapabilities = {
   generate: true,
@@ -106,34 +108,83 @@ const OPENAI_IMAGE_CAPABILITIES: ImageCapabilities = {
 };
 
 /**
- * Declared image capabilities per provider. Providers without an entry are
- * *undeclared*: structured reference/mask requests fail closed with an
- * actionable gap instead of being forced through an unverified path.
+ * Declared image capabilities per provider entry (`provider/modelId`).
+ * Only the entries below are approved for the reference contract. Any other
+ * provider or model id is *undeclared*: structured reference/mask requests
+ * fail closed with an actionable gap instead of being forced through an
+ * unverified path.
+ *
+ * Known entry ids come from the models catalog (`src/app/api/models/route.ts`)
+ * and the legacy `ModelType` union. Numeric limits are intentionally shared
+ * per provider until CRB-07 real calls justify per-model deviations; the
+ * fail-closed lookup itself is entry-level so one provider never vouches
+ * for an unlisted model.
  */
-const PROVIDER_IMAGE_CAPABILITIES: Partial<Record<ProviderType, ImageCapabilities>> = {
-  gemini: GEMINI_IMAGE_CAPABILITIES,
-  openai: OPENAI_IMAGE_CAPABILITIES,
+const ENTRY_IMAGE_CAPABILITIES: Record<string, ImageCapabilities> = {
+  "gemini/nano-banana": GEMINI_IMAGE_CAPABILITIES,
+  "gemini/nano-banana-pro": GEMINI_IMAGE_CAPABILITIES,
+  "gemini/nano-banana-2": GEMINI_IMAGE_CAPABILITIES,
+  "gemini/nano-banana-2-lite": GEMINI_IMAGE_CAPABILITIES,
+  // API-id aliases used by older callers (MODEL_MAP values). Same entry,
+  // same limits — listed explicitly so the lookup stays entry-level.
+  "gemini/gemini-2.5-flash-image": GEMINI_IMAGE_CAPABILITIES,
+  "gemini/gemini-3-pro-image-preview": GEMINI_IMAGE_CAPABILITIES,
+  "gemini/gemini-3.1-flash-image-preview": GEMINI_IMAGE_CAPABILITIES,
+  "gemini/gemini-3.1-flash-lite-image": GEMINI_IMAGE_CAPABILITIES,
+  "openai/gpt-image-1": OPENAI_IMAGE_CAPABILITIES,
+  "openai/gpt-image-2": OPENAI_IMAGE_CAPABILITIES,
 };
 
 /** Capabilities declared for one entry, or null when undeclared. */
 export function imageCapabilities(
   provider: ProviderType,
-  _modelId?: string
+  modelId?: string
 ): ImageCapabilities | null {
-  return PROVIDER_IMAGE_CAPABILITIES[provider] ?? null;
+  if (!modelId) return null;
+  return ENTRY_IMAGE_CAPABILITIES[`${provider}/${modelId}`] ?? null;
+}
+
+/**
+ * Canonical positional roles for the flat image path. The connection graph
+ * does not yet carry per-edge roles, so the executor assigns them by stable
+ * position: first connected image is the edit target, the second is the
+ * view that must be retained, the rest are auxiliary context. Order is
+ * preserved end-to-end; a future per-edge role field overrides this mapping
+ * without changing the wire contract.
+ */
+export function toReferenceInputs(images: string[]): ReferenceInput[] {
+  return images.map((image, index) => {
+    const purpose: ReferencePurpose =
+      index === 0 ? "target" : index === 1 ? "retained-view" : "auxiliary";
+    return { image, purpose };
+  });
+}
+
+/**
+ * The complete input set an adapter is about to send. Structured references
+ * win when present; otherwise legacy flat `images` are losslessly mapped to
+ * purposeless reference entries so count/size checks still apply. Callers
+ * for contract participants (gemini/openai) must check this effective set,
+ * never the structured subset alone.
+ */
+export function effectiveReferences(
+  references: ReferenceInput[],
+  images?: string[]
+): ReferenceInput[] {
+  if (references.length > 0) return references;
+  return (images ?? []).map((image) => ({ image }));
 }
 
 /**
  * Encoded (wire) byte size of one reference input — the data-URL string
  * itself, which is what request builders and vendor limits actually
- * measure. Returns null for inputs whose size cannot be derived locally.
+ * measure. Returns null for remote URLs and opaque raw payloads whose size
+ * cannot be derived locally.
  */
 export function estimateImageBytes(dataUrl: string): number | null {
   if (!dataUrl) return null;
-  const marker = "base64,";
-  const at = dataUrl.indexOf(marker);
-  if (at === -1) return null;
-  return Buffer.byteLength(dataUrl, "utf8");
+  if (/^data:/i.test(dataUrl)) return Buffer.byteLength(dataUrl, "utf8");
+  return null;
 }
 function megabytes(bytes: number): string {
   return `${(bytes / MB).toFixed(1)}MB`;
@@ -208,7 +259,19 @@ export function checkReferenceGaps(
     let totalBytes = 0;
     references.forEach((reference, index) => {
       const bytes = estimateImageBytes(reference.image);
-      if (bytes === null) return; // size unknowable locally; provider enforces
+      if (bytes === null) {
+        // Remote URLs cannot be measured locally; the provider would be the
+        // first to reject them, so fail here with an actionable gap instead.
+        // Opaque raw payloads (no URL scheme, no data-URL marker) keep the
+        // legacy behavior: the adapter forwards them and the provider enforces.
+        if (/^(https?:|blob:)/i.test(reference.image) || reference.image.includes("://")) {
+          gaps.push({
+            kind: "image-size",
+            message: `Reference ${index + 1} size cannot be verified before submission (remote URL). Download it to a data URL within the ${megabytes(capabilities.maxImageBytes)} per-image limit of ${where}, or choose an entry that accepts remote inputs.`,
+          });
+        }
+        return;
+      }
       totalBytes += bytes;
       if (bytes > capabilities.maxImageBytes) {
         gaps.push({
@@ -306,13 +369,22 @@ export function resolveGenerationModel(input: {
 /**
  * Credentials channel of one actual call. API-key requests and OAuth
  * experiments are recorded separately and can never claim each other's
- * success: every call record carries exactly one channel.
+ * success: every call record carries exactly one channel, set from the
+ * transport that actually submitted the request.
  */
 export type ProviderAuthChannel = "api-key" | "oauth-experimental";
 
-/** Evidence that a real request was submitted to a provider entry. */
+/** Submission outcome of one provider attempt. */
+export type ProviderCallStage = "succeeded" | "failed";
+
+/**
+ * Evidence of one provider submission attempt. Records are only written
+ * after the request actually leaves for the provider transport (fetch/SDK).
+ * Pre-submit rejections (422 gaps, missing prompt/key) never create a
+ * record; HTTP/network failures are recorded as `failed`, never as success.
+ */
 export interface ProviderCallRecord {
-  /** Epoch ms when the request was submitted. */
+  /** Epoch ms when the submission attempt started. */
   at: number;
   provider: ProviderType;
   modelId: string;
@@ -325,7 +397,12 @@ export interface ProviderCallRecord {
   capabilities?: ImageCapabilities;
   /** Number of reference images actually included in the request. */
   referenceCount: number;
-  /** Reference purposes in request order, when provided. */
+  /** Reference purposes in request order; null only when no reference was sent. */
   purposes: ReferencePurpose[] | null;
+  /** True when an edit mask was included in the submitted request. */
+  hasMask: boolean;
+  /** Actual credential transport that submitted the request. */
   auth: ProviderAuthChannel;
+  /** Whether the provider transport reported success or failure. */
+  stage: ProviderCallStage;
 }

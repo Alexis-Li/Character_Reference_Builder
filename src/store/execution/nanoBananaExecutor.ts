@@ -16,7 +16,8 @@ import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { getGenerateImageDefaults } from "@/store/utils/localStorage";
 import { rememberSessionMedia } from "./sessionMedia";
 import { newCharacterId } from "@/lib/characterProject";
-import { imageCapabilities, resolveGenerationModel, ProviderCallRecord } from "@/lib/providers/imageCapabilities";
+import { imageCapabilities, resolveGenerationModel, toReferenceInputs } from "@/lib/providers/imageCapabilities";
+import type { ProviderCallRecord, ReferenceInput } from "@/lib/providers/imageCapabilities";
 import type { NodeExecutionContext } from "./types";
 
 /**
@@ -113,30 +114,40 @@ export async function executeNanoBanana(
     const sanitizedDynamicInputs = { ...dynamicInputs };
     delete sanitizedDynamicInputs.prompt;
 
-    // CRB-03: record the model-resolution layer BEFORE the request so the
-    // call record reflects what actually served this run (primary or
-    // fallback), never which entry happened to be configured last.
+    // CRB-03: the executor owns the canonical reference set. Connected flat
+    // images are mapped to positional purposes (target, retained-view,
+    // auxiliary) in stable order; the same array is sent as `references` and
+    // summarized in `lastCall`. The legacy `images` field is kept so older
+    // adapters and non-contract providers keep working.
+    const references: ReferenceInput[] = toReferenceInputs(images);
+    const referencePurposes = references.map((reference) => reference.purpose!);
     const projectDefault = getGenerateImageDefaults()?.selectedModel;
     const resolution = resolveGenerationModel({
       nodeSelected: modelToUse,
       projectDefault,
     });
     const declared = imageCapabilities(modelToUse.provider, modelToUse.modelId);
-    const callRecord: ProviderCallRecord = {
-      at: Date.now(),
+    const attemptAt = Date.now();
+    const baseRecord = {
+      at: attemptAt,
       provider: modelToUse.provider,
       modelId: modelToUse.modelId,
       displayName: modelToUse.displayName,
       resolvedFrom: resolution.resolvedFrom,
       declared: declared !== null,
       ...(declared ? { capabilities: declared } : {}),
-      referenceCount: images.length,
-      purposes: null,
-      auth: "api-key",
+      referenceCount: references.length,
+      purposes: references.length > 0 ? referencePurposes : null,
+      hasMask: false,
+      // The executor only submits over the API-key transport. The OAuth
+      // experiment lives behind its own route entry and records its own
+      // `oauth-experimental` channel there; this record never claims it.
+      auth: "api-key" as const,
     };
 
     const requestPayload = {
       images,
+      references,
       prompt: finalPrompt,
       aspectRatio: (parametersOverride?.aspectRatio as string) ?? nodeData.aspectRatio,
       resolution: (parametersOverride?.resolution as string) ?? nodeData.resolution,
@@ -174,10 +185,11 @@ export async function executeNanoBanana(
           if (errorText) errorMessage += ` - ${errorText.substring(0, 200)}`;
         }
 
+        const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
         updateNodeData(node.id, {
           status: "error",
           error: errorMessage,
-          lastCall: callRecord,
+          lastCall: failedCall,
         });
         throw new Error(errorMessage);
       }
@@ -197,10 +209,11 @@ export async function executeNanoBanana(
         });
 
         if (!result.success) {
+          const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
           updateNodeData(node.id, {
             status: "error",
             error: result.error || "Generation failed",
-            lastCall: callRecord,
+            lastCall: failedCall,
           });
           throw new Error(result.error || "Generation failed");
         }
@@ -259,6 +272,7 @@ export async function executeNanoBanana(
           priorSelection != null && priorSelectedId == null
             ? Math.min(priorIndex + 1, updatedHistory.length - 1)
             : selectedIndex;
+        const succeededCall: ProviderCallRecord = { ...baseRecord, stage: "succeeded" };
         updateNodeData(node.id, {
           ...(priorSelection != null
             ? {
@@ -270,7 +284,7 @@ export async function executeNanoBanana(
           status: "complete",
           error: null,
           imageHistory: updatedHistory,
-          lastCall: callRecord,
+          lastCall: succeededCall,
         });
 
         // Report the run to the character-project contract when the context
@@ -347,10 +361,11 @@ export async function executeNanoBanana(
           trackSaveGeneration(imageId, savePromise);
         }
       } else {
+        const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
         updateNodeData(node.id, {
           status: "error",
           error: result.error || "Generation failed",
-          lastCall: callRecord,
+          lastCall: failedCall,
         });
         throw new Error(result.error || "Generation failed");
       }
@@ -368,10 +383,11 @@ export async function executeNanoBanana(
       } else if (error instanceof Error) {
         errorMessage = error.message;
       }
+      const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
       updateNodeData(node.id, {
         status: "error",
         error: errorMessage,
-        lastCall: callRecord,
+        lastCall: failedCall,
       });
       try {
         ctx.recordCharacterRun?.({

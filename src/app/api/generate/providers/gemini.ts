@@ -40,10 +40,16 @@ export async function generateWithGemini(
   // CRB-03: structured references keep their documented roles and fixed
   // order inline (prompt first, then every image in request order). When
   // only legacy flat images arrive, behavior is unchanged. Purposes ride in
-  // the part order, never in credentials-bearing metadata.
+  // the part order, never in credentials-bearing metadata. This entry has no
+  // mask capability: masks are rejected pre-submit in the route and never
+  // reach this adapter through it. A directly passed mask is ignored here so
+  // it cannot be mistaken for another reference image.
   const imageSources: string[] = references?.length
     ? references.map((reference) => reference.image)
     : (images || []);
+  if (mask) {
+    console.warn(`[API:${requestId}] Gemini entry does not support masks; ignoring mask input (use an OpenAI mask-capable entry or remove the mask).`);
+  }
   const imageData = imageSources.map((image, idx) => {
     if (image.includes("base64,")) {
       const [header, data] = image.split("base64,");
@@ -56,11 +62,6 @@ export async function generateWithGemini(
     console.log(`[API:${requestId}]   Image ${idx + 1}: raw, ${(image.length / 1024).toFixed(1)}KB`);
     return { data: image, mimeType: "image/png" };
   });
-  if (mask) {
-    const maskData = mask.includes("base64,") ? mask.split("base64,")[1] : mask;
-    imageData.push({ data: maskData, mimeType: "image/png" });
-    console.log(`[API:${requestId}]   Mask appended as final image part`);
-  }
 
   // Initialize Gemini client
   const ai = new GoogleGenAI({ apiKey });

@@ -12,15 +12,15 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GenerateRequest, GenerateResponse, ModelType, SelectedModel, ProviderType } from "@/types";
-import { GenerationInput, ModelCapability, checkReferenceGaps, imageCapabilities, normalizeReferences, ReferenceInput } from "@/lib/providers/types";
+import { GenerationInput, ModelCapability, checkReferenceGaps, effectiveReferences, imageCapabilities, normalizeReferences, ReferenceInput } from "@/lib/providers/types";
 import { generateWithGemini, generateWithGeminiVideo } from "./providers/gemini";
 import { generateWithReplicate } from "./providers/replicate";
 import { generateWithFalQueue } from "./providers/fal";
 import { submitKieTask } from "./providers/kie";
 import { generateWithWaveSpeed } from "./providers/wavespeed";
 import { generateWithOpenAI } from "./providers/openai";
+import { generateWithOpenAIOAuth } from "./providers/openaiOAuth";
 import { buildMediaResponse } from "./shared";
-
 export const maxDuration = 600; // 10 minute timeout for video generation polling
 export const dynamic = 'force-dynamic'; // Ensure this route is always dynamic
 
@@ -107,9 +107,13 @@ export async function POST(request: NextRequest) {
     const provider: ProviderType = selectedModel?.provider || "gemini";
     console.log(`[API:${requestId}] Provider: ${provider}, Model: ${selectedModel?.modelId || model}`);
 
-    // CRB-03: structured reference inputs are validated against the entry's
-    // declared capabilities BEFORE any provider call. Gaps return every
-    // actionable message; inputs are never truncated or silently degraded.
+    // CRB-03: capability checks run against the complete input set the
+    // adapters are about to send — never the structured subset alone.
+    // Structured `references` win when present; otherwise legacy flat
+    // `images` to a contract entry (gemini/openai) are losslessly mapped so
+    // over-count, oversize, and remote-URL inputs cannot bypass via the old
+    // field. Non-contract providers keep their schema-driven legacy behavior;
+    // structured references to them still fail closed inside checkReferenceGaps.
     let references: ReferenceInput[];
     try {
       references = normalizeReferences(rawReferences);
@@ -126,11 +130,25 @@ export async function POST(request: NextRequest) {
       );
     }
     const entryModelId = selectedModel?.modelId || model;
-    const capabilityGaps = checkReferenceGaps(
-      imageCapabilities(provider, entryModelId),
-      { references, mask, prompt: prompt || undefined },
-      { provider, modelId: entryModelId }
-    );
+    const declaredCapabilities = imageCapabilities(provider, entryModelId);
+    const referencesForCheck =
+      provider === "gemini" || provider === "openai"
+        ? effectiveReferences(references, images)
+        : references;
+    // Entry-level fail-closed: an unknown gemini/openai model never inherits
+    // a provider-wide default, even for text-only requests.
+    const unknownContractEntry =
+      (provider === "gemini" || provider === "openai") && declaredCapabilities === null;
+    const capabilityGaps = unknownContractEntry
+      ? [{
+          kind: "capability-undeclared" as const,
+          message: `${provider}/${entryModelId} has no declared reference capability. Choose an approved image entry (for example Gemini nano-banana or OpenAI gpt-image) or send plain input images.`,
+        }]
+      : checkReferenceGaps(
+          declaredCapabilities,
+          { references: referencesForCheck, mask, prompt: prompt || undefined },
+          { provider, modelId: entryModelId }
+        );
     if (capabilityGaps.length > 0) {
       console.log(`[API:${requestId}] Capability gaps: ${capabilityGaps.map((g) => g.kind).join(", ")}`);
       return NextResponse.json<GenerateResponse>(
@@ -138,7 +156,6 @@ export async function POST(request: NextRequest) {
         { status: 422 }
       );
     }
-
 
     // Route to appropriate provider
     if (provider === "replicate") {
@@ -469,9 +486,15 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // User-provided key takes precedence over env variable
+      // Two mutually exclusive transports: the API-key entry and the
+      // OAuth-experimental entry. Presence of the experimental token header
+      // selects the OAuth adapter; it never falls back to the API-key
+      // endpoint, and the API-key path never claims an OAuth success.
+      const oauthToken = request.headers.get("X-OpenAI-OAuth-Token");
       const openaiApiKey = request.headers.get("X-OpenAI-API-Key") || process.env.OPENAI_API_KEY;
-      if (!openaiApiKey) {
+      if (oauthToken) {
+        console.log(`[API:${requestId}] OpenAI auth channel: oauth-experimental`);
+      } else if (!openaiApiKey) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
@@ -479,6 +502,8 @@ export async function POST(request: NextRequest) {
           },
           { status: 401 }
         );
+      } else {
+        console.log(`[API:${requestId}] OpenAI auth channel: api-key`);
       }
 
       // Keep Data URIs as-is since localhost URLs won't work
@@ -518,7 +543,9 @@ export async function POST(request: NextRequest) {
         dynamicInputs: processedDynamicInputs,
       };
 
-      const result = await generateWithOpenAI(requestId, openaiApiKey, genInput);
+      const result = oauthToken
+        ? await generateWithOpenAIOAuth(requestId, oauthToken, genInput)
+        : await generateWithOpenAI(requestId, openaiApiKey!, genInput);
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(

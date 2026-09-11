@@ -384,4 +384,78 @@ describe("executeNanoBanana", () => {
     expect((stampCall![1] as Record<string, unknown>).__fallbackModelUsed).toBe("Flux Dev");
     expect((stampCall![1] as Record<string, unknown>).__primaryError).toBe("Primary boom");
   });
+
+  it("sends canonical references with positional purposes and records them on success", async () => {
+    const node = makeNode();
+    const ctx = makeCtx(node, {
+      getConnectedInputs: vi.fn().mockReturnValue({
+        images: ["data:image/png;base64,one", "data:image/png;base64,two", "data:image/png;base64,three"],
+        videos: [],
+        audio: [],
+        text: "keep the front view",
+        dynamicInputs: {},
+        easeCurve: null,
+      }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ success: true, image: "data:image/png;base64,result" }),
+    });
+
+    await executeNanoBanana(ctx);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.prompt).toBe("keep the front view");
+    expect(body.references).toEqual([
+      { image: "data:image/png;base64,one", purpose: "target" },
+      { image: "data:image/png;base64,two", purpose: "retained-view" },
+      { image: "data:image/png;base64,three", purpose: "auxiliary" },
+    ]);
+    // Legacy images stay for backward compatibility; references are canonical.
+    expect(body.images).toEqual([
+      "data:image/png;base64,one",
+      "data:image/png;base64,two",
+      "data:image/png;base64,three",
+    ]);
+
+    const calls = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls;
+    const completeCall = calls.find(
+      (c: unknown[]) => (c[1] as Record<string, unknown>).status === "complete"
+    );
+    const lastCall = (completeCall![1] as Record<string, unknown>).lastCall as Record<string, unknown>;
+    expect(lastCall.referenceCount).toBe(3);
+    expect(lastCall.purposes).toEqual(["target", "retained-view", "auxiliary"]);
+    expect(lastCall.auth).toBe("api-key");
+    expect(lastCall.stage).toBe("succeeded");
+    expect(lastCall.hasMask).toBe(false);
+  });
+
+  it("records failed submissions as failed without claiming success", async () => {
+    const node = makeNode();
+    const ctx = makeCtx(node, {
+      getConnectedInputs: vi.fn().mockReturnValue({
+        images: ["data:image/png;base64,one"],
+        videos: [],
+        audio: [],
+        text: "prompt",
+        dynamicInputs: {},
+        easeCurve: null,
+      }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      text: () => Promise.resolve(JSON.stringify({ success: false, error: "Capability gaps must be resolved before submission" })),
+    });
+
+    await expect(executeNanoBanana(ctx)).rejects.toThrow();
+    const calls = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls;
+    const errorCall = calls.find(
+      (c: unknown[]) => (c[1] as Record<string, unknown>).status === "error"
+    );
+    const lastCall = (errorCall![1] as Record<string, unknown>).lastCall as Record<string, unknown>;
+    expect(lastCall.stage).toBe("failed");
+    expect(lastCall.referenceCount).toBe(1);
+    expect(lastCall.purposes).toEqual(["target"]);
+  });
 });

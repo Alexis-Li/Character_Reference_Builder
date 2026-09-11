@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 import { generateWithOpenAI } from "../providers/openai";
+import { generateWithOpenAIOAuth, OAUTH_EXPERIMENTAL_ENDPOINT } from "../providers/openaiOAuth";
 import { generateWithGemini } from "../providers/gemini";
 import {
   checkReferenceGaps,
@@ -17,17 +18,23 @@ import {
   normalizeReferences,
   estimateImageBytes,
   resolveGenerationModel,
+  toReferenceInputs,
+  effectiveReferences,
   type ReferenceInput,
   type ProviderCallRecord,
 } from "@/lib/providers/imageCapabilities";
 import { POST } from "../route";
 import type { GenerationInput } from "@/lib/providers/types";
 
+const { mockGenerateContent } = vi.hoisted(() => {
+  const mockGenerateContent = vi.fn();
+  return { mockGenerateContent };
+});
+
 vi.mock("@google/genai", () => ({
   GoogleGenAI: class {
-    models = { generateContent: vi.fn().mockResolvedValue({
-      candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "cm93" } }] } }],
-    }) };
+    models = { generateContent: mockGenerateContent };
+    constructor(_config: unknown) {}
   },
 }));
 
@@ -47,18 +54,23 @@ function input(overrides: Partial<GenerationInput> = {}): GenerationInput {
   };
 }
 
-function formDataImages(body: FormData): string[] {
-  return [...body.getAll("image")].map((entry) => {
-    const blob = entry as File;
-    return `${blob.name}:${(blob as unknown as { type: string }).type}`;
-  });
+function canonicalReferences(): ReferenceInput[] {
+  return [
+    { image: original, purpose: "target" },
+    { image: front, purpose: "retained-view" },
+    { image: back, purpose: "auxiliary" },
+  ];
 }
 
-function postRequest(body: Record<string, unknown>, envKey?: string): NextRequest {
+function postRequest(
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+  envKey?: string
+): NextRequest {
   if (envKey) process.env[envKey] = "test-key-not-real";
   return {
     json: vi.fn().mockResolvedValue(body),
-    headers: new Headers({}),
+    headers: new Headers(headers),
   } as unknown as NextRequest;
 }
 
@@ -67,17 +79,17 @@ beforeEach(() => {
   fetchMock.mockReset();
   fetchMock.mockImplementation(async () => { throw new Error("Unexpected mock request"); });
   vi.stubGlobal("fetch", fetchMock);
+  mockGenerateContent.mockReset();
+  mockGenerateContent.mockResolvedValue({
+    candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/png", data: "cmVzdWx0" } }] } }],
+  });
   delete process.env.OPENAI_API_KEY;
   delete process.env.GEMINI_API_KEY;
 });
 
 describe("reference input contract", () => {
   it("keeps purpose and order through normalizeReferences", () => {
-    const references: ReferenceInput[] = [
-      { image: original, purpose: "target" },
-      { image: front, purpose: "retained-view" },
-      { image: back, purpose: "auxiliary" },
-    ];
+    const references: ReferenceInput[] = canonicalReferences();
     expect(normalizeReferences(references)).toEqual(references);
     expect(normalizeReferences(undefined)).toEqual([]);
   });
@@ -93,6 +105,28 @@ describe("reference input contract", () => {
     expect(estimateImageBytes(url)).toBe(url.length);
     expect(estimateImageBytes("https://example.com/a.png")).toBeNull();
     expect(estimateImageBytes("")).toBeNull();
+  });
+
+  it("assigns canonical positional purposes to flat executor images", () => {
+    expect(toReferenceInputs([])).toEqual([]);
+    expect(toReferenceInputs([original])).toEqual([{ image: original, purpose: "target" }]);
+    expect(toReferenceInputs([original, front, back])).toEqual(canonicalReferences());
+    expect(toReferenceInputs([original, front, back, original]).map((r) => r.purpose)).toEqual([
+      "target",
+      "retained-view",
+      "auxiliary",
+      "auxiliary",
+    ]);
+  });
+
+  it("prefers structured references and losslessly maps legacy images", () => {
+    const structured = canonicalReferences();
+    expect(effectiveReferences(structured, [original])).toEqual(structured);
+    expect(effectiveReferences([], [original, front])).toEqual([
+      { image: original },
+      { image: front },
+    ]);
+    expect(effectiveReferences([], [])).toEqual([]);
   });
 });
 
@@ -111,21 +145,15 @@ describe("second compatible entry: OpenAI adapter forwards every reference (P04)
     const entries = [...body.getAll("image")];
     expect(entries).toHaveLength(2);
     const names = entries.map((e) => (e as File).name);
-    expect(names[0]).toBe("1-target.png");
-    expect(names[1]).toBe("2-retained-view.png");
-    // First image is the target, not the retained view: order preserved.
     expect(names).toEqual(["1-target.png", "2-retained-view.png"]);
+    expect(body.get("prompt")).toBe("Revise the back plate while preserving the retained front view");
   });
 
   it("sends three references with distinct purposes in fixed order", async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
     await generateWithOpenAI("t3", "dummy-not-a-key", input({
       images: [original, front, back],
-      references: [
-        { image: original, purpose: "target" },
-        { image: front, purpose: "retained-view" },
-        { image: back, purpose: "auxiliary" },
-      ],
+      references: canonicalReferences(),
     }));
     const body = fetchMock.mock.calls[0][1].body as FormData;
     const names = [...body.getAll("image")].map((e) => (e as File).name);
@@ -142,80 +170,122 @@ describe("second compatible entry: OpenAI adapter forwards every reference (P04)
 });
 
 describe("first approved entry: Gemini adapter forwards every reference", () => {
-  it("builds one inline part per reference in fixed order", async () => {
-    fetchMock.mockImplementation(async () => { throw new Error("Gemini uses SDK, not fetch"); });
+  it("builds one inline part per reference in fixed order with prompt first", async () => {
+    const prompt = "Revise back, keep front; keep the waistband width";
     const response = await generateWithGemini(
-      "g1", "dummy-not-a-key", "Revise back, keep front", [], "nano-banana-pro",
+      "g1", "dummy-not-a-key", prompt, [], "nano-banana-pro",
       undefined, undefined, false, false,
-      [
-        { image: original, purpose: "target" },
-        { image: front, purpose: "retained-view" },
-        { image: back, purpose: "auxiliary" },
-      ],
+      canonicalReferences(),
     );
     const data = await response.json();
     expect(data.success).toBe(true);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+    const call = mockGenerateContent.mock.calls[0][0];
+    const parts = call.contents[0].parts;
+    expect(parts[0]).toEqual({ text: prompt });
+    expect(parts).toHaveLength(4);
+    const payloads = parts.slice(1).map((p: { inlineData: { data: string } }) => p.inlineData.data);
+    expect(payloads).toEqual(
+      canonicalReferences().map((r) => r.image.split("base64,")[1])
+    );
   });
 
-  it("appends the mask as the final image part only when provided", async () => {
-    fetchMock.mockImplementation(async () => { throw new Error("Gemini uses SDK, not fetch"); });
+  it("ignores a directly passed mask instead of sending it as another image", async () => {
     await generateWithGemini(
-      "g2", "dummy-not-a-key", "Fill occluded region", [original], "nano-banana-pro",
-      undefined, undefined, false, false, [{ image: original, purpose: "target" }], image("mask-bytes"),
+      "g2", "dummy-not-a-key", "Fill occluded region", [], "nano-banana-pro",
+      undefined, undefined, false, false,
+      [{ image: original, purpose: "target" }],
+      image("mask-bytes"),
     );
-    expect(true).toBe(true); // covered via mock assertions below
+    const parts = mockGenerateContent.mock.calls[0][0].contents[0].parts;
+    // Prompt + exactly one reference; the mask is not appended as an image part.
+    expect(parts).toHaveLength(2);
+  });
+
+  it("normalizes the same canonical request to the same output semantics as OpenAI", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
+    const canonical = input({ images: [], references: canonicalReferences() });
+    const openaiResult = await generateWithOpenAI("parity-oai", "dummy-not-a-key", canonical);
+    expect(openaiResult.success).toBe(true);
+    expect(openaiResult.outputs?.[0].data).toBe("data:image/png;base64,cmVzdWx0");
+
+    const geminiResponse = await generateWithGemini(
+      "parity-gem", "dummy-not-a-key", canonical.prompt, [], "nano-banana-pro",
+      undefined, undefined, false, false, canonicalReferences(),
+    );
+    const geminiData = await geminiResponse.json();
+    expect(geminiData.success).toBe(true);
+    expect(geminiData.image).toBe("data:image/png;base64,cmVzdWx0");
+
+    // Both adapters saw every reference in the same fixed order.
+    const openaiBody = fetchMock.mock.calls[0][1].body as FormData;
+    expect([...openaiBody.getAll("image")].map((e) => (e as File).name)).toEqual([
+      "1-target.png",
+      "2-retained-view.png",
+      "3-auxiliary.png",
+    ]);
+    const geminiParts = mockGenerateContent.mock.calls[0][0].contents[0].parts;
+    expect(geminiParts).toHaveLength(4);
   });
 });
 
 describe("pre-submit capability gaps", () => {
-  const gemini = imageCapabilities("gemini")!;
-  const openai = imageCapabilities("openai")!;
+  const gemini = imageCapabilities("gemini", "nano-banana-pro")!;
+  const openai = imageCapabilities("openai", "gpt-image-1")!;
   const bigImage = `data:image/png;base64,${"A".repeat(8 * 1024 * 1024)}`;
 
-  it("declares capabilities for both approved entries", () => {
+  it("declares entry-level capabilities and fails closed for unknown models", () => {
     expect(gemini.multiReference).toBe(true);
     expect(gemini.maxReferenceImages).toBe(3);
     expect(openai.multiReference).toBe(true);
     expect(openai.maxReferenceImages).toBe(4);
     expect(openai.mask).toBe(true);
     expect(gemini.mask).toBe(false);
+    expect(imageCapabilities("gemini", "no-such-model")).toBeNull();
+    expect(imageCapabilities("openai", "no-such-model")).toBeNull();
+    expect(imageCapabilities("gemini")).toBeNull();
   });
 
   it("returns no gaps for a compatible three-reference request", () => {
     expect(checkReferenceGaps(gemini, {
-      references: [
-        { image: original, purpose: "target" },
-        { image: front, purpose: "retained-view" },
-        { image: back, purpose: "auxiliary" },
-      ],
+      references: canonicalReferences(),
       prompt: "revise",
     }, { provider: "gemini", modelId: "nano-banana-pro" })).toEqual([]);
   });
 
   it("flags reference count overflow without truncation", () => {
     const refs = Array.from({ length: 5 }, () => ({ image: original, purpose: "auxiliary" as const }));
-    const gaps = checkReferenceGaps(gemini, { references: refs }, { provider: "gemini" });
+    const gaps = checkReferenceGaps(gemini, { references: refs }, { provider: "gemini", modelId: "nano-banana-pro" });
     expect(gaps.map((g) => g.kind)).toEqual(["reference-count"]);
     expect(gaps[0].message).toContain("never truncated");
   });
 
   it("flags per-image size overflow with actionable message", () => {
-    const gaps = checkReferenceGaps(gemini, { references: [{ image: bigImage, purpose: "target" }] }, { provider: "gemini" });
+    const gaps = checkReferenceGaps(gemini, { references: [{ image: bigImage, purpose: "target" }] }, { provider: "gemini", modelId: "nano-banana-pro" });
     expect(gaps.map((g) => g.kind)).toEqual(["image-size"]);
     expect(gaps[0].message).toContain("Compress");
   });
 
+  it("flags remote URLs whose size cannot be verified locally", () => {
+    const gaps = checkReferenceGaps(
+      gemini,
+      { references: [{ image: "https://example.com/a.png", purpose: "target" }] },
+      { provider: "gemini", modelId: "nano-banana-pro" }
+    );
+    expect(gaps.map((g) => g.kind)).toEqual(["image-size"]);
+    expect(gaps[0].message).toContain("cannot be verified");
+  });
+
   it("flags combined request size overflow when several images add up", () => {
     const medium = `data:image/png;base64,${"A".repeat(9 * 1024 * 1024)}`;
-    const gaps = checkReferenceGaps(gemini, { references: [{ image: medium }, { image: medium }, { image: medium }] }, { provider: "gemini" });
+    const gaps = checkReferenceGaps(gemini, { references: [{ image: medium }, { image: medium }, { image: medium }] }, { provider: "gemini", modelId: "nano-banana-pro" });
     expect(gaps.map((g) => g.kind)).toContain("request-size");
   });
 
-
   it("flags mask on a mask-less entry and accepts it on OpenAI", () => {
-    const geminiGaps = checkReferenceGaps(gemini, { references: [{ image: original }], mask: image("m") }, { provider: "gemini" });
+    const geminiGaps = checkReferenceGaps(gemini, { references: [{ image: original }], mask: image("m") }, { provider: "gemini", modelId: "nano-banana-pro" });
     expect(geminiGaps.map((g) => g.kind)).toEqual(["mask-unsupported"]);
-    expect(checkReferenceGaps(openai, { references: [{ image: original }], mask: image("m") }, { provider: "openai" })).toEqual([]);
+    expect(checkReferenceGaps(openai, { references: [{ image: original }], mask: image("m") }, { provider: "openai", modelId: "gpt-image-1" })).toEqual([]);
   });
 
   it("fails closed when an undeclared entry receives structured references", () => {
@@ -230,13 +300,70 @@ describe("pre-submit capability gaps", () => {
       prompt: "test",
       selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
       references: refs,
-    }, "GEMINI_API_KEY"));
+    }, {}, "GEMINI_API_KEY"));
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.success).toBe(false);
     expect(data.gaps).toHaveLength(1);
     expect(data.gaps[0].kind).toBe("reference-count");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it("route checks legacy flat images against the same entry limits", async () => {
+    const refs = Array.from({ length: 5 }, (_, i) => image(`legacy-${i}`));
+    const response = await POST(postRequest({
+      prompt: "legacy over-count",
+      images: refs,
+      selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
+    }, {}, "GEMINI_API_KEY"));
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gaps.map((g: { kind: string }) => g.kind)).toEqual(["reference-count"]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it("route rejects legacy oversize images before submission", async () => {
+    const response = await POST(postRequest({
+      prompt: "legacy oversize",
+      images: [bigImage],
+      selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
+    }, {}, "GEMINI_API_KEY"));
+    expect(response.status).toBe(422);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it("route rejects remote-URL references whose size cannot be verified", async () => {
+    const response = await POST(postRequest({
+      prompt: "remote url",
+      references: [{ image: "https://example.com/a.png", purpose: "target" }],
+      selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT" },
+    }, {}, "OPENAI_API_KEY"));
+    expect(response.status).toBe(422);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("route rejects unknown contract models without inheriting provider defaults", async () => {
+    const response = await POST(postRequest({
+      prompt: "unknown model",
+      selectedModel: { provider: "gemini", modelId: "no-such-model", displayName: "Unknown" },
+    }, {}, "GEMINI_API_KEY"));
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.gaps.map((g: { kind: string }) => g.kind)).toEqual(["capability-undeclared"]);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
+  });
+
+  it("route rejects a Gemini mask before any provider call", async () => {
+    const response = await POST(postRequest({
+      prompt: "mask on gemini",
+      references: [{ image: original, purpose: "target" }],
+      mask: image("m"),
+      selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
+    }, {}, "GEMINI_API_KEY"));
+    expect(response.status).toBe(422);
+    expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 
   it("route forwards references and mask to the OpenAI entry in fixed order", async () => {
@@ -244,19 +371,16 @@ describe("pre-submit capability gaps", () => {
     const response = await POST(postRequest({
       prompt: "swap the back plate",
       selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT Image" },
-      references: [
-        { image: original, purpose: "target" },
-        { image: front, purpose: "retained-view" },
-        { image: back, purpose: "auxiliary" },
-      ],
+      references: canonicalReferences(),
       mask: image("mask-bytes"),
-    }, "OPENAI_API_KEY"));
+    }, {}, "OPENAI_API_KEY"));
     expect(response.status).toBe(200);
     const body = fetchMock.mock.calls[0][1].body as FormData;
     const names = [...body.getAll("image")].map((e) => (e as File).name);
     expect(names).toEqual(["1-target.png", "2-retained-view.png", "3-auxiliary.png"]);
     // The mask rides in its own multipart field, never in image[].
     expect((body.get("mask") as File).name).toBe("mask.png");
+    expect(body.get("prompt")).toBe("swap the back plate");
   });
 });
 
@@ -272,18 +396,65 @@ describe("model resolution layers", () => {
 });
 
 describe("credential and auth-channel separation", () => {
-  it("call records carry exactly one auth channel and never mix OAuth with API paths", () => {
-    const apiKeyRecord: ProviderCallRecord = {
-      at: Date.now(), provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro",
-      resolvedFrom: "project-default", declared: true, referenceCount: 2, purposes: null,
-      auth: "api-key",
+  it("drives the API-key and OAuth-experimental transports on separate paths", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
+    const apiResult = await generateWithOpenAI("api-path", "sk-not-a-real-key", input({
+      references: canonicalReferences(),
+      mask: image("mask-bytes"),
+    }));
+    expect(apiResult.success).toBe(true);
+    const apiCall = fetchMock.mock.calls[0];
+    expect(apiCall[0]).toBe("https://api.openai.com/v1/images/edits");
+    expect(apiCall[1].headers).toMatchObject({ Authorization: "Bearer sk-not-a-real-key" });
+
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
+    const oauthResult = await generateWithOpenAIOAuth("oauth-path", "oauth-token-not-real", input({
+      references: canonicalReferences(),
+      mask: image("mask-bytes"),
+    }));
+    expect(oauthResult.success).toBe(true);
+    const oauthCall = fetchMock.mock.calls[1];
+    expect(oauthCall[0]).toBe(OAUTH_EXPERIMENTAL_ENDPOINT);
+    expect(oauthCall[0]).not.toBe("https://api.openai.com/v1/images/edits");
+    expect(oauthCall[1].headers).toMatchObject({
+      Authorization: "Bearer oauth-token-not-real",
+      "X-Experimental-Transport": "codex-oauth",
+    });
+
+    // Same business input, same fixed order, same normalized output shape.
+    for (const call of [apiCall, oauthCall]) {
+      const names = [...(call[1].body as FormData).getAll("image")].map((e) => (e as File).name);
+      expect(names).toEqual(["1-target.png", "2-retained-view.png", "3-auxiliary.png"]);
+      expect(((call[1].body as FormData).get("mask") as File).name).toBe("mask.png");
+    }
+    expect(apiResult.outputs?.[0].data).toBe(oauthResult.outputs?.[0].data);
+
+    // Records on the two channels can never impersonate each other.
+    const apiRecord: ProviderCallRecord = {
+      at: Date.now(), provider: "openai", modelId: "gpt-image-1", displayName: "GPT",
+      resolvedFrom: "node-override", declared: true, referenceCount: 3,
+      purposes: ["target", "retained-view", "auxiliary"], hasMask: true,
+      auth: "api-key", stage: "succeeded",
     };
-    const oauthRecord: ProviderCallRecord = {
-      ...apiKeyRecord, auth: "oauth-experimental",
+    const oauthRecord: ProviderCallRecord = { ...apiRecord, auth: "oauth-experimental" };
+    expect(apiRecord.auth).not.toBe(oauthRecord.auth);
+  });
+
+  it("route selects the OAuth adapter only with the experimental token header", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
+    const body = {
+      prompt: "oauth route",
+      selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT" },
+      references: canonicalReferences(),
     };
-    // The two channels are distinct values; neither can be presented as the other.
-    expect(apiKeyRecord.auth).not.toBe(oauthRecord.auth);
-    expect(["api-key", "oauth-experimental"]).toContain(apiKeyRecord.auth);
+    const oauthResponse = await POST(postRequest(body, { "X-OpenAI-OAuth-Token": "oauth-token-not-real" }));
+    expect(oauthResponse.status).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toBe(OAUTH_EXPERIMENTAL_ENDPOINT);
+
+    fetchMock.mockClear();
+    const apiResponse = await POST(postRequest(body, { "X-OpenAI-API-Key": "sk-not-a-real-key" }));
+    expect(apiResponse.status).toBe(200);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.openai.com/v1/images/edits");
   });
 
   it("logged request evidence never contains the API key", async () => {

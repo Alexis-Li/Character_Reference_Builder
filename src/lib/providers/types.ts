@@ -12,12 +12,15 @@ export {
   type ModelResolutionSource,
   type ModelResolution,
   type ProviderAuthChannel,
+  type ProviderCallStage,
   type ProviderCallRecord,
   imageCapabilities,
   estimateImageBytes,
   checkReferenceGaps,
   normalizeReferences,
   resolveGenerationModel,
+  toReferenceInputs,
+  effectiveReferences,
 } from "./imageCapabilities";
 
 /**
