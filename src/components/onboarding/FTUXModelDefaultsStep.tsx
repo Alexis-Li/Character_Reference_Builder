@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { FTUXStepProps } from "@/types/ftux";
 import { NodeDefaultsConfig } from "@/types";
 import { ModelSearchDialog } from "@/components/modals/ModelSearchDialog";
+import { MINIMUM_LOOP_FTUX_PROVIDERS } from "@/config/minimumLoop";
 import { ProviderModel } from "@/lib/providers/types";
 import { loadNodeDefaults, saveNodeDefaults } from "@/store/utils/localStorage";
 
@@ -142,6 +143,8 @@ export function FTUXModelDefaultsStep({}: FTUXStepProps) {
             setShowImageDialog(false);
           }}
           initialCapabilityFilter="image"
+          fixedCapabilityFilter="image"
+          allowedProviders={MINIMUM_LOOP_FTUX_PROVIDERS}
         />
       )}
     </div>

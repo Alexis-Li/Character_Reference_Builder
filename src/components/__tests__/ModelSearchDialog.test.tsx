@@ -765,4 +765,66 @@ describe("ModelSearchDialog", () => {
       });
     });
   });
+
+  describe("allowedProviders", () => {
+    const allowedProviders = new Set(["gemini", "fal"] as const);
+
+    function renderAllowedDialog(recentModels: unknown[] = []) {
+      mockUseWorkflowStore.mockImplementation((selector) => {
+        const state = {
+          providerSettings: defaultProviderSettings,
+          addNode: mockAddNode,
+          incrementModalCount: mockIncrementModalCount,
+          decrementModalCount: mockDecrementModalCount,
+          recentModels,
+          trackModelUsage: mockTrackModelUsage,
+        };
+        return selector(state);
+      });
+      render(
+        <TestWrapper>
+          <ModelSearchDialog
+            isOpen={true}
+            onClose={vi.fn()}
+            initialCapabilityFilter="image"
+            fixedCapabilityFilter="image"
+            allowedProviders={allowedProviders as unknown as Set<"gemini" | "fal">}
+          />
+        </TestWrapper>
+      );
+    }
+
+    it("sends the providers allowlist and hides excluded provider buttons", async () => {
+      renderAllowedDialog();
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalled();
+        const fetchCall = mockFetch.mock.calls[0][0] as string;
+        expect(fetchCall).toContain("providers=");
+        expect(fetchCall).toContain("gemini");
+        expect(fetchCall).toContain("fal");
+      });
+
+      // Excluded providers stay hidden even though replicate has a key configured
+      expect(screen.queryByTitle("Replicate")).not.toBeInTheDocument();
+    });
+
+    it("lists only allowed providers and locks capability to image", async () => {
+      renderAllowedDialog([
+        { provider: "replicate", modelId: "stability-ai/sdxl", displayName: "SDXL", timestamp: Date.now() },
+        { provider: "fal", modelId: "flux/dev", displayName: "FLUX.1 Dev", timestamp: Date.now() },
+      ]);
+
+      await waitFor(() => {
+        // Allowed recent stays visible alongside the matching result row.
+        expect(screen.getAllByText("FLUX.1 Dev")).toHaveLength(2);
+      });
+
+      // Excluded-provider models and recents never surface
+      expect(screen.queryByText("SDXL")).not.toBeInTheDocument();
+      const capabilitySelect = screen.getByDisplayValue("Image") as HTMLSelectElement;
+      expect(capabilitySelect).toBeDisabled();
+      expect(capabilitySelect.querySelectorAll("option")).toHaveLength(1);
+    });
+  });
 });

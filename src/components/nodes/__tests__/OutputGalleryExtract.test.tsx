@@ -45,6 +45,7 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 
 describe("OutputGalleryNode minimum-loop extract", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockUseWorkflowStore.mockImplementation((selector) =>
       selector({
         updateNodeData: vi.fn(),
@@ -69,6 +70,7 @@ describe("OutputGalleryNode minimum-loop extract", () => {
       <TestWrapper>
         <OutputGalleryNode
           id="gallery-1"
+          type="outputGallery"
           selected={false}
           data={{
             images: ["data:image/png;base64,aaa", "data:image/png;base64,bbb"],
@@ -89,5 +91,42 @@ describe("OutputGalleryNode minimum-loop extract", () => {
       expect.anything(),
       expect.anything()
     );
+  });
+
+  it("blank gallery shows image-only affordances", () => {
+    render(
+      <TestWrapper>
+        <OutputGalleryNode
+          id="gallery-1"
+          type="outputGallery"
+          selected={false}
+          data={{ images: [], videos: [] } as never}
+        />
+      </TestWrapper>
+    );
+
+    expect(
+      screen.getByText("Connect image nodes to view gallery")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Video")).not.toBeInTheDocument();
+    expect(screen.queryByText("Extract")).not.toBeInTheDocument();
+  });
+
+  it("legacy videos stay view-only without video handles or extract", () => {
+    render(
+      <TestWrapper>
+        <OutputGalleryNode
+          id="gallery-1"
+          type="outputGallery"
+          selected={false}
+          data={{ images: [], videos: ["data:video/mp4;base64,ccc"] } as never}
+        />
+      </TestWrapper>
+    );
+
+    expect(screen.getByText("Legacy")).toBeInTheDocument();
+    expect(screen.queryByText("Video")).not.toBeInTheDocument();
+    expect(screen.queryByText("Extract")).not.toBeInTheDocument();
+    expect(mockAddNode).not.toHaveBeenCalled();
   });
 });

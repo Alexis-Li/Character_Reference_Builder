@@ -966,4 +966,41 @@ describe("/api/models route", () => {
       expect(data.models.find((m: { id: string }) => m.id === "obscure/flux-rare")).toBeDefined();
     });
   });
+
+  describe("providers allowlist", () => {
+    it("GET: narrows fetching and results to the requested providers", async () => {
+      process.env.FAL_API_KEY = "test-fal-key";
+      process.env.REPLICATE_API_KEY = "test-replicate-key";
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes("replicate.com")) {
+          return Promise.resolve(
+            createReplicateResponse([
+              { owner: "stability-ai", name: "sdxl", description: "SDXL model" },
+            ])
+          );
+        }
+        if (url.includes("fal.ai") || url.includes("fal.ai")) {
+          return Promise.resolve(
+            createFalResponse([
+              { id: "fal-ai/flux", name: "Flux", category: "text-to-image" },
+            ])
+          );
+        }
+        return Promise.reject(new Error(`Unknown URL ${url}`));
+      });
+
+      const request = createMockGetRequest({ providers: "gemini,fal" });
+      const response = await GET(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      // Replicate is never fetched despite its key being configured
+      expect(mockFetch.mock.calls.some((call: unknown[]) => String(call[0]).includes("replicate.com"))).toBe(false);
+      expect(data.models.every((m: { provider: string }) => m.provider === "gemini" || m.provider === "fal")).toBe(true);
+      expect(data.availableProviders).toEqual(expect.arrayContaining(["gemini", "fal"]));
+      expect(data.availableProviders).not.toContain("replicate");
+      expect(data.providers.replicate).toBeUndefined();
+    });
+  });
 });

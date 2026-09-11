@@ -57,6 +57,10 @@ export function OutputGalleryNode({ id, data, selected }: NodeProps<OutputGaller
     ];
     return media;
   }, [nodeData.images, nodeData.videos]);
+  // Legacy videos from older workflows stay view-only: no video handle, no
+  // video creation, only a marked read-only tile.
+  const legacyVideoCount = nodeData.videos?.length ?? 0;
+  const imageCount = nodeData.images?.length ?? 0;
 
   // Extract poster-frame thumbnails for video tiles once, instead of mounting N
   // live <video> decoders. Data-URL video sources force Chrome to continuously
@@ -316,41 +320,36 @@ export function OutputGalleryNode({ id, data, selected }: NodeProps<OutputGaller
           position={Position.Left}
           id="image"
           data-handletype="image"
-          style={{ top: "40%" }}
+          style={{ top: "50%" }}
         />
-        <HandleLabel label="Image" side="target" color="rgb(59, 130, 246)" top="calc(40% - 18px)" visible={showLabels} />
-
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="video"
-          data-handletype="video"
-          style={{ top: "60%" }}
-        />
-        <HandleLabel label="Video" side="target" color="var(--handle-color-video)" top="calc(60% - 18px)" visible={showLabels} />
+        <HandleLabel label="Image" side="target" color="rgb(59, 130, 246)" top="calc(50% - 18px)" visible={showLabels} />
 
         {displayMedia.length > 0 && (
           <div className="flex items-center justify-between px-2 py-1">
             <span className="text-neutral-400 text-[10px]">
-              {displayMedia.length} {displayMedia.length === 1 ? "item" : "items"}
+              {legacyVideoCount > 0
+                ? `${imageCount} ${imageCount === 1 ? "image" : "images"} · ${legacyVideoCount} legacy`
+                : `${imageCount} ${imageCount === 1 ? "image" : "images"}`}
             </span>
-            <button
-              onClick={handleExtractToInputNodes}
-              className="nodrag nopan flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-white hover:bg-neutral-700 rounded transition-colors"
-              title="Extract each item as an input node"
-            >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
-              </svg>
-              Extract
-            </button>
+            {imageCount > 0 && (
+              <button
+                onClick={handleExtractToInputNodes}
+                className="nodrag nopan flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-neutral-400 hover:text-white hover:bg-neutral-700 rounded transition-colors"
+                title="Extract each image as an input node"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                </svg>
+                Extract
+              </button>
+            )}
           </div>
         )}
 
         {displayMedia.length === 0 ? (
           <div className="w-full flex-1 min-h-[200px] border border-dashed border-neutral-600 rounded flex items-center justify-center">
             <span className="text-neutral-500 text-[10px] text-center px-4">
-              Connect image or video nodes to view gallery
+              Connect image nodes to view gallery
             </span>
           </div>
         ) : (
@@ -380,6 +379,9 @@ export function OutputGalleryNode({ id, data, selected }: NodeProps<OutputGaller
                           <path d="M8 5v14l11-7z" />
                         </svg>
                       </div>
+                      <span className="absolute bottom-1 left-1 px-1 py-px text-[9px] text-neutral-300 bg-black/60 rounded">
+                        Legacy
+                      </span>
                     </>
                   ) : (
                     <AdaptiveGalleryThumbnail src={item.src} alt={`Image ${idx + 1}`} nodeId={id} />

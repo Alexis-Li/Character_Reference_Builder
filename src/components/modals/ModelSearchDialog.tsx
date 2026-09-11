@@ -160,6 +160,10 @@ interface ModelSearchDialogProps {
   onModelSelected?: (model: ProviderModel) => void;
   /** Initial capability filter - 'image' for image nodes, 'video' for video nodes */
   initialCapabilityFilter?: CapabilityFilter;
+  /** When set, only these providers are requested, listed, and selectable */
+  allowedProviders?: ReadonlySet<ProviderType> | readonly ProviderType[];
+  /** When set, the capability filter is locked and the select is disabled */
+  fixedCapabilityFilter?: CapabilityFilter;
   /** Show a "Remove fallback" row above the results list (fallback-selection mode) */
   showClearOption?: boolean;
   /** Callback when the "Remove fallback" row is clicked */
@@ -174,10 +178,21 @@ export function ModelSearchDialog({
   initialProvider,
   onModelSelected,
   initialCapabilityFilter,
+  allowedProviders,
+  fixedCapabilityFilter,
   showClearOption,
   onClearSelection,
   title = "Browse Models",
 }: ModelSearchDialogProps) {
+  const allowedProviderSet = useMemo(
+    () => (allowedProviders ? new Set<ProviderType>(allowedProviders) : null),
+    [allowedProviders]
+  );
+  const allowedProvidersKey = useMemo(
+    () =>
+      allowedProviderSet ? [...allowedProviderSet].sort().join(",") : "",
+    [allowedProviderSet]
+  );
   const {
     addNode,
     incrementModalCount,
@@ -196,7 +211,7 @@ export function ModelSearchDialog({
     initialProvider || "all"
   );
   const [capabilityFilter, setCapabilityFilter] =
-    useState<CapabilityFilter>(initialCapabilityFilter || "all");
+    useState<CapabilityFilter>(fixedCapabilityFilter || initialCapabilityFilter || "all");
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -245,13 +260,17 @@ export function ModelSearchDialog({
       wavespeed: !!wavespeedApiKey,
       openai: !!openaiApiKey,
     });
-    const cacheKey = `${providersHash}:${providerFilter}:${capabilityFilter}:${debouncedSearch}`;
+    const cacheKey = `${allowedProvidersKey}:${providersHash}:${providerFilter}:${capabilityFilter}:${debouncedSearch}`;
 
     // Check localStorage cache first (skip when bypassing)
     if (!bypassCache) {
       const cached = getCachedModels(cacheKey);
       if (cached) {
-        setModels(cached.models);
+        setModels(
+          allowedProviderSet
+            ? cached.models.filter((model) => allowedProviderSet.has(model.provider))
+            : cached.models
+        );
         if (cached.availableProviders) {
           setServerAvailableProviders(cached.availableProviders);
         }
@@ -267,6 +286,9 @@ export function ModelSearchDialog({
       const params = new URLSearchParams();
       if (debouncedSearch) {
         params.set("search", debouncedSearch);
+      }
+      if (allowedProvidersKey) {
+        params.set("providers", allowedProvidersKey);
       }
       if (providerFilter !== "all") {
         params.set("provider", providerFilter);
@@ -316,16 +338,15 @@ export function ModelSearchDialog({
       const data: ModelsResponse = await response.json();
 
       if (data.success && data.models) {
-        setModels(data.models);
+        const visibleModels = allowedProviderSet
+          ? data.models.filter((model) => allowedProviderSet.has(model.provider))
+          : data.models;
+        setModels(visibleModels);
         // Only cache browse results (empty search), not per-keystroke search
         // fragments — otherwise every distinct debounced string stores a full
         // model list and the cache grows unbounded.
         if (!debouncedSearch) {
-          setCachedModels(cacheKey, data.models, data.availableProviders);
-        }
-        // Update server-reported available providers
-        if (data.availableProviders) {
-          setServerAvailableProviders(data.availableProviders);
+          setCachedModels(cacheKey, visibleModels, data.availableProviders);
         }
       } else {
         setError(data.error || "Failed to fetch models");
@@ -344,7 +365,7 @@ export function ModelSearchDialog({
         setIsLoading(false);
       }
     }
-  }, [debouncedSearch, providerFilter, capabilityFilter, replicateApiKey, falApiKey, kieApiKey, wavespeedApiKey, openaiApiKey]);
+  }, [allowedProviderSet, allowedProvidersKey, debouncedSearch, providerFilter, capabilityFilter, replicateApiKey, falApiKey, kieApiKey, wavespeedApiKey, openaiApiKey]);
 
   // Fetch models when filters change
   useEffect(() => {
@@ -380,6 +401,9 @@ export function ModelSearchDialog({
   // Handle model selection
   const handleSelectModel = useCallback(
     (model: ProviderModel) => {
+      if (allowedProviderSet && !allowedProviderSet.has(model.provider)) {
+        return;
+      }
       // Track model usage for "recently used" feature
       trackModelUsage({
         provider: model.provider,
@@ -425,7 +449,7 @@ export function ModelSearchDialog({
 
       onClose();
     },
-    [screenToFlowPosition, addNode, onClose, onModelSelected, trackModelUsage]
+    [allowedProviderSet, screenToFlowPosition, addNode, onClose, onModelSelected, trackModelUsage]
   );
 
   // Handle escape key
@@ -495,7 +519,8 @@ export function ModelSearchDialog({
     }
   };
 
-  // Compute which providers are available based on client API keys + server env vars
+  // Compute which providers are available based on client API keys + server env vars.
+  // An explicit allowlist (e.g. FTUX minimum loop) always wins over key presence.
   const availableProviders = useMemo(() => {
     const providers = new Set<ProviderType>(["gemini", "fal"]); // Always available
     // Client-side keys (from localStorage/provider settings)
@@ -507,8 +532,15 @@ export function ModelSearchDialog({
     for (const p of serverAvailableProviders) {
       providers.add(p as ProviderType);
     }
+    if (allowedProviderSet) {
+      for (const provider of [...providers]) {
+        if (!allowedProviderSet.has(provider)) {
+          providers.delete(provider);
+        }
+      }
+    }
     return providers;
-  }, [replicateApiKey, kieApiKey, wavespeedApiKey, openaiApiKey, serverAvailableProviders]);
+  }, [replicateApiKey, kieApiKey, wavespeedApiKey, openaiApiKey, serverAvailableProviders, allowedProviderSet]);
 
   // Reset provider filter if current selection becomes unavailable
   useEffect(() => {
@@ -517,10 +549,13 @@ export function ModelSearchDialog({
     }
   }, [providerFilter, availableProviders]);
 
-  // Filter recent models by capability
+  // Filter recent models by capability and provider allowlist
   const filteredRecentModels = useMemo(() => {
     return recentModels
       .filter((recent) => {
+        if (allowedProviderSet && !allowedProviderSet.has(recent.provider as ProviderType)) {
+          return false;
+        }
         // Find matching model in current models list to check capabilities
         const matchingModel = models.find((m) => m.id === recent.modelId);
         if (!matchingModel && capabilityFilter !== "all") {
@@ -550,7 +585,7 @@ export function ModelSearchDialog({
         return true;
       })
       .slice(0, 4); // Show max 4
-  }, [recentModels, models, capabilityFilter]);
+  }, [allowedProviderSet, recentModels, models, capabilityFilter]);
 
   // Get display name with suffix for fal.ai models to differentiate variants
   const getDisplayName = (model: ProviderModel): string => {
@@ -797,16 +832,25 @@ export function ModelSearchDialog({
             {/* Capability Filter */}
             <select
               value={capabilityFilter}
+              disabled={!!fixedCapabilityFilter}
               onChange={(e) =>
                 setCapabilityFilter(e.target.value as CapabilityFilter)
               }
-              className="px-3 py-2 text-sm bg-neutral-700 border border-neutral-600 rounded text-neutral-100 focus:outline-none focus:ring-1 focus:ring-neutral-500"
+              className="px-3 py-2 text-sm bg-neutral-700 border border-neutral-600 rounded text-neutral-100 focus:outline-none focus:ring-1 focus:ring-neutral-500 disabled:opacity-70"
             >
-              <option value="all">All Types</option>
-              <option value="image">Image</option>
-              <option value="video">Video</option>
-              <option value="3d">3D</option>
-              <option value="audio">Audio</option>
+              {fixedCapabilityFilter ? (
+                <option value={fixedCapabilityFilter}>
+                  {fixedCapabilityFilter === "image" ? "Image" : fixedCapabilityFilter}
+                </option>
+              ) : (
+                <>
+                  <option value="all">All Types</option>
+                  <option value="image">Image</option>
+                  <option value="video">Video</option>
+                  <option value="3d">3D</option>
+                  <option value="audio">Audio</option>
+                </>
+              )}
             </select>
 
             {/* Refresh Cache */}

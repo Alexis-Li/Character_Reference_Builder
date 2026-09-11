@@ -8,9 +8,7 @@
  *
  * Query params:
  *   - provider: Optional, filter to specific provider ("replicate" | "fal" | "gemini" | "wavespeed")
- *   - search: Optional, search query
- *   - refresh: Optional, bypass cache if "true"
- *   - capabilities: Optional, filter by capabilities (comma-separated)
+ *   - providers: Optional, allowlist of providers (comma-separated); narrows fetching and results
  *
  * Headers:
  *   - X-Replicate-Key: Replicate API key
@@ -1242,14 +1240,23 @@ export async function GET(
   const providerFilter = request.nextUrl.searchParams.get("provider") as
     | ProviderType
     | null;
+  const providersParam = request.nextUrl.searchParams.get("providers");
+  const providersAllowlist: Set<ProviderType> | null = providersParam
+    ? new Set(
+        providersParam
+          .split(",")
+          .map((p) => p.trim())
+          .filter((p) => p.length > 0) as ProviderType[]
+      )
+    : null;
+  const isProviderAllowed = (provider: ProviderType): boolean =>
+    !providersAllowlist || providersAllowlist.has(provider);
   const searchQuery = request.nextUrl.searchParams.get("search") || undefined;
   const refresh = request.nextUrl.searchParams.get("refresh") === "true";
   const capabilitiesParam = request.nextUrl.searchParams.get("capabilities");
   const capabilitiesFilter: ModelCapability[] | null = capabilitiesParam
     ? (capabilitiesParam.split(",") as ModelCapability[])
     : null;
-
-  // Get API keys from headers, falling back to env variables
   const replicateKey = request.headers.get("X-Replicate-Key") || process.env.REPLICATE_API_KEY || null;
   const falKey = request.headers.get("X-Fal-Key") || process.env.FAL_API_KEY || null;
   const kieKey = request.headers.get("X-Kie-Key") || process.env.KIE_API_KEY || null;
@@ -1333,6 +1340,17 @@ export async function GET(
     }
     if (falKey) {
       providersToFetch.push("fal");
+    }
+  }
+  // Narrow to the requested providers allowlist (e.g. FTUX minimum image loop).
+  if (providersAllowlist) {
+    includeGemini = includeGemini && isProviderAllowed("gemini");
+    includeKie = includeKie && isProviderAllowed("kie");
+    includeOpenai = includeOpenai && isProviderAllowed("openai");
+    for (let i = providersToFetch.length - 1; i >= 0; i--) {
+      if (!isProviderAllowed(providersToFetch[i])) {
+        providersToFetch.splice(i, 1);
+      }
     }
   }
 
@@ -1558,13 +1576,14 @@ export async function GET(
     }
     return a.name.localeCompare(b.name);
   });
-
   const response: ModelsSuccessResponse = {
     success: true,
     models: filteredModels,
     cached: anyFromCache && allFromCache,
     providers: providerResults,
-    availableProviders,
+    availableProviders: providersAllowlist
+      ? availableProviders.filter((p) => isProviderAllowed(p as ProviderType))
+      : availableProviders,
   };
 
   if (errors.length > 0) {

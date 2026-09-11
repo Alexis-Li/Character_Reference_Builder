@@ -91,10 +91,12 @@ describe("Header", () => {
       expect(link).toHaveAttribute("href", "https://x.com/ReflctWillie");
     });
 
-    it("should render Discord support link", () => {
+    it("should not expose a community link in the first navigation", () => {
       render(<Header />);
-      const link = screen.getByTitle("Support");
-      expect(link).toHaveAttribute("href", "https://discord.com/invite/89Nr6EKkTf");
+      expect(screen.queryByTitle("Support")).not.toBeInTheDocument();
+      expect(
+        document.querySelector('a[href*="discord.com"]')
+      ).not.toBeInTheDocument();
     });
   });
 
