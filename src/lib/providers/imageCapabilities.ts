@@ -25,13 +25,18 @@ import { MODEL_DISPLAY_NAMES } from "@/types";
  * - `target`: the image being generated around / edited (the goal image).
  * - `retained-view`: a view that must be preserved unchanged.
  * - `auxiliary`: supporting context (style, detail, occluded-side hints).
+ *
+ * A purpose is present ONLY when a user or preset explicitly declared the
+ * role on the edge carrying the image. Absent means legacy/unknown and must
+ * never be backfilled from array position: connection order is edge
+ * traversal order, and reconnecting edges would silently change the meaning.
  */
 export type ReferencePurpose = "target" | "retained-view" | "auxiliary";
 
 export interface ReferenceInput {
   /** Data URL or HTTP URL of the reference image. */
   image: string;
-  /** Documented role of this reference. Legacy plain inputs omit it. */
+  /** Explicitly declared role. Absent for legacy inputs without a declared role. */
   purpose?: ReferencePurpose;
 }
 
@@ -145,27 +150,39 @@ export function imageCapabilities(
 }
 
 /**
- * Canonical positional roles for the flat image path. The connection graph
- * does not yet carry per-edge roles, so the executor assigns them by stable
- * position: first connected image is the edit target, the second is the
- * view that must be retained, the rest are auxiliary context. Order is
- * preserved end-to-end; a future per-edge role field overrides this mapping
- * without changing the wire contract.
+ * Where the purposes in a reference set came from. `declared` means every
+ * reference carries an explicitly declared role; `legacy` means none does;
+ * `mixed` means some do; `none` means the request carries no references.
+ * Legacy inputs are accepted but never upgraded to declared roles.
  */
-export function toReferenceInputs(images: string[]): ReferenceInput[] {
-  return images.map((image, index) => {
-    const purpose: ReferencePurpose =
-      index === 0 ? "target" : index === 1 ? "retained-view" : "auxiliary";
-    return { image, purpose };
-  });
+export type ReferencePurposeSource = "declared" | "legacy" | "mixed" | "none";
+
+/**
+ * Summarize the actually-sent reference set for call records: the purposes
+ * in request order (null unless every reference declares one) plus their
+ * source. Position is never used to invent a purpose.
+ */
+export function summarizePurposes(references: ReferenceInput[]): {
+  purposes: ReferencePurpose[] | null;
+  purposeSource: ReferencePurposeSource;
+} {
+  if (references.length === 0) return { purposes: null, purposeSource: "none" };
+  const declared = references.filter((r) => r.purpose !== undefined);
+  if (declared.length === references.length) {
+    return {
+      purposes: references.map((r) => r.purpose!),
+      purposeSource: "declared",
+    };
+  }
+  if (declared.length === 0) return { purposes: null, purposeSource: "legacy" };
+  return { purposes: null, purposeSource: "mixed" };
 }
 
 /**
- * The complete input set an adapter is about to send. Structured references
- * win when present; otherwise legacy flat `images` are losslessly mapped to
- * purposeless reference entries so count/size checks still apply. Callers
- * for contract participants (gemini/openai) must check this effective set,
- * never the structured subset alone.
+ * The complete input set an adapter is about to send, for count/size
+ * checks only. Structured references win when present; otherwise legacy
+ * flat `images` are mapped to purposeless entries. The mapping carries no
+ * role claim — it only ensures legacy inputs face the same limits.
  */
 export function effectiveReferences(
   references: ReferenceInput[],
@@ -325,7 +342,6 @@ export function normalizeReferences(raw: unknown): ReferenceInput[] {
     return { image, ...(purpose !== undefined ? { purpose: purpose as ReferencePurpose } : {}) };
   });
 }
-
 /** Which layer supplied the model choice for one actual call. */
 export type ModelResolutionSource = "project-default" | "node-override" | "node-legacy";
 
@@ -340,20 +356,49 @@ function sameModel(a: SelectedModel, b: SelectedModel): boolean {
 
 /**
  * Distinguish project default, node override, and legacy node config.
- * A node still carrying the project default resolves as project-default;
- * an explicit node choice (different from the default) wins as override.
+ *
+ * The real chain passes `persistedSource` (the node's saved `modelSource`):
+ * the label then comes from that persisted origin, never from comparing
+ * values against the mutable global default. An explicit selection is always
+ * `node-override` even when its value happens to equal the current default;
+ * a node created from the default stays `project-default` with its saved
+ * snapshot even after the global default changes; absent source means
+ * `node-legacy` (origin unknown).
+ *
+ * The `projectDefault` value-comparison path remains only for callers that
+ * have no persisted source (older tests); new code must pass persistedSource.
  */
 export function resolveGenerationModel(input: {
   nodeSelected?: SelectedModel;
   legacyModel?: ModelType;
   projectDefault?: SelectedModel;
+  persistedSource?: ModelResolutionSource;
 }): ModelResolution {
-  const { nodeSelected, legacyModel, projectDefault } = input;
-  if (nodeSelected) {
-    if (projectDefault && sameModel(nodeSelected, projectDefault)) {
+  const { nodeSelected, legacyModel, projectDefault, persistedSource } = input;
+  if (persistedSource !== undefined) {
+    if (nodeSelected) {
+      return { model: nodeSelected, resolvedFrom: persistedSource };
+    }
+    const modelId: ModelType = legacyModel ?? "nano-banana-pro";
+    return {
+      model: {
+        provider: "gemini",
+        modelId,
+        displayName: MODEL_DISPLAY_NAMES[modelId] ?? modelId,
+      },
+      resolvedFrom: persistedSource,
+    };
+  }
+  if (nodeSelected && projectDefault) {
+    if (sameModel(nodeSelected, projectDefault)) {
       return { model: nodeSelected, resolvedFrom: "project-default" };
     }
     return { model: nodeSelected, resolvedFrom: "node-override" };
+  }
+  if (nodeSelected) {
+    // No persisted source and no default to compare against: the origin is
+    // unknown, so legacy — never a guessed override.
+    return { model: nodeSelected, resolvedFrom: "node-legacy" };
   }
   const modelId: ModelType = legacyModel ?? "nano-banana-pro";
   return {
@@ -378,10 +423,11 @@ export type ProviderAuthChannel = "api-key" | "oauth-experimental";
 export type ProviderCallStage = "succeeded" | "failed";
 
 /**
- * Evidence of one provider submission attempt. Records are only written
- * after the request actually leaves for the provider transport (fetch/SDK).
- * Pre-submit rejections (422 gaps, missing prompt/key) never create a
- * record; HTTP/network failures are recorded as `failed`, never as success.
+ * Evidence of one provider submission, generated server-side after the
+ * request actually reached the provider transport (fetch/SDK). Pre-submit
+ * rejections (422 gaps, 401 missing key, 400 validation) produce no record;
+ * absence of a record means no submission. HTTP/network failures after the
+ * transport started are recorded as `failed`, never as success.
  */
 export interface ProviderCallRecord {
   /** Epoch ms when the submission attempt started. */
@@ -389,7 +435,7 @@ export interface ProviderCallRecord {
   provider: ProviderType;
   modelId: string;
   displayName: string;
-  /** Which layer supplied the model choice. */
+  /** Persisted origin of the model choice, echoed from the request. */
   resolvedFrom: ModelResolutionSource;
   /** False when the entry has no declared capability set. */
   declared: boolean;
@@ -397,8 +443,10 @@ export interface ProviderCallRecord {
   capabilities?: ImageCapabilities;
   /** Number of reference images actually included in the request. */
   referenceCount: number;
-  /** Reference purposes in request order; null only when no reference was sent. */
+  /** Reference purposes in request order; null unless every reference declares one. */
   purposes: ReferencePurpose[] | null;
+  /** Whether every/some/no reference carried an explicitly declared role. */
+  purposeSource: ReferencePurposeSource;
   /** True when an edit mask was included in the submitted request. */
   hasMask: boolean;
   /** Actual credential transport that submitted the request. */

@@ -13,13 +13,12 @@ import { pollGenerateTask } from "./pollTaskCompletion";
 import { runWithFallback } from "./runWithFallback";
 import { calculateGenerationCost } from "@/utils/costCalculator";
 import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
-import { getGenerateImageDefaults } from "@/store/utils/localStorage";
 import { rememberSessionMedia } from "./sessionMedia";
 import { newCharacterId } from "@/lib/characterProject";
-import { imageCapabilities, resolveGenerationModel, toReferenceInputs } from "@/lib/providers/imageCapabilities";
-import type { ProviderCallRecord, ReferenceInput } from "@/lib/providers/imageCapabilities";
-import type { NodeExecutionContext } from "./types";
+import { resolveGenerationModel } from "@/lib/providers/imageCapabilities";
+import type { ProviderCallRecord, ReferenceInput, ReferencePurpose } from "@/lib/providers/imageCapabilities";
 
+import type { NodeExecutionContext } from "./types";
 /**
  * Carousel entries kept per node. The cap below only trims entries no
  * contract state points at; selected, reviewed, and branch-linked versions
@@ -54,21 +53,38 @@ export async function executeNanoBanana(
 
   const { useStoredFallback = false } = options;
 
-  const { images: connectedImages, text: connectedText, dynamicInputs } = getConnectedInputs(node.id);
+  const { images: connectedImages, imageRefs: connectedImageRefs, text: connectedText, dynamicInputs } = getConnectedInputs(node.id);
 
   // Get fresh node data from store
   const freshNode = getFreshNode(node.id);
   const nodeData = (freshNode?.data || node.data) as NanoBananaNodeData;
 
-  // Determine images and text (with optional fallback to stored values)
+  // Determine images and text (with optional fallback to stored values).
+  // `imageRoles` parallels `images`: a role is present only when the edge
+  // carrying that image explicitly declares one. Stored-fallback images and
+  // role-less edges stay legacy (undefined) — never inferred from position.
   let images: string[];
+  let imageRoles: (ReferencePurpose | undefined)[];
   let promptText: string | null;
 
   if (useStoredFallback) {
-    images = connectedImages.length > 0 ? connectedImages : nodeData.inputImages;
+    if (connectedImages.length > 0) {
+      images = connectedImages;
+      const refs = connectedImageRefs;
+      imageRoles = refs?.length === connectedImages.length
+        ? refs.map((ref: { role?: ReferencePurpose }) => ref.role)
+        : connectedImages.map(() => undefined);
+    } else {
+      images = nodeData.inputImages;
+      imageRoles = nodeData.inputImages.map(() => undefined);
+    }
     promptText = connectedText ?? nodeData.inputPrompt;
   } else {
     images = connectedImages;
+    const refs = connectedImageRefs;
+    imageRoles = refs?.length === connectedImages.length
+      ? refs.map((ref: { role?: ReferencePurpose }) => ref.role)
+      : connectedImages.map(() => undefined);
     // For dynamic inputs, check if we have at least a prompt
     const promptFromDynamic = Array.isArray(dynamicInputs.prompt)
       ? dynamicInputs.prompt[0]
@@ -114,36 +130,29 @@ export async function executeNanoBanana(
     const sanitizedDynamicInputs = { ...dynamicInputs };
     delete sanitizedDynamicInputs.prompt;
 
-    // CRB-03: the executor owns the canonical reference set. Connected flat
-    // images are mapped to positional purposes (target, retained-view,
-    // auxiliary) in stable order; the same array is sent as `references` and
-    // summarized in `lastCall`. The legacy `images` field is kept so older
-    // adapters and non-contract providers keep working.
-    const references: ReferenceInput[] = toReferenceInputs(images);
-    const referencePurposes = references.map((reference) => reference.purpose!);
-    const projectDefault = getGenerateImageDefaults()?.selectedModel;
-    const resolution = resolveGenerationModel({
-      nodeSelected: modelToUse,
-      projectDefault,
+    // CRB-03: references carry ONLY explicitly declared edge roles.
+    // Role-less inputs stay purposeless (legacy) — position never invents a
+    // role. The legacy `images` field is kept so older adapters and
+    // non-contract providers keep working.
+    const references: ReferenceInput[] = images.map((image, index) => {
+      const role = imageRoles[index];
+      return role ? { image, purpose: role } : { image };
     });
-    const declared = imageCapabilities(modelToUse.provider, modelToUse.modelId);
-    const attemptAt = Date.now();
-    const baseRecord = {
-      at: attemptAt,
-      provider: modelToUse.provider,
-      modelId: modelToUse.modelId,
-      displayName: modelToUse.displayName,
-      resolvedFrom: resolution.resolvedFrom,
-      declared: declared !== null,
-      ...(declared ? { capabilities: declared } : {}),
-      referenceCount: references.length,
-      purposes: references.length > 0 ? referencePurposes : null,
-      hasMask: false,
-      // The executor only submits over the API-key transport. The OAuth
-      // experiment lives behind its own route entry and records its own
-      // `oauth-experimental` channel there; this record never claims it.
-      auth: "api-key" as const,
-    };
+
+    // CRB-03: the serving source comes from persisted node state, never from
+    // comparing values with the mutable global default. The primary uses the
+    // node's saved modelSource (absent = node-legacy); a fallback run is
+    // always explicit node config (node-override). The server echoes this
+    // source in its call record; the executor never labels the call itself.
+    const primaryResolution = resolveGenerationModel({
+      nodeSelected: nodeData.selectedModel,
+      legacyModel: nodeData.model,
+      persistedSource: nodeData.modelSource,
+    });
+    const isFallbackServing =
+      modelToUse.provider !== primaryResolution.model.provider ||
+      modelToUse.modelId !== primaryResolution.model.modelId;
+    const servingSource = isFallbackServing ? "node-override" : primaryResolution.resolvedFrom;
 
     const requestPayload = {
       images,
@@ -155,6 +164,7 @@ export async function executeNanoBanana(
       useGoogleSearch: (parametersOverride?.useGoogleSearch as boolean) ?? nodeData.useGoogleSearch,
       useImageSearch: (parametersOverride?.useImageSearch as boolean) ?? nodeData.useImageSearch,
       selectedModel: modelToUse,
+      modelSource: servingSource,
       parameters: parametersOverride ?? nodeData.parameters,
       dynamicInputs: sanitizedDynamicInputs,
     };
@@ -178,18 +188,23 @@ export async function executeNanoBanana(
       if (!response.ok) {
         const errorText = await response.text();
         let errorMessage = `HTTP ${response.status}`;
+        let serverCall: ProviderCallRecord | undefined;
         try {
           const errorJson = JSON.parse(errorText);
           errorMessage = errorJson.error || errorMessage;
+          // The server attaches a call record only when the request reached
+          // the provider transport (submitted failure). Pre-submit
+          // rejections (422 gaps, 401 key, 400 validation) carry none, and
+          // the previous lastCall is left untouched — never fabricated here.
+          serverCall = errorJson.call;
         } catch {
           if (errorText) errorMessage += ` - ${errorText.substring(0, 200)}`;
         }
 
-        const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
         updateNodeData(node.id, {
           status: "error",
           error: errorMessage,
-          lastCall: failedCall,
+          ...(serverCall ? { lastCall: serverCall } : {}),
         });
         throw new Error(errorMessage);
       }
@@ -209,11 +224,9 @@ export async function executeNanoBanana(
         });
 
         if (!result.success) {
-          const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
           updateNodeData(node.id, {
             status: "error",
             error: result.error || "Generation failed",
-            lastCall: failedCall,
           });
           throw new Error(result.error || "Generation failed");
         }
@@ -272,7 +285,6 @@ export async function executeNanoBanana(
           priorSelection != null && priorSelectedId == null
             ? Math.min(priorIndex + 1, updatedHistory.length - 1)
             : selectedIndex;
-        const succeededCall: ProviderCallRecord = { ...baseRecord, stage: "succeeded" };
         updateNodeData(node.id, {
           ...(priorSelection != null
             ? {
@@ -284,7 +296,9 @@ export async function executeNanoBanana(
           status: "complete",
           error: null,
           imageHistory: updatedHistory,
-          lastCall: succeededCall,
+          // The server attaches its transport record on success. When a
+          // non-contract provider omits it, the previous record is kept.
+          ...(result.call ? { lastCall: result.call } : {}),
         });
 
         // Report the run to the character-project contract when the context
@@ -361,11 +375,12 @@ export async function executeNanoBanana(
           trackSaveGeneration(imageId, savePromise);
         }
       } else {
-        const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
+        // No provider submission record exists for this outcome (the server
+        // attaches one only for submitted transport failures, which arrive
+        // via the !response.ok branch above). Leave lastCall untouched.
         updateNodeData(node.id, {
           status: "error",
           error: result.error || "Generation failed",
-          lastCall: failedCall,
         });
         throw new Error(result.error || "Generation failed");
       }
@@ -383,11 +398,12 @@ export async function executeNanoBanana(
       } else if (error instanceof Error) {
         errorMessage = error.message;
       }
-      const failedCall: ProviderCallRecord = { ...baseRecord, stage: "failed" };
+      // Local failure (network to /api/generate, thrown provider error
+      // without a server record, abort aside): no submission evidence exists
+      // here, so lastCall is left untouched.
       updateNodeData(node.id, {
         status: "error",
         error: errorMessage,
-        lastCall: failedCall,
       });
       try {
         ctx.recordCharacterRun?.({

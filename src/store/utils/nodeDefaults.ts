@@ -198,6 +198,9 @@ export const createDefaultNodeData = (type: NodeType): WorkflowNodeData => {
         resolution,
         model: legacyDefaults.model, // Keep legacy model field for backward compat
         selectedModel,
+        // Created from the current default: source is project-default with a
+        // snapshot of the value. Later default changes never relabel this node.
+        modelSource: "project-default",
         useGoogleSearch,
         useImageSearch,
         status: "idle",

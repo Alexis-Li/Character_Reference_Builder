@@ -13,6 +13,12 @@
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
+import {
+  imageCapabilities,
+  summarizePurposes,
+  type ProviderCallRecord,
+  type ReferenceInput,
+} from "@/lib/providers/imageCapabilities";
 
 /**
  * Extract base64 data and MIME type from a data URL
@@ -39,6 +45,28 @@ export async function generateWithOpenAI(
 
   const OPENAI_API_BASE = "https://api.openai.com/v1";
   const modelId = input.model.id;
+
+  // CRB-03: the call record reflects what this transport actually sends.
+  // Built here at transport start; only the stage is filled per outcome.
+  const sentRefs: ReferenceInput[] = input.references?.length
+    ? input.references
+    : (input.images ?? []).map((image) => ({ image }));
+  const { purposes, purposeSource } = summarizePurposes(sentRefs);
+  const openaiDeclared = imageCapabilities("openai", modelId);
+  const callBase: Omit<ProviderCallRecord, "stage"> = {
+    at: Date.now(),
+    provider: "openai",
+    modelId,
+    displayName: input.model.name,
+    resolvedFrom: input.modelSource ?? "node-legacy",
+    declared: openaiDeclared !== null,
+    ...(openaiDeclared ? { capabilities: openaiDeclared } : {}),
+    referenceCount: sentRefs.length,
+    purposes,
+    purposeSource,
+    hasMask: Boolean(input.mask),
+    auth: "api-key",
+  };
 
   const hasImages = (input.images && input.images.length > 0)
     || Boolean(input.references?.length)
@@ -148,6 +176,7 @@ export async function generateWithOpenAI(
       return {
         success: false,
         error: `${input.model.name}: Rate limit exceeded. Try again in a moment.`,
+        call: { ...callBase, stage: "failed" },
       };
     }
 
@@ -156,12 +185,14 @@ export async function generateWithOpenAI(
       return {
         success: false,
         error: `${input.model.name}: OpenAI is temporarily unavailable (${errorDetail}). Please try again.`,
+        call: { ...callBase, stage: "failed" },
       };
     }
 
     return {
       success: false,
       error: `${input.model.name}: ${errorDetail}`,
+      call: { ...callBase, stage: "failed" },
     };
   }
 
@@ -176,6 +207,7 @@ export async function generateWithOpenAI(
     return {
       success: false,
       error: "No image returned from OpenAI",
+      call: { ...callBase, stage: "failed" },
     };
   }
 
@@ -194,5 +226,6 @@ export async function generateWithOpenAI(
         data: dataUrl,
       },
     ],
+    call: { ...callBase, stage: "succeeded" },
   };
 }

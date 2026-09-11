@@ -7,11 +7,21 @@
  * field, prompt/design constraints verbatim) match `openai.ts`; only the
  * transport differs (experimental endpoint + OAuth bearer).
  *
+ * The call record is generated here after the experimental transport starts,
+ * with `auth: "oauth-experimental"` — the API-key adapter can never produce
+ * this channel and vice versa.
+ *
  * Fixture-only: no real OAuth token handling, no production claim. Real-call
  * evidence belongs to CRB-07.
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
+import {
+  imageCapabilities,
+  summarizePurposes,
+  type ProviderCallRecord,
+  type ReferenceInput,
+} from "@/lib/providers/imageCapabilities";
 
 function extractBase64Data(dataUrl: string): { data: string; mimeType: string } {
   if (dataUrl.includes("base64,")) {
@@ -33,18 +43,37 @@ export async function generateWithOpenAIOAuth(
 ): Promise<GenerationOutput> {
   const modelId = input.model.id;
   const parameters = input.parameters || {};
+
+  const sentRefs: ReferenceInput[] = input.references?.length
+    ? input.references
+    : (input.images ?? []).map((image) => ({ image }));
+  const { purposes, purposeSource } = summarizePurposes(sentRefs);
+  const oauthDeclared = imageCapabilities("openai", modelId);
+  const callBase: Omit<ProviderCallRecord, "stage"> = {
+    at: Date.now(),
+    provider: "openai",
+    modelId,
+    displayName: input.model.name,
+    resolvedFrom: input.modelSource ?? "node-legacy",
+    declared: oauthDeclared !== null,
+    ...(oauthDeclared ? { capabilities: oauthDeclared } : {}),
+    referenceCount: sentRefs.length,
+    purposes,
+    purposeSource,
+    hasMask: Boolean(input.mask),
+    auth: "oauth-experimental",
+  };
+
   const formData = new FormData();
   formData.append("model", modelId);
   formData.append("prompt", input.prompt);
   if (parameters.size) formData.append("size", String(parameters.size));
   if (parameters.quality) formData.append("quality", String(parameters.quality));
 
-  const orderedImages = input.references?.length
-    ? input.references.map((reference) => ({
-        data: reference.image,
-        filenameSuffix: reference.purpose ? `-${reference.purpose}` : "",
-      }))
-    : (input.images ?? []).map((image) => ({ data: image, filenameSuffix: "" }));
+  const orderedImages = sentRefs.map((reference) => ({
+    data: reference.image,
+    filenameSuffix: reference.purpose ? `-${reference.purpose}` : "",
+  }));
 
   orderedImages.forEach((image, index) => {
     const { data, mimeType } = extractBase64Data(image.data);
@@ -80,17 +109,23 @@ export async function generateWithOpenAIOAuth(
     return {
       success: false,
       error: `OAuth-experimental request failed: HTTP ${response.status}${errorText ? ` - ${errorText.substring(0, 200)}` : ""}`,
+      call: { ...callBase, stage: "failed" },
     };
   }
 
   const data = await response.json();
   const b64Json = data.data?.[0]?.b64_json;
   if (!b64Json) {
-    return { success: false, error: "No image in OAuth-experimental response" };
+    return {
+      success: false,
+      error: "No image in OAuth-experimental response",
+      call: { ...callBase, stage: "failed" },
+    };
   }
   const dataUrl = `data:image/png;base64,${b64Json}`;
   return {
     success: true,
     outputs: [{ type: "image", data: dataUrl }],
+    call: { ...callBase, stage: "succeeded" },
   };
 }

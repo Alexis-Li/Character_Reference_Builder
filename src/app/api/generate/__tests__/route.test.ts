@@ -537,6 +537,7 @@ describe("/api/generate route", () => {
       expect(response.status).toBe(429);
       expect(data.success).toBe(false);
       expect(data.error).toBe("Rate limit reached. Please wait and try again.");
+      expect(data.call).toMatchObject({ stage: "failed", auth: "api-key" });
     });
 
     it("should handle no candidates in response", async () => {
@@ -1050,9 +1051,17 @@ describe("/api/generate route", () => {
       const data = await response.json();
 
       expect(response.status).toBe(200);
-      expect(data).toEqual({
+      expect(data).toMatchObject({
         success: true,
         image: "data:image/jpeg;base64,jpegOutputData",
+      });
+      // The transport record rides along: api-key channel, no references.
+      expect(data.call).toMatchObject({
+        provider: "gemini",
+        auth: "api-key",
+        stage: "succeeded",
+        referenceCount: 0,
+        purposeSource: "none",
       });
     });
 

@@ -19,7 +19,7 @@ export type { AnnotationNodeData, BaseNodeData };
 import type { AspectRatio, Resolution, ModelType } from "./models";
 import type { LLMProvider, LLMModelType, SelectedModel, ProviderType } from "./providers";
 import type { ComfyAppDefinition, ComfyWorkflowInspection } from "@/lib/comfy/types";
-import type { ProviderCallRecord } from "@/lib/providers/imageCapabilities";
+import type { ProviderCallRecord, ModelResolutionSource } from "@/lib/providers/imageCapabilities";
 
 export type { ComfyAppDefinition, ComfyWorkflowInspection };
 
@@ -205,6 +205,13 @@ export interface NanoBananaNodeData extends BaseNodeData {
   resolution: Resolution; // Only used by Nano Banana Pro
   model: ModelType;
   selectedModel?: SelectedModel; // Multi-provider model selection (optional for backward compat)
+  /**
+   * CRB-03: persisted origin of the model choice. Set at creation/selection
+   * time and saved with the workflow — never inferred at execution time by
+   * comparing values against the mutable global default. Absent means
+   * node-legacy (origin unknown).
+   */
+  modelSource?: ModelResolutionSource;
   useGoogleSearch: boolean; // Only available for Nano Banana Pro and Nano Banana 2
   useImageSearch: boolean; // Only available for Nano Banana 2
   parameters?: Record<string, unknown>; // Model-specific parameters for external providers
@@ -222,7 +229,7 @@ export interface NanoBananaNodeData extends BaseNodeData {
   __usedFallback?: boolean; // Set by runWithFallback on successful fallback
   __fallbackModelUsed?: string; // Display name of fallback model that succeeded
   __primaryError?: string; // Error message from the primary attempt
-  /** CRB-03: evidence of the last actual provider call from this node. */
+  /** CRB-03: last provider submission record returned by the server, if any. */
   lastCall?: ProviderCallRecord;
 }
 

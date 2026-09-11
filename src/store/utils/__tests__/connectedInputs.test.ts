@@ -238,6 +238,40 @@ describe("getConnectedInputsPure", () => {
     expect(result.images).toEqual(["data:image/png;base64,a", "data:image/png;base64,b"]);
   });
 
+  it("should carry explicitly declared edge roles without inventing any", () => {
+    const nodes = [
+      makeNode("img1", "imageInput", { image: "data:image/png;base64,a" }),
+      makeNode("img2", "imageInput", { image: "data:image/png;base64,b" }),
+      makeNode("gen", "nanoBanana"),
+    ];
+    const retained = makeEdge("img1", "gen", "image");
+    retained.data = { referenceRole: "retained-view" };
+    const target = makeEdge("img2", "gen", "image");
+    target.data = { referenceRole: "target" };
+    const result = getConnectedInputsPure("gen", nodes, [retained, target]);
+    expect(result.imageRefs).toEqual([
+      { image: "data:image/png;base64,a", role: "retained-view", edgeId: "img1-gen", sourceNodeId: "img1" },
+      { image: "data:image/png;base64,b", role: "target", edgeId: "img2-gen", sourceNodeId: "img2" },
+    ]);
+  });
+
+  it("should leave role-less and invalid roles as legacy", () => {
+    const nodes = [
+      makeNode("img1", "imageInput", { image: "data:image/png;base64,a" }),
+      makeNode("img2", "imageInput", { image: "data:image/png;base64,b" }),
+      makeNode("gen", "nanoBanana"),
+    ];
+    const plain = makeEdge("img1", "gen", "image");
+    const bogus = makeEdge("img2", "gen", "image");
+    // Deliberately invalid role: must read as legacy, never throw.
+    (bogus as unknown as { data: Record<string, unknown> }).data = { referenceRole: "vibe" };
+    const result = getConnectedInputsPure("gen", nodes, [plain, bogus]);
+    expect(result.imageRefs).toEqual([
+      { image: "data:image/png;base64,a", edgeId: "img1-gen", sourceNodeId: "img1" },
+      { image: "data:image/png;base64,b", edgeId: "img2-gen", sourceNodeId: "img2" },
+    ]);
+  });
+
   it("should populate dynamicInputs with schema mapping", () => {
     const nodes = [
       makeNode("img", "imageInput", { image: "data:image/png;base64,a" }),

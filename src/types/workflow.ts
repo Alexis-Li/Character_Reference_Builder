@@ -6,6 +6,7 @@
  */
 
 import { Edge } from "@xyflow/react";
+import type { ReferencePurpose } from "@/lib/providers/imageCapabilities";
 
 // Workflow Edge Data
 export interface WorkflowEdgeData extends Record<string, unknown> {
@@ -13,6 +14,12 @@ export interface WorkflowEdgeData extends Record<string, unknown> {
   createdAt?: number;
   isLoop?: boolean;
   loopCount?: number;
+  /**
+   * CRB-03: user- or preset-declared role of the image carried by this edge
+   * for image-generation reference inputs. Persisted with the workflow.
+   * Absent means legacy/unknown — never inferred from array position.
+   */
+  referenceRole?: ReferencePurpose;
 }
 
 // Workflow Edge

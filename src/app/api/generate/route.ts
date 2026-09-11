@@ -12,7 +12,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GenerateRequest, GenerateResponse, ModelType, SelectedModel, ProviderType } from "@/types";
-import { GenerationInput, ModelCapability, checkReferenceGaps, effectiveReferences, imageCapabilities, normalizeReferences, ReferenceInput } from "@/lib/providers/types";
+import { GenerationInput, ModelCapability, checkReferenceGaps, effectiveReferences, imageCapabilities, normalizeReferences, ReferenceInput, ModelResolutionSource } from "@/lib/providers/types";
 import { generateWithGemini, generateWithGeminiVideo } from "./providers/gemini";
 import { generateWithReplicate } from "./providers/replicate";
 import { generateWithFalQueue } from "./providers/fal";
@@ -37,6 +37,8 @@ interface MultiProviderGenerateRequest extends GenerateRequest {
   references?: unknown;
   /** Optional edit mask as data URL (CRB-03). */
   mask?: string;
+  /** Persisted origin of the model choice, echoed in the call record. */
+  modelSource?: ModelResolutionSource;
 }
 
 
@@ -69,6 +71,7 @@ export async function POST(request: NextRequest) {
       references: rawReferences,
       mask,
       mediaType,
+      modelSource,
     } = body;
 
     // Prompt is required unless:
@@ -539,6 +542,7 @@ export async function POST(request: NextRequest) {
         images: processedImages,
         references,
         mask,
+        modelSource,
         parameters,
         dynamicInputs: processedDynamicInputs,
       };
@@ -552,6 +556,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             error: result.error || "Generation failed",
+            ...(result.call ? { call: result.call } : {}),
           },
           { status: 500 }
         );
@@ -566,7 +571,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      return buildMediaResponse(output);
+      return buildMediaResponse(output, result.call);
     }
 
     // Default: Use Gemini
@@ -639,7 +644,6 @@ export async function POST(request: NextRequest) {
 
       return buildMediaResponse(output);
     }
-
     return await generateWithGemini(
       requestId,
       geminiApiKey,
@@ -651,7 +655,8 @@ export async function POST(request: NextRequest) {
       useGoogleSearch,
       useImageSearch,
       references,
-      mask
+      mask,
+      modelSource
     );
   } catch (error) {
     // Extract error information

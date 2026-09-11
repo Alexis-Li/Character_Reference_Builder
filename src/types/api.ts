@@ -6,7 +6,7 @@
  */
 
 import type { AspectRatio, Resolution, ModelType } from "./models";
-import type { CapabilityGap } from "@/lib/providers/imageCapabilities";
+import type { CapabilityGap, ProviderCallRecord } from "@/lib/providers/imageCapabilities";
 import type { LLMProvider, LLMModelType } from "./providers";
 
 // API Request/Response types for Image Generation
@@ -33,6 +33,12 @@ export interface GenerateResponse {
   error?: string;
   /** Pre-submit capability gaps (CRB-03). Present when the request is rejected before any provider call. */
   gaps?: CapabilityGap[];
+  /**
+   * CRB-03: server-generated record of the provider submission, present only
+   * when the request actually reached the provider transport. Pre-submit
+   * rejections (422 gaps, 401 missing key, 400 validation) carry no record.
+   */
+  call?: ProviderCallRecord;
   // Client-side polling fields (for long-running Kie tasks)
   polling?: boolean; // true = task submitted, poll for completion
   taskId?: string; // Kie task ID to poll

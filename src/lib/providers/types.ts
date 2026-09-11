@@ -5,6 +5,7 @@
  */
 export {
   type ReferencePurpose,
+  type ReferencePurposeSource,
   type ReferenceInput,
   type ImageCapabilities,
   type CapabilityGap,
@@ -19,7 +20,7 @@ export {
   checkReferenceGaps,
   normalizeReferences,
   resolveGenerationModel,
-  toReferenceInputs,
+  summarizePurposes,
   effectiveReferences,
 } from "./imageCapabilities";
 
@@ -32,7 +33,7 @@ export {
  */
 
 import { ProviderType } from "@/types";
-import type { ReferenceInput } from "./imageCapabilities";
+import type { ReferenceInput, ModelResolutionSource, ProviderCallRecord } from "./imageCapabilities";
 
 /**
  * Model capabilities - what operations a model can perform
@@ -106,9 +107,6 @@ export interface ProviderModel {
   pageUrl?: string;
 }
 
-/**
- * Unified input format for generation across all providers
- */
 export interface GenerationInput {
   /** The model to use for generation */
   model: ProviderModel;
@@ -120,6 +118,11 @@ export interface GenerationInput {
   references?: ReferenceInput[];
   /** Optional edit mask (data URL). Requires the entry's mask capability. */
   mask?: string;
+  /**
+   * CRB-03: persisted origin of the model choice, echoed back in the call
+   * record. Absent means node-legacy.
+   */
+  modelSource?: ModelResolutionSource;
   /** Model-specific parameters (varies by provider/model) */
   parameters?: Record<string, unknown>;
   /** Dynamic inputs mapped from schema (e.g., { "image_url": "data:...", "tail_image_url": "data:..." }) */
@@ -143,6 +146,11 @@ export interface GenerationOutput {
   }>;
   /** Error message if success is false */
   error?: string;
+  /**
+   * CRB-03: server-generated submission record. Present whenever the request
+   * reached the provider transport (success or submitted failure alike).
+   */
+  call?: ProviderCallRecord;
 }
 
 /**

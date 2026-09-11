@@ -252,6 +252,13 @@ describe("nodeDefaults utilities", () => {
       expect((data as any).useGoogleSearch).toBe(true);
     });
 
+    it("stamps project-default source on created nanoBanana nodes", () => {
+      const data = createDefaultNodeData("nanoBanana");
+
+      expect((data as any).selectedModel).toBeDefined();
+      expect((data as any).modelSource).toBe("project-default");
+    });
+
     it("uses node defaults selectedModel for generateVideo when set", () => {
       const nodeDefaultsConfig = {
         generateVideo: {

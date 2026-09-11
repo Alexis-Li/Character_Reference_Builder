@@ -263,7 +263,7 @@ function GenerateImageControls({ node }: { node: Node }) {
       displayName: model.name,
       capabilities: model.capabilities,
     };
-    updateNodeData(node.id, { selectedModel: newSelectedModel, parameters: {} });
+    updateNodeData(node.id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });
     setIsBrowseDialogOpen(false);
   }, [node.id, updateNodeData]);
 

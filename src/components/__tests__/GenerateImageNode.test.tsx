@@ -398,6 +398,7 @@ describe("GenerateImageNode", () => {
             modelId: "nano-banana",
             displayName: "Nano Banana",
           },
+          modelSource: "node-legacy",
         });
       });
     });
@@ -420,6 +421,7 @@ describe("GenerateImageNode", () => {
             modelId: "nano-banana-2-lite",
             displayName: "Nano Banana 2 Lite",
           },
+          modelSource: "node-legacy",
         });
       });
     });

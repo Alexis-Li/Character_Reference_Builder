@@ -18,13 +18,19 @@ export const clearFalInputMappingCache = _clearFalInputMappingCache;
 /**
  * Build the final NextResponse for a completed generation output.
  * Shared by the synchronous generate route and the async poll route.
+ * The optional server-generated call record rides along when the caller
+ * supplies one; pre-submit rejections never have one.
  */
-export function buildMediaResponse(output: { type: string; data: string; url?: string }): NextResponse {
+export function buildMediaResponse(
+  output: { type: string; data: string; url?: string },
+  call?: import("@/lib/providers/imageCapabilities").ProviderCallRecord
+): NextResponse {
   if (output.type === "3d") {
     return NextResponse.json<GenerateResponse>({
       success: true,
       model3dUrl: output.url,
       contentType: "3d",
+      ...(call ? { call } : {}),
     });
   }
 
@@ -35,6 +41,7 @@ export function buildMediaResponse(output: { type: string; data: string; url?: s
       video: isLarge ? undefined : output.data,
       videoUrl: isLarge ? output.url : undefined,
       contentType: "video",
+      ...(call ? { call } : {}),
     });
   }
 
@@ -45,6 +52,7 @@ export function buildMediaResponse(output: { type: string; data: string; url?: s
       audio: isLarge ? undefined : output.data,
       audioUrl: isLarge ? output.url : undefined,
       contentType: "audio",
+      ...(call ? { call } : {}),
     });
   }
 
@@ -52,5 +60,6 @@ export function buildMediaResponse(output: { type: string; data: string; url?: s
     success: true,
     image: output.data,
     contentType: "image",
+    ...(call ? { call } : {}),
   });
 }

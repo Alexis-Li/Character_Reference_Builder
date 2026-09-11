@@ -5,6 +5,7 @@
  * and validating workflow structure. These can be tested without the store.
  */
 
+import type { ReferencePurpose } from "@/lib/providers/imageCapabilities";
 import {
   WorkflowNode,
   WorkflowEdge,
@@ -35,10 +36,24 @@ import {
 } from "@/types";
 
 /**
+ * One image flowing into a node, with the explicitly declared reference role
+ * of the edge that carried it. `role` is present only when the edge data
+ * declares it; absent means legacy/unknown (never inferred from position).
+ */
+export interface ConnectedImageRef {
+  image: string;
+  role?: ReferencePurpose;
+  edgeId: string;
+  sourceNodeId: string;
+}
+
+/**
  * Return type for getConnectedInputs
  */
 export interface ConnectedInputs {
   images: string[];
+  /** Per-image details in the same order as `images`, with declared edge roles. */
+  imageRefs?: ConnectedImageRef[];
   videos: string[];
   audio: string[];
   model3d: string | null;
@@ -46,6 +61,19 @@ export interface ConnectedInputs {
   textItems: string[]; // All items from array batch mode (empty when not in batch)
   dynamicInputs: Record<string, string | string[]>;
   easeCurve: { bezierHandles: [number, number, number, number]; easingPreset: string | null; outputDuration: number } | null;
+}
+
+/**
+ * Explicitly declared reference role of an edge, if any. Only the three
+ * documented roles count; anything else is legacy/unknown.
+ */
+const REFERENCE_ROLES: ReadonlySet<string> = new Set(["target", "retained-view", "auxiliary"]);
+
+function edgeReferenceRole(edge: { data?: Record<string, unknown> | undefined }): ReferencePurpose | undefined {
+  const role = edge.data?.referenceRole;
+  return typeof role === "string" && REFERENCE_ROLES.has(role)
+    ? (role as ReferencePurpose)
+    : undefined;
 }
 
 /**
@@ -198,6 +226,7 @@ export function getConnectedInputsPure(
   if (_visited.has(nodeId)) return { images: [], videos: [], audio: [], model3d: null, text: null, textItems: [], dynamicInputs: {}, easeCurve: null };
   _visited.add(nodeId);
   const images: string[] = [];
+  const imageRefs: ConnectedImageRef[] = [];
   const videos: string[] = [];
   const audio: string[] = [];
   let model3d: string | null = null;
@@ -305,6 +334,7 @@ export function getConnectedInputsPure(
 
         if (edgeType === "image" || (!edgeType && isImageHandle(edge.sourceHandle))) {
           images.push(...routerInputs.images);
+          imageRefs.push(...(routerInputs.imageRefs ?? routerInputs.images.map((image) => ({ image, edgeId: edge.id, sourceNodeId: sourceNode.id }))));
           addPassthroughDynamicInput(edge.targetHandle, routerInputs.images);
         } else if (edgeType === "text" || (!edgeType && isTextHandle(edge.sourceHandle))) {
           if (routerInputs.text) text = routerInputs.text;
@@ -344,6 +374,7 @@ export function getConnectedInputsPure(
 
         if (edgeType === "image") {
           images.push(...switchInputs.images);
+          imageRefs.push(...(switchInputs.imageRefs ?? switchInputs.images.map((image) => ({ image, edgeId: edge.id, sourceNodeId: sourceNode.id }))));
           addPassthroughDynamicInput(edge.targetHandle, switchInputs.images);
         } else if (edgeType === "text") {
           if (switchInputs.text) text = switchInputs.text;
@@ -433,6 +464,10 @@ export function getConnectedInputsPure(
         text = typeof value === 'string' ? value : String(value);
       } else if (isImageHandle(handleId) || !handleId) {
         images.push(value);
+        const role = edgeReferenceRole(edge);
+        imageRefs.push(role
+          ? { image: value, role, edgeId: edge.id, sourceNodeId: sourceNode.id }
+          : { image: value, edgeId: edge.id, sourceNodeId: sourceNode.id });
       }
     });
 
@@ -454,7 +489,7 @@ export function getConnectedInputsPure(
     }
   }
 
-  return { images, videos, audio, model3d, text, textItems, dynamicInputs, easeCurve };
+  return { images, imageRefs, videos, audio, model3d, text, textItems, dynamicInputs, easeCurve };
 }
 
 /**

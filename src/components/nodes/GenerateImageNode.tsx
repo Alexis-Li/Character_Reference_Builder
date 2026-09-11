@@ -115,7 +115,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
         modelId: nodeData.model,
         displayName,
       };
-      updateNodeData(id, { selectedModel: newSelectedModel });
+      updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-legacy" });
     }
   }, [id, nodeData.model, nodeData.selectedModel, updateNodeData]);
 
@@ -191,8 +191,10 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
           modelId: nodeData.model || "nano-banana-pro",
           displayName: GEMINI_IMAGE_MODELS.find(m => m.value === (nodeData.model || "nano-banana-pro"))?.label || "Nano Banana Pro",
         };
+        // Explicit user choice: always an override, even when the value
+        // happens to equal the current project default.
         // Clear parameters when switching providers (different providers have different schemas)
-        updateNodeData(id, { selectedModel: newSelectedModel, parameters: {} });
+        updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });
       } else {
         // Set placeholder for external provider
         const newSelectedModel: SelectedModel = {
@@ -201,7 +203,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
           displayName: "Select model...",
         };
         // Clear parameters when switching providers
-        updateNodeData(id, { selectedModel: newSelectedModel, parameters: {} });
+        updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });
       }
     },
     [id, nodeData.model, updateNodeData]
@@ -220,7 +222,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
           capabilities: model.capabilities,
         };
         // Clear parameters when changing models (different models have different schemas)
-        updateNodeData(id, { selectedModel: newSelectedModel, parameters: {} });
+        updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });
       }
     },
     [id, currentProvider, externalModels, updateNodeData]
@@ -256,7 +258,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
         modelId: model,
         displayName: GEMINI_IMAGE_MODELS.find(m => m.value === model)?.label || model,
       };
-      updateNodeData(id, { selectedModel: newSelectedModel });
+      updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override" });
     },
     [id, updateNodeData]
   );
@@ -358,7 +360,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
       displayName: model.name,
       capabilities: model.capabilities,
     };
-    updateNodeData(id, { selectedModel: newSelectedModel, parameters: {} });
+    updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });
     setIsBrowseDialogOpen(false);
   }, [id, updateNodeData]);
 

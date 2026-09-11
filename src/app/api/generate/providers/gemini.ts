@@ -6,8 +6,14 @@
 
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
-import { GenerateResponse, ModelType } from "@/types";
+import { GenerateResponse, ModelType, MODEL_DISPLAY_NAMES } from "@/types";
 import { GenerationOutput, ReferenceInput } from "@/lib/providers/types";
+import {
+  imageCapabilities,
+  summarizePurposes,
+  type ModelResolutionSource,
+  type ProviderCallRecord,
+} from "@/lib/providers/imageCapabilities";
 
 /**
  * Map model types to Gemini model IDs
@@ -33,7 +39,8 @@ export async function generateWithGemini(
   useGoogleSearch?: boolean,
   useImageSearch?: boolean,
   references?: ReferenceInput[],
-  mask?: string
+  mask?: string,
+  modelSource?: ModelResolutionSource
 ): Promise<NextResponse<GenerateResponse>> {
   console.log(`[API:${requestId}] Gemini generation - Model: ${model}, Images: ${images?.length || 0}, Prompt: ${prompt?.length || 0} chars`);
 
@@ -62,10 +69,31 @@ export async function generateWithGemini(
     console.log(`[API:${requestId}]   Image ${idx + 1}: raw, ${(image.length / 1024).toFixed(1)}KB`);
     return { data: image, mimeType: "image/png" };
   });
+  // CRB-03: the call record is built from what this transport actually
+  // sends (auth api-key, real reference set, ignored mask) at transport
+  // start; only the stage is filled in per outcome below.
+  const sentRefs: ReferenceInput[] = references?.length
+    ? references
+    : (images || []).map((image) => ({ image }));
+  const { purposes, purposeSource } = summarizePurposes(sentRefs);
+  const geminiDeclared = imageCapabilities("gemini", model);
+  const callBase: Omit<ProviderCallRecord, "stage"> = {
+    at: Date.now(),
+    provider: "gemini",
+    modelId: model,
+    displayName: MODEL_DISPLAY_NAMES[model] ?? model,
+    resolvedFrom: modelSource ?? "node-legacy",
+    declared: geminiDeclared !== null,
+    ...(geminiDeclared ? { capabilities: geminiDeclared } : {}),
+    referenceCount: sentRefs.length,
+    purposes,
+    purposeSource,
+    hasMask: false,
+    auth: "api-key",
+  };
 
   // Initialize Gemini client
   const ai = new GoogleGenAI({ apiKey });
-
   // Build request parts array with prompt and all images
   const requestParts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
     { text: prompt },
@@ -116,19 +144,44 @@ export async function generateWithGemini(
 
   console.log(`[API:${requestId}] Config: ${JSON.stringify(config)}`);
 
-  // Make request to Gemini
+  // Make request to Gemini. The transport starts here: an SDK throw below
+  // is a submitted failure, recorded as failed — never silent, never success.
   const geminiStartTime = Date.now();
 
-  const response = await ai.models.generateContent({
-    model: MODEL_MAP[model],
-    contents: [
+  let response;
+  try {
+    response = await ai.models.generateContent({
+      model: MODEL_MAP[model],
+      contents: [
+        {
+          role: "user",
+          parts: requestParts,
+        },
+      ],
+      config,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Gemini request failed";
+    console.error(`[API:${requestId}] Gemini transport error: ${message.substring(0, 200)}`);
+    if (message.includes("429")) {
+      return NextResponse.json<GenerateResponse>(
+        {
+          success: false,
+          error: "Rate limit reached. Please wait and try again.",
+          call: { ...callBase, stage: "failed" },
+        },
+        { status: 429 }
+      );
+    }
+    return NextResponse.json<GenerateResponse>(
       {
-        role: "user",
-        parts: requestParts,
+        success: false,
+        error: message.substring(0, 200),
+        call: { ...callBase, stage: "failed" },
       },
-    ],
-    config,
-  });
+      { status: 500 }
+    );
+  }
 
   const geminiDuration = Date.now() - geminiStartTime;
   console.log(`[API:${requestId}] Gemini API completed in ${geminiDuration}ms`);
@@ -142,6 +195,7 @@ export async function generateWithGemini(
       {
         success: false,
         error: "No response from AI model",
+        call: { ...callBase, stage: "failed" },
       },
       { status: 500 }
     );
@@ -156,6 +210,7 @@ export async function generateWithGemini(
       {
         success: false,
         error: "No content in response",
+        call: { ...callBase, stage: "failed" },
       },
       { status: 500 }
     );
@@ -172,7 +227,11 @@ export async function generateWithGemini(
 
       const dataUrl = `data:${mimeType};base64,${imgData}`;
 
-      const responsePayload = { success: true, image: dataUrl };
+      const responsePayload: GenerateResponse = {
+        success: true,
+        image: dataUrl,
+        call: { ...callBase, stage: "succeeded" },
+      };
       const responseSize = JSON.stringify(responsePayload).length;
       const responseSizeMB = (responseSize / (1024 * 1024)).toFixed(2);
 
@@ -194,17 +253,18 @@ export async function generateWithGemini(
         {
           success: false,
           error: `Model returned text instead of image: ${part.text.substring(0, 200)}`,
+          call: { ...callBase, stage: "failed" },
         },
         { status: 500 }
       );
     }
   }
 
-  console.error(`[API:${requestId}] No image or text found in Gemini response`);
   return NextResponse.json<GenerateResponse>(
     {
       success: false,
       error: "No image in response",
+      call: { ...callBase, stage: "failed" },
     },
     { status: 500 }
   );
