@@ -21,7 +21,7 @@ export interface CharacterRunEvent {
   nodeId: string;
   runId: string;
   status: "success" | "failed";
-  candidates: Array<{ candidateId: string; referenceIds: string[] }>;
+  candidates: Array<{ candidateId: string; referenceIds: string[]; assetId?: string }>;
   /** Selection this run was taken against; links rerun chains. */
   inputCandidateId?: string;
   error?: string;
@@ -69,7 +69,8 @@ export interface NodeExecutionContext {
   recordCharacterRun?: (event: CharacterRunEvent) => void;
   /** Follows a generations-folder id dedupe so node and contract stay joined. */
   renameCharacterCandidate?: (nodeId: string, fromId: string, toId: string) => void;
-  /** Candidate ids the history cap must retain (selected/approved/stale/branch parents). */
+  /** Points one stable candidate at its deduplicated media asset. */
+  setCharacterCandidateAsset?: (nodeId: string, candidateId: string, assetId: string) => void;
   getProtectedCandidateIds?: (nodeId: string) => string[];
   /** Rebuilds a splitGrid node's cells from its template when stale; returns true if rebuilt */
   materializeSplitGridCells: (nodeId: string) => boolean;

@@ -18,9 +18,17 @@ const MAX_BYTES = 64 * 1024 * 1024;
 
 const cache = new Map<string, SessionEntry>();
 let totalBytes = 0;
+/** Candidate/media ids the contract still points at; eviction must skip them. */
+const protectedIds = new Set<string>();
 
 function entryBytes(dataUrl: string): number {
   return dataUrl.length;
+}
+
+/** Mark ids that must survive eviction (selected/approved/stale/branch parents). */
+export function setProtectedSessionIds(ids: Iterable<string>): void {
+  protectedIds.clear();
+  for (const id of ids) protectedIds.add(id);
 }
 
 export function rememberSessionMedia(id: string, dataUrl: string): void {
@@ -33,10 +41,10 @@ export function rememberSessionMedia(id: string, dataUrl: string): void {
   cache.set(id, { dataUrl, bytes });
   totalBytes += bytes;
   while ((cache.size > MAX_ENTRIES || totalBytes > MAX_BYTES) && cache.size > 0) {
-    const oldest = cache.keys().next();
-    if (oldest.done) break;
-    const removed = cache.get(oldest.value);
-    cache.delete(oldest.value);
+    const oldestUnprotected = [...cache.keys()].find((key) => !protectedIds.has(key));
+    if (!oldestUnprotected) break;
+    const removed = cache.get(oldestUnprotected);
+    cache.delete(oldestUnprotected);
     if (removed) totalBytes -= removed.bytes;
   }
 }
@@ -46,7 +54,13 @@ export function readSessionMedia(id: string): string | null {
   return cache.get(id)?.dataUrl ?? null;
 }
 
+/** All resident ids, for save-time externalization of unselected candidates. */
+export function listSessionMediaIds(): string[] {
+  return [...cache.keys()];
+}
+
 export function clearSessionMedia(): void {
   cache.clear();
   totalBytes = 0;
+  protectedIds.clear();
 }

@@ -14,6 +14,7 @@ import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { pollGenerateTask } from "./pollTaskCompletion";
 import { runWithFallback } from "./runWithFallback";
 import { rememberSessionMedia } from "./sessionMedia";
+import { newCharacterId } from "@/lib/characterProject";
 import type { NodeExecutionContext } from "./types";
 
 /**
@@ -181,7 +182,7 @@ export async function executeNanoBanana(
 
       if (result.success && result.image) {
         const timestamp = Date.now();
-        const imageId = `${timestamp}`;
+        const imageId = newCharacterId("cand");
 
         // Save to global history
         addToGlobalHistory({
@@ -195,9 +196,12 @@ export async function executeNanoBanana(
         // Append-only candidate history (CRB-02): a successful rerun must not
         // silently replace the human-selected result. The new image is always
         // recorded; outputImage keeps the explicit selection and only adopts
-        // the fresh result when nothing was selected yet.
+        // the fresh result when nothing was selected yet. The candidate id is
+        // stable; the generations-folder file id is tracked separately so
+        // content deduplication reuses bytes without merging candidates.
         const newHistoryItem = {
           id: imageId,
+          assetId: imageId,
           timestamp,
           prompt: finalPrompt,
           aspectRatio: nodeData.aspectRatio,
@@ -248,13 +252,13 @@ export async function executeNanoBanana(
         try {
           ctx.recordCharacterRun?.({
             nodeId: node.id,
-            runId: `run-${timestamp}`,
+            runId: newCharacterId("run"),
             status: "success",
-            candidates: [{ candidateId: imageId, referenceIds: [] }],
+            candidates: [{ candidateId: imageId, assetId: imageId, referenceIds: [] }],
             ...(priorSelectedId ? { inputCandidateId: priorSelectedId } : {}),
           });
-        } catch {
-          // Contract bookkeeping must never fail a completed generation.
+        } catch (error) {
+          console.error("[nanoBanana] character-run bookkeeping failed:", error);
         }
 
         // Push new image to connected downstream outputGallery nodes (atomic append)
@@ -298,17 +302,13 @@ export async function executeNanoBanana(
                   const histCopy = [...(currentData.imageHistory || [])];
                   const entryIndex = histCopy.findIndex((h) => h.id === imageId);
                   if (entryIndex !== -1) {
-                    histCopy[entryIndex] = { ...histCopy[entryIndex], id: saveResult.imageId };
-                    const patch: Partial<NanoBananaNodeData> = { imageHistory: histCopy };
-                    if (currentData.selectedHistoryId === imageId) {
-                      patch.selectedHistoryId = saveResult.imageId;
-                    }
-                    updateNodeData(node.id, patch);
+                    histCopy[entryIndex] = { ...histCopy[entryIndex], assetId: saveResult.imageId };
+                    updateNodeData(node.id, { imageHistory: histCopy });
                     rememberSessionMedia(saveResult.imageId, result.image);
                     try {
-                      ctx.renameCharacterCandidate?.(node.id, imageId, saveResult.imageId);
-                    } catch {
-                      // Contract bookkeeping must never fail a completed generation.
+                      ctx.setCharacterCandidateAsset?.(node.id, imageId, saveResult.imageId);
+                    } catch (assetError) {
+                      console.error("[nanoBanana] candidate-asset bookkeeping failed:", assetError);
                     }
                   }
                 }
@@ -348,13 +348,13 @@ export async function executeNanoBanana(
       try {
         ctx.recordCharacterRun?.({
           nodeId: node.id,
-          runId: `run-${Date.now()}`,
+          runId: newCharacterId("run"),
           status: "failed",
           candidates: [],
           error: errorMessage,
         });
-      } catch {
-        // Contract bookkeeping must never mask the original failure.
+      } catch (bookkeepingError) {
+        console.error("[nanoBanana] character-run bookkeeping failed:", bookkeepingError);
       }
       throw new Error(errorMessage);
     }

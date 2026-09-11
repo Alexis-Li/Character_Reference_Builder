@@ -164,6 +164,8 @@ export interface CarouselImageItem {
   prompt: string;
   aspectRatio: AspectRatio;
   model: ModelType;
+  /** Stable media blob identity; defaults to id for legacy rows. */
+  assetId?: string;
 }
 
 /**

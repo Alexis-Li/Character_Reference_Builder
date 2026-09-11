@@ -67,6 +67,12 @@ export interface Candidate {
   referenceIds: string[];
   inferenceNotes?: string;
   review: CandidateReviewState;
+  /**
+   * Stable media blob identity. Defaults to the candidate id for legacy rows.
+   * Content deduplication may share one asset across candidates, but it never
+   * rewrites candidate ids, runs, or part ownership.
+   */
+  assetId?: string;
 }
 
 export type RunStatus = "success" | "failed";
@@ -96,6 +102,20 @@ export interface CharacterProject {
 
 export function selectionKey(partId: string, view: string): string {
   return `${partId}@${view}`;
+}
+
+/** Loadable blob for a candidate; legacy rows without assetId fall back to id. */
+export function candidateAssetId(candidate: Pick<Candidate, "id" | "assetId">): string {
+  return candidate.assetId ?? candidate.id;
+}
+
+/** Globally unique run/candidate ids that never collide within one millisecond. */
+export function newCharacterId(prefix: string): string {
+  const unique =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${unique}`;
 }
 
 export function createCharacterProject(id: string, updatedAt: number = Date.now()): CharacterProject {
@@ -156,7 +176,11 @@ export function updateProjectLocks(
     locks.length !== project.projectLocks.length ||
     locks.some((lock) => {
       const prev = project.projectLocks.find((item) => item.id === lock.id);
-      return !prev || prev.description !== lock.description;
+      return (
+        !prev ||
+        prev.description !== lock.description ||
+        (prev.sourceReferenceId ?? null) !== (lock.sourceReferenceId ?? null)
+      );
     });
   const next = touch({ ...project, projectLocks: [...locks] });
   if (!changed) return { project: next, affected: [] };
@@ -203,7 +227,7 @@ export function updateReference(
  */
 export function adoptCandidate(
   project: CharacterProject,
-  input: { candidateId: string; partId: string; view: string; referenceIds?: string[] },
+  input: { candidateId: string; partId: string; view: string; referenceIds?: string[]; assetId?: string },
 ): CharacterProject {
   if (project.candidates.some((item) => item.id === input.candidateId)) return project;
   if (!project.parts.some((item) => item.id === input.partId)) {
@@ -225,15 +249,37 @@ export function adoptCandidate(
         runId: "",
         referenceIds: [...(input.referenceIds ?? [])],
         review: "unreviewed" as CandidateReviewState,
+        assetId: input.assetId ?? input.candidateId,
       },
     ],
   });
 }
 
 /**
- * Remap a candidate id (e.g. the generations folder deduplicated the file
- * onto an existing stable id). Selection references follow the rename; if
- * the target already exists the entries merge instead of duplicating.
+ * Point one candidate at an already-stored media asset (e.g. the generations
+ * folder deduplicated the bytes onto an existing file). Identity, runs, and
+ * part ownership never change; only the loadable blob reference follows.
+ */
+export function setCandidateAsset(
+  project: CharacterProject,
+  candidateId: string,
+  assetId: string,
+): CharacterProject {
+  if (!project.candidates.some((item) => item.id === candidateId)) return project;
+  if (!assetId) return project;
+  return touch({
+    ...project,
+    candidates: project.candidates.map((candidate) =>
+      candidate.id === candidateId ? { ...candidate, assetId } : candidate,
+    ),
+  });
+}
+
+/**
+ * Remap a provisional candidate id onto the storage-stable id. Selection and
+ * runs follow the rename and parent links are rewritten so branch chains
+ * never dangle. Renaming onto an existing id is a no-op: independent runs
+ * keep independent candidates instead of merging.
  */
 export function renameCandidate(
   project: CharacterProject,
@@ -242,14 +288,12 @@ export function renameCandidate(
 ): CharacterProject {
   if (fromId === toId) return project;
   if (!project.candidates.some((item) => item.id === fromId)) return project;
-  const seen = new Set<string>();
-  const candidates: Candidate[] = [];
-  for (const candidate of project.candidates) {
-    const id = candidate.id === fromId ? toId : candidate.id;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    candidates.push(id === candidate.id ? candidate : { ...candidate, id });
-  }
+  if (project.candidates.some((item) => item.id === toId)) return project;
+  const candidates: Candidate[] = project.candidates.map((candidate) => {
+    const next: Candidate = candidate.id === fromId ? { ...candidate, id: toId } : { ...candidate };
+    if (next.parentCandidateId === fromId) return { ...next, parentCandidateId: toId };
+    return next;
+  });
   const selection: Record<string, string> = {};
   for (const [key, value] of Object.entries(project.selection)) {
     selection[key] = value === fromId ? toId : value;
@@ -326,7 +370,7 @@ export interface SuccessfulRunInput {
   view: string;
   inputCandidateId?: string;
   /** One entry per produced image; each becomes an independent candidate. */
-  outputs: Array<{ candidateId: string; referenceIds: string[]; inferenceNotes?: string }>;
+  outputs: Array<{ candidateId: string; referenceIds: string[]; inferenceNotes?: string; assetId?: string }>;
 }
 
 /**
@@ -354,6 +398,7 @@ export function recordSuccessfulRun(
     referenceIds: [...output.referenceIds],
     inferenceNotes: output.inferenceNotes,
     review: "unreviewed",
+    assetId: output.assetId ?? output.candidateId,
   }));
   const run: ProjectRun = {
     id: input.runId,
@@ -516,7 +561,7 @@ export function deserializeProject(raw: string): CharacterProject {
       requirements: [...(part.requirements ?? [])],
       correctionHistory: [...(part.correctionHistory ?? [])],
     })),
-    candidates: parsed.candidates.map((candidate) => ({ ...candidate })),
+    candidates: parsed.candidates.map((candidate) => ({ ...candidate, assetId: candidate.assetId ?? candidate.id })),
     runs: (parsed.runs ?? []).map((run) => ({ ...run, candidateIds: [...(run.candidateIds ?? [])] })),
     selection: { ...(parsed.selection ?? {}) },
     updatedAt: parsed.updatedAt ?? 0,

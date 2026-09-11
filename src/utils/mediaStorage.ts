@@ -214,27 +214,15 @@ async function externalizeNodeMedia(
       // Handle output image - AI generated, save to generations.
       // The selection is a stable candidate id; the index is only a view
       // cursor and must never reassign the selected asset after truncation.
+      // Files are addressed by the candidate's asset id so content dedupe
+      // reuses bytes without rewriting candidate identity.
       const selectedIndex = d.selectedHistoryIndex || 0;
       const stableSelection =
         d.selectedHistoryId != null && d.imageHistory?.some((h) => h.id === d.selectedHistoryId)
           ? d.selectedHistoryId
           : undefined;
-      const expectedRef = stableSelection ?? d.imageHistory?.[selectedIndex]?.id;
-
-      if (d.outputImageRef && isDataUrl(d.outputImage)) {
-        // Verify existing ref matches expected history ID
-        if (d.outputImageRef === expectedRef) {
-          outputImage = null; // Ref is correct, just clear base64
-        } else {
-          // Ref doesn't match history - re-save with correct ID
-          outputImageRef = await saveImageAndGetId(d.outputImage, workflowPath, savedImageIds, "generations", expectedRef);
-          outputImage = null;
-        }
-      } else if (isDataUrl(d.outputImage)) {
-        // No existing ref - save with expected history ID for consistency
-        outputImageRef = await saveImageAndGetId(d.outputImage, workflowPath, savedImageIds, "generations", expectedRef);
-        outputImage = null;
-      }
+      const selectedItem = d.imageHistory?.find((h) => h.id === (stableSelection ?? d.imageHistory?.[selectedIndex]?.id));
+      const expectedRef = selectedItem ? (selectedItem.assetId ?? selectedItem.id) : undefined;
 
       // Handle input images array (these come from connected nodes, save to inputs if present)
       // Skip if corresponding inputImageRef already exists
@@ -259,24 +247,26 @@ async function externalizeNodeMedia(
       if (d.imageHistory?.length) {
         cleanedHistory = [];
         for (const item of d.imageHistory) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const legacyImage = (item as any).image as string | undefined;
+          const legacyImage =
+            "image" in item && typeof item.image === "string" ? item.image : undefined;
+          const assetId = item.assetId ?? item.id;
           if (legacyImage && isDataUrl(legacyImage)) {
             // Save history image to generations if not already saved
             await saveImageAndGetId(
               legacyImage,
-              workflowPath, savedImageIds, "generations", item.id
+              workflowPath, savedImageIds, "generations", assetId
             );
             // Push clean item with only typed fields (strips legacy `image`)
             cleanedHistory.push({
               id: item.id,
+              assetId,
               timestamp: item.timestamp,
               prompt: item.prompt,
               aspectRatio: item.aspectRatio,
               model: item.model,
             });
           } else {
-            cleanedHistory.push(item);
+            cleanedHistory.push(item.assetId ? item : { ...item, assetId });
           }
         }
       }

@@ -110,20 +110,23 @@ import {
   addReference,
   adoptCandidate,
   approveCandidate,
+  candidateAssetId,
   createCharacterProject,
   definePart,
   markUpstreamChange,
+  newCharacterId,
   recordFailedRun,
   recordSuccessfulRun,
   renameCandidate,
   selectCandidate,
   selectionKey,
+  setCandidateAsset,
   updateProjectLocks,
   updateReference,
   type CharacterProject,
   type DesignConstraint,
 } from "@/lib/characterProject";
-import { clearSessionMedia } from "./execution/sessionMedia";
+import { clearSessionMedia, readSessionMedia, rememberSessionMedia, setProtectedSessionIds } from "./execution/sessionMedia";
 import type { CharacterRunEvent } from "./execution/types";
 
 /**
@@ -135,6 +138,50 @@ import type { CharacterRunEvent } from "./execution/types";
 const CHARACTER_DEFAULT_VIEW = "default";
 const partIdForNode = (nodeId: string): string => nodeId;
 const referenceIdForNode = (nodeId: string): string => `ref:${nodeId}`;
+
+const UPSTREAM_IMAGE_TYPES = new Set(["imageInput", "annotation"]);
+const GENERATION_TARGET_TYPES = new Set(["nanoBanana"]);
+
+function upstreamContentChanged(
+  node: WorkflowNode | undefined,
+  patch: Partial<WorkflowNodeData>,
+): boolean {
+  if (!node || !UPSTREAM_IMAGE_TYPES.has(node.type)) return false;
+  const prev = node.data as Record<string, unknown>;
+  const next = patch as Record<string, unknown>;
+  if (node.type === "imageInput") {
+    return (
+      ("image" in next && next.image !== prev.image) ||
+      ("imageRef" in next && next.imageRef !== prev.imageRef)
+    );
+  }
+  return (
+    ("sourceImage" in next && next.sourceImage !== prev.sourceImage) ||
+    ("sourceImageRef" in next && next.sourceImageRef !== prev.sourceImageRef) ||
+    ("outputImage" in next && next.outputImage !== prev.outputImage) ||
+    ("outputImageRef" in next && next.outputImageRef !== prev.outputImageRef) ||
+    ("annotations" in next &&
+      JSON.stringify(next.annotations) !== JSON.stringify(prev.annotations))
+  );
+}
+
+function staleGenerationPart(
+  project: CharacterProject,
+  partId: string,
+  note?: string,
+): { project: CharacterProject; affected: string[] } {
+  const staleable = new Set(["selected", "approved", "unreviewed"]);
+  const affected: string[] = [];
+  const candidates = project.candidates.map((candidate) => {
+    if (candidate.partId === partId && candidate.view === CHARACTER_DEFAULT_VIEW && staleable.has(candidate.review)) {
+      affected.push(candidate.id);
+      return { ...candidate, review: "stale" as const, inferenceNotes: note ?? candidate.inferenceNotes };
+    }
+    return candidate;
+  });
+  if (affected.length === 0) return { project, affected };
+  return { project: { ...project, candidates, updatedAt: Date.now() }, affected };
+}
 import type { NodeExecutionContext } from "./execution";
 export type { LevelGroup } from "./utils/executionUtils";
 export { CONCURRENCY_SETTINGS_KEY } from "./utils/executionUtils";
@@ -382,6 +429,8 @@ interface WorkflowStore {
     note?: string,
   ) => string[];
   markCharacterUpstreamStale: (referenceIds: string[], note?: string) => string[];
+  /** Keep session-media eviction from dropping still-referenced candidates. */
+  syncSessionProtection: () => void;
 
   // Helpers
   getNodeById: (id: string) => WorkflowNode | undefined;
@@ -874,7 +923,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       if (!pendingDataSnapshot) {
         pendingDataSnapshot = captureUndoSnapshot(get());
       }
-      if (dataChangeTimer) clearTimeout(dataChangeTimer);
+      clearTimeout(dataChangeTimer ?? undefined);
       dataChangeTimer = setTimeout(() => {
         if (pendingDataSnapshot) {
           undoManager.push(pendingDataSnapshot);
@@ -885,14 +934,34 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       }, 500);
     }
 
+    const contentChanged = upstreamContentChanged(node, data);
+    const prevProject = get().characterProject;
+    let nextProject: CharacterProject | null = prevProject;
+    if (contentChanged && nextProject) {
+      const refId = referenceIdForNode(nodeId);
+      if (!nextProject.references.some((item) => item.id === refId)) {
+        nextProject = addReference(nextProject, {
+          id: refId,
+          kind: node?.type === "imageInput" ? "original" : "auxiliary",
+          source: `node:${nodeId}`,
+        });
+      }
+      nextProject = markUpstreamChange(nextProject, {
+        referenceIds: [refId],
+        note: `upstream ${nodeId} changed`,
+      }).project;
+    }
+
     set((state) => ({
-      nodes: state.nodes.map((node) =>
-        node.id === nodeId
-          ? { ...node, data: { ...node.data, ...data } as WorkflowNodeData }
-          : node
+      nodes: state.nodes.map((entry) =>
+        entry.id === nodeId
+          ? { ...entry, data: { ...entry.data, ...data } as WorkflowNodeData }
+          : entry
       ) as WorkflowNode[],
       hasUnsavedChanges: true,
+      ...(nextProject !== prevProject ? { characterProject: nextProject } : {}),
     }));
+    if (nextProject !== prevProject) get().syncSessionProtection();
     // Recompute dimming if this is a switch or conditionalSwitch node and their control data changed
     if (node?.type === "switch" && "switches" in data) {
       get().recomputeDimmedNodes();
@@ -996,6 +1065,39 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       setTimeout(() => { deleteCheckpointActive = false; }, 0);
     }
 
+    // Capture topology changes before applyEdgeChanges swaps the edge list.
+    // Any wiring change into a generation node alters its design basis, so
+    // that part's candidates need human re-review in the same transition.
+    const changedTargets = new Set<string>();
+    if (hasAddOrRemove) {
+      const nodesById = new Map(get().nodes.map((node) => [node.id, node]));
+      const removedIds = new Set<string>();
+      for (const change of changes) {
+        if (change.type === "remove" && "id" in change) removedIds.add(change.id);
+      }
+      for (const edge of get().edges.filter((e) => removedIds.has(e.id))) {
+        if (GENERATION_TARGET_TYPES.has(nodesById.get(edge.target)?.type ?? "")) {
+          changedTargets.add(edge.target);
+        }
+      }
+      for (const change of changes) {
+        if (change.type === "add" && "item" in change) {
+          // React Flow add-change carries a generic Edge; same shape as WorkflowEdge.
+          const item = change.item as WorkflowEdge;
+          if (item && GENERATION_TARGET_TYPES.has(nodesById.get(item.target)?.type ?? "")) {
+            changedTargets.add(item.target);
+          }
+        }
+      }
+    }
+    const prevProject = get().characterProject;
+    let nextProject: CharacterProject | null = prevProject;
+    if (changedTargets.size > 0 && nextProject) {
+      for (const targetId of changedTargets) {
+        nextProject = staleGenerationPart(nextProject, partIdForNode(targetId), `wiring ${targetId} changed`).project;
+      }
+    }
+
     // Capture removed edges before applyEdgeChanges removes them
     let removedEdges: WorkflowEdge[] = [];
     if (hasRemoveChange) {
@@ -1008,7 +1110,9 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     set((state) => ({
       edges: applyEdgeChanges(changes, state.edges),
       ...(hasMeaningfulChange ? { hasUnsavedChanges: true } : {}),
+      ...(nextProject !== prevProject ? { characterProject: nextProject } : {}),
     }));
+    if (nextProject !== prevProject) get().syncSessionProtection();
 
     if (hasRemoveChange) {
       clearStaleInputImages(removedEdges, get);
@@ -1023,6 +1127,12 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
 
   onConnect: (connection: Connection, edgeDataOverrides?: Record<string, unknown>) => {
     pushUndoCheckpoint(get, set);
+    const targetType = get().nodes.find((n) => n.id === connection.target)?.type;
+    const prevProject = get().characterProject;
+    let nextProject: CharacterProject | null = prevProject;
+    if (targetType && GENERATION_TARGET_TYPES.has(targetType) && nextProject && connection.target) {
+      nextProject = staleGenerationPart(nextProject, partIdForNode(connection.target), `wiring ${connection.target} changed`).project;
+    }
     set((state) => {
       const baseData = buildConnectionEdgeData(connection, state.nodes, state.edges);
       const newEdge = {
@@ -1034,14 +1144,22 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       return {
         edges: addEdge(newEdge, state.edges as never) as WorkflowEdge[],
         hasUnsavedChanges: true,
+        ...(nextProject !== prevProject ? { characterProject: nextProject } : {}),
       };
     });
+    if (nextProject !== prevProject) get().syncSessionProtection();
     get().incrementManualChangeCount();
     get().recomputeDimmedNodes();
   },
 
   addEdgeWithType: (connection: Connection, edgeType: string, edgeDataOverrides?: Record<string, unknown>) => {
     pushUndoCheckpoint(get, set);
+    const targetType = get().nodes.find((n) => n.id === connection.target)?.type;
+    const prevProject = get().characterProject;
+    let nextProject: CharacterProject | null = prevProject;
+    if (targetType && GENERATION_TARGET_TYPES.has(targetType) && nextProject && connection.target) {
+      nextProject = staleGenerationPart(nextProject, partIdForNode(connection.target), `wiring ${connection.target} changed`).project;
+    }
     set((state) => {
       const baseData = buildConnectionEdgeData(connection, state.nodes, state.edges);
       const newEdge = {
@@ -1053,17 +1171,27 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       return {
         edges: addEdge(newEdge, state.edges as never) as WorkflowEdge[],
         hasUnsavedChanges: true,
+        ...(nextProject !== prevProject ? { characterProject: nextProject } : {}),
       };
     });
+    if (nextProject !== prevProject) get().syncSessionProtection();
   },
 
   removeEdge: (edgeId: string) => {
     pushUndoCheckpoint(get, set);
     const removedEdge = get().edges.find((e) => e.id === edgeId);
+    const targetType = removedEdge ? get().nodes.find((n) => n.id === removedEdge.target)?.type : undefined;
+    const prevProject = get().characterProject;
+    let nextProject: CharacterProject | null = prevProject;
+    if (removedEdge && targetType && GENERATION_TARGET_TYPES.has(targetType) && nextProject) {
+      nextProject = staleGenerationPart(nextProject, partIdForNode(removedEdge.target), `wiring ${removedEdge.target} changed`).project;
+    }
     set((state) => ({
       edges: state.edges.filter((edge) => edge.id !== edgeId),
       hasUnsavedChanges: true,
+      ...(nextProject !== prevProject ? { characterProject: nextProject } : {}),
     }));
+    if (nextProject !== prevProject) get().syncSessionProtection();
     if (removedEdge) {
       deleteCheckpointActive = true;
       try {
@@ -1633,7 +1761,6 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     },
     materializeSplitGridCells: (nodeId: string) => get().materializeSplitGridCells(nodeId),
     recordCharacterRun: (event: CharacterRunEvent) => {
-      // Contract bookkeeping runs beside execution and must never break it.
       try {
         const partId = partIdForNode(event.nodeId);
         const state = get();
@@ -1666,6 +1793,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
             inputCandidateId: event.inputCandidateId,
             outputs: event.candidates.map((candidate) => ({
               candidateId: candidate.candidateId,
+              assetId: candidate.assetId ?? candidate.candidateId,
               referenceIds: [...new Set([...candidate.referenceIds, ...referenceIds])],
             })),
           });
@@ -1683,9 +1811,10 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           });
         }
         set({ characterProject: project, hasUnsavedChanges: true });
-      } catch {
-        // Duplicate run ids (same-ms primary+fallback failures) and any other
-        // bookkeeping conflict resolve to a no-op; execution already reported.
+        get().syncSessionProtection();
+      } catch (error) {
+        console.error("[character-project] record run failed:", error);
+        throw error;
       }
     },
     renameCharacterCandidate: (nodeId: string, fromId: string, toId: string) => {
@@ -1694,8 +1823,22 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
         if (!project) return;
         void nodeId;
         set({ characterProject: renameCandidate(project, fromId, toId), hasUnsavedChanges: true });
-      } catch {
-        // Bookkeeping only.
+        get().syncSessionProtection();
+      } catch (error) {
+        console.error("[character-project] rename candidate failed:", error);
+      }
+    },
+    setCharacterCandidateAsset: (nodeId: string, candidateId: string, assetId: string) => {
+      try {
+        const project = get().characterProject;
+        if (!project) return;
+        void nodeId;
+        const bytes = readSessionMedia(candidateId) ?? readSessionMedia(assetId);
+        if (bytes) rememberSessionMedia(assetId, bytes);
+        set({ characterProject: setCandidateAsset(project, candidateId, assetId), hasUnsavedChanges: true });
+        get().syncSessionProtection();
+      } catch (error) {
+        console.error("[character-project] set candidate asset failed:", error);
       }
     },
     getProtectedCandidateIds: (nodeId: string) => {
@@ -1705,16 +1848,23 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       const selectedId = project.selection[selectionKey(partId, CHARACTER_DEFAULT_VIEW)];
       const byId = new Map(project.candidates.map((candidate) => [candidate.id, candidate]));
       const protectedIds = new Set<string>();
-      if (selectedId) protectedIds.add(selectedId);
+      if (selectedId) {
+        protectedIds.add(selectedId);
+        const selected = byId.get(selectedId);
+        if (selected) protectedIds.add(candidateAssetId(selected));
+      }
       for (const candidate of project.candidates) {
         if (candidate.partId !== partId || candidate.view !== CHARACTER_DEFAULT_VIEW) continue;
         if (candidate.review === "selected" || candidate.review === "approved" || candidate.review === "stale") {
           protectedIds.add(candidate.id);
+          protectedIds.add(candidateAssetId(candidate));
         }
       }
       for (const candidate of project.candidates) {
         if (candidate.parentCandidateId && byId.has(candidate.parentCandidateId)) {
           protectedIds.add(candidate.parentCandidateId);
+          const parent = byId.get(candidate.parentCandidateId);
+          if (parent) protectedIds.add(candidateAssetId(parent));
         }
       }
       return [...protectedIds];
@@ -2759,6 +2909,100 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     // replaced. Safe because the undo history that referenced them is cleared below.
     revokeNodeBlobUrls(get().nodes);
 
+    // Backfill asset ids on history items so stable candidate ids survive
+    // content-dedupe renames, then seed legacy outputs into the contract so
+    // the first rerun keeps the visible selection instead of auto-selecting.
+    let restoredProject: CharacterProject | null = hydratedWorkflow.characterProject ?? null;
+    if (restoredProject) {
+      restoredProject = {
+        ...restoredProject,
+        candidates: restoredProject.candidates.map((candidate) => ({
+          ...candidate,
+          assetId: candidate.assetId ?? candidate.id,
+        })),
+      };
+    }
+    const seededNodes = hydratedWorkflow.nodes.map((node) => {
+      if (node.type !== "nanoBanana") return node;
+      const data = node.data as NanoBananaNodeData;
+      if (!data.imageHistory?.length) return node;
+      let touched = false;
+      const history = data.imageHistory.map((item) => {
+        if (item.assetId) return item;
+        touched = true;
+        return { ...item, assetId: item.id };
+      });
+      return touched ? { ...node, data: { ...data, imageHistory: history } } : node;
+    });
+    hydratedWorkflow = { ...hydratedWorkflow, nodes: seededNodes };
+    if (!restoredProject) {
+      let legacy: CharacterProject | null = null;
+      const ensureLegacy = (): CharacterProject => {
+        if (!legacy) legacy = createCharacterProject(newCharacterId("char"));
+        return legacy;
+      };
+      for (const node of hydratedWorkflow.nodes) {
+        if (node.type !== "nanoBanana") continue;
+        const data = node.data as NanoBananaNodeData;
+        const history = data.imageHistory ?? [];
+        const hasOutput = data.outputImage != null;
+        if (history.length === 0 && !hasOutput) continue;
+        const partId = partIdForNode(node.id);
+        let project = ensureLegacy();
+        if (!project.parts.some((part) => part.id === partId)) {
+          project = definePart(project, { id: partId, name: partId, requirements: [], correctionHistory: [] });
+        }
+        const upstreamRefIds: string[] = [];
+        for (const edge of hydratedWorkflow.edges.filter((e) => e.target === node.id)) {
+          const source = hydratedWorkflow.nodes.find((n) => n.id === edge.source);
+          if (!source || (source.type !== "imageInput" && source.type !== "annotation")) continue;
+          const refId = referenceIdForNode(source.id);
+          if (!project.references.some((item) => item.id === refId)) {
+            project = addReference(project, {
+              id: refId,
+              kind: source.type === "imageInput" ? "original" : "auxiliary",
+              source: `node:${source.id}`,
+            });
+          }
+          upstreamRefIds.push(refId);
+        }
+        if (history.length > 0) {
+          for (const item of history) {
+            project = adoptCandidate(project, {
+              candidateId: item.id,
+              assetId: item.assetId ?? item.id,
+              partId,
+              view: CHARACTER_DEFAULT_VIEW,
+              referenceIds: upstreamRefIds,
+            });
+          }
+          const selectedId =
+            data.selectedHistoryId != null && history.some((h) => h.id === data.selectedHistoryId)
+              ? data.selectedHistoryId
+              : (history[data.selectedHistoryIndex]?.id ?? history[0]?.id);
+          if (selectedId && hasOutput) {
+            project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, selectedId);
+          }
+        } else if (hasOutput) {
+          const legacyId = data.selectedHistoryId ?? newCharacterId("cand-legacy");
+          project = adoptCandidate(project, {
+            candidateId: legacyId,
+            assetId: legacyId,
+            partId,
+            view: CHARACTER_DEFAULT_VIEW,
+            referenceIds: upstreamRefIds,
+          });
+          project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, legacyId);
+          const target = hydratedWorkflow.nodes.find((n) => n.id === node.id);
+          if (target && !(target.data as NanoBananaNodeData).selectedHistoryId) {
+            (target.data as NanoBananaNodeData).selectedHistoryId = legacyId;
+          }
+        }
+        legacy = project;
+      }
+      restoredProject = legacy;
+    }
+
     set({
       // Clear selected state - selection should not be persisted across sessions
       // Also validate position to ensure coordinates are finite numbers
@@ -2792,13 +3036,15 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       viewedCommentNodeIds: new Set<string>(),
       // Reset global image history (full base64 data URLs) when loading a workflow
       globalImageHistory: [],
-      // Restore the asset/version/selection graph; legacy files stay explicitly empty.
-      characterProject: hydratedWorkflow.characterProject ?? null,
+      // Restored graph, with legacy outputs seeded so reruns keep the selection.
+      characterProject: restoredProject,
       // Dismiss welcome modal after loading a workflow
       showQuickstart: false,
     });
+
     // Session bytes belong to the previous graph; drop them with the nodes.
     clearSessionMedia();
+    get().syncSessionProtection();
 
     // Clear snapshot unless explicitly preserving (e.g., AI workflow generation)
     if (!options?.preserveSnapshot) {
@@ -2808,12 +3054,9 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     // Clear undo history — loading a workflow is a fresh start
     // Cancel any pending debounced snapshot so it doesn't fire into the new workflow
     pendingDataSnapshot = null;
-    if (dataChangeTimer) {
-      clearTimeout(dataChangeTimer);
-      dataChangeTimer = null;
-    }
+    clearTimeout(dataChangeTimer ?? undefined);
+    dataChangeTimer = null;
     undoManager.clear();
-    syncUndoFlags(set);
 
     // Recompute dimming after loading workflow
     get().recomputeDimmedNodes();
@@ -2874,9 +3117,36 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
   ensureCharacterProject: () => {
     const existing = get().characterProject;
     if (existing) return existing;
-    const project = createCharacterProject(`char-${Date.now()}`);
+    const project = createCharacterProject(newCharacterId("char"));
     set({ characterProject: project, hasUnsavedChanges: true });
     return project;
+  },
+
+  syncSessionProtection: () => {
+    const project = get().characterProject;
+    if (!project) {
+      setProtectedSessionIds([]);
+      return;
+    }
+    const byId = new Map(project.candidates.map((candidate) => [candidate.id, candidate]));
+    const keep = new Set<string>();
+    for (const id of Object.values(project.selection)) {
+      keep.add(id);
+      const selected = byId.get(id);
+      if (selected) keep.add(candidateAssetId(selected));
+    }
+    for (const candidate of project.candidates) {
+      if (candidate.review === "approved" || candidate.review === "stale") {
+        keep.add(candidate.id);
+        keep.add(candidateAssetId(candidate));
+      }
+      if (candidate.parentCandidateId && byId.has(candidate.parentCandidateId)) {
+        keep.add(candidate.parentCandidateId);
+        const parent = byId.get(candidate.parentCandidateId);
+        if (parent) keep.add(candidateAssetId(parent));
+      }
+    }
+    setProtectedSessionIds(keep);
   },
 
   selectNodeCandidate: (nodeId: string, candidateId: string) => {
@@ -2885,6 +3155,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     project = adoptCandidate(project, { candidateId, partId, view: CHARACTER_DEFAULT_VIEW });
     project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, candidateId);
     set({ characterProject: project, hasUnsavedChanges: true });
+    get().syncSessionProtection();
   },
 
   approveNodeCandidate: (nodeId: string, candidateId: string) => {
@@ -2893,12 +3164,14 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     project = adoptCandidate(project, { candidateId, partId, view: CHARACTER_DEFAULT_VIEW });
     project = approveCandidate(project, candidateId);
     set({ characterProject: project, hasUnsavedChanges: true });
+    get().syncSessionProtection();
   },
 
   updateCharacterLocks: (locks: DesignConstraint[], note?: string) => {
     const project = get().ensureCharacterProject();
     const { project: next, affected } = updateProjectLocks(project, locks, note);
     set({ characterProject: next, hasUnsavedChanges: true });
+    get().syncSessionProtection();
     return affected;
   },
 
@@ -2910,6 +3183,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     const project = get().ensureCharacterProject();
     const { project: next, affected } = updateReference(project, id, patch, note);
     set({ characterProject: next, hasUnsavedChanges: true });
+    get().syncSessionProtection();
     return affected;
   },
 
@@ -2917,6 +3191,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     const project = get().ensureCharacterProject();
     const { project: next, affected } = markUpstreamChange(project, { referenceIds, note });
     set({ characterProject: next, hasUnsavedChanges: true });
+    get().syncSessionProtection();
     return affected;
   },
 
@@ -3058,8 +3333,39 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
         characterProject: get().characterProject ?? undefined,
       };
 
-      // If external media storage is enabled, externalize media before saving
+      // Persist every still-referenced session candidate so an unselected
+      // version survives save/reopen. Files are addressed by asset id; the
+      // candidate id stays stable even when bytes are deduplicated.
       if (useExternalImageStorage) {
+        const project = get().characterProject;
+        if (project) {
+          const pending = new Map<string, string>();
+          for (const candidate of project.candidates) {
+            const asset = candidateAssetId(candidate);
+            const bytes = readSessionMedia(candidate.id) ?? readSessionMedia(asset);
+            if (bytes && bytes.startsWith("data:")) pending.set(asset, bytes);
+          }
+          for (const node of currentNodes) {
+            if (node.type !== "nanoBanana") continue;
+            const history = (node.data as NanoBananaNodeData).imageHistory ?? [];
+            for (const item of history) {
+              const asset = item.assetId ?? item.id;
+              const bytes = readSessionMedia(item.id) ?? readSessionMedia(asset);
+              if (bytes && bytes.startsWith("data:") && !pending.has(asset)) pending.set(asset, bytes);
+            }
+          }
+          for (const [assetId, imageData] of pending) {
+            try {
+              await fetch("/api/workflow-images", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ workflowPath: saveDirectoryPath, imageId: assetId, imageData, folder: "generations" }),
+              });
+            } catch (error) {
+              console.error("[character-project] candidate media save failed:", error);
+            }
+          }
+        }
         workflow = await externalizeWorkflowMedia(workflow, saveDirectoryPath);
       }
 
