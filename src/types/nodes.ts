@@ -166,6 +166,8 @@ export interface CarouselImageItem {
   model: ModelType;
   /** Stable media blob identity; defaults to id for legacy rows. */
   assetId?: string;
+  /** Embedded bytes when external media storage is off; stripped on externalize. */
+  image?: string;
 }
 
 /**

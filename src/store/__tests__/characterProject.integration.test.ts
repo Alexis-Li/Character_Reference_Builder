@@ -232,7 +232,7 @@ describe("character project store integration", () => {
     expect(
       (reopened.nodes.find((n) => n.id === "gen")!.data as unknown as Record<string, unknown>).selectedHistoryId,
     ).toBe(oldestId);
-    expect(readSessionMedia(oldestId)).toBeNull();
+    expect(readSessionMedia(oldestId)).toBe(oldestImage);
   });
 
   it("reference updates isolate parts and lock updates stay atomic from store entries", async () => {

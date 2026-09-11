@@ -589,3 +589,173 @@ describe("third review: operable media never silently lost", () => {
     expect(saved).toBe(false);
   });
 });
+
+describe("fourth review: failed writes never look saved", () => {
+  it("media POST business failure blocks the workflow write", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT)).mockResolvedValueOnce(ok(REVISED));
+    await run("gen");
+    await run("gen");
+    let workflowCalls = 0;
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/workflow-images") {
+        return { ok: true, json: async () => ({ success: false, error: "disk full" }) };
+      }
+      if (typeof url === "string" && url.startsWith("/api/workflow-images?")) {
+        return { ok: true, json: async () => ({ success: false, notFound: true }) };
+      }
+      if (url === "/api/workflow") {
+        workflowCalls += 1;
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      throw new Error(`Unexpected mock request: ${url}`);
+    });
+    useWorkflowStore.setState({
+      workflowId: "wf-fail-biz",
+      workflowName: "crb-02-fail-biz",
+      saveDirectoryPath: "/tmp/crb-02-fail-biz",
+      useExternalImageStorage: true,
+    });
+    const saved = await useWorkflowStore.getState().saveToFile();
+    expect(saved).toBe(false);
+    expect(workflowCalls).toBe(0);
+  });
+
+  it("media POST throw blocks the workflow write", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT)).mockResolvedValueOnce(ok(REVISED));
+    await run("gen");
+    await run("gen");
+    let workflowCalls = 0;
+    mockFetch.mockImplementation(async (url: string) => {
+      if (url === "/api/workflow-images") {
+        throw new Error("network down");
+      }
+      if (typeof url === "string" && url.startsWith("/api/workflow-images?")) {
+        return { ok: true, json: async () => ({ success: false, notFound: true }) };
+      }
+      if (url === "/api/workflow") {
+        workflowCalls += 1;
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      throw new Error(`Unexpected mock request: ${url}`);
+    });
+    useWorkflowStore.setState({
+      workflowId: "wf-fail-net",
+      workflowName: "crb-02-fail-net",
+      saveDirectoryPath: "/tmp/crb-02-fail-net",
+      useExternalImageStorage: true,
+    });
+    const saved = await useWorkflowStore.getState().saveToFile();
+    expect(saved).toBe(false);
+    expect(workflowCalls).toBe(0);
+  });
+
+  it("external-off embeds every candidate and reopens selectable", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT)).mockResolvedValueOnce(ok(REVISED));
+    await run("gen");
+    await run("gen");
+    const history = genData().imageHistory as Array<{ id: string }>;
+    const firstId = history[1].id;
+    const secondId = history[0].id;
+    useWorkflowStore.getState().selectNodeCandidate("gen", firstId);
+
+    let savedPayload: Record<string, unknown> | null = null;
+    let mediaPosts = 0;
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/workflow-images") {
+        mediaPosts += 1;
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      if (url === "/api/workflow") {
+        savedPayload = JSON.parse(init?.body as string) as Record<string, unknown>;
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      throw new Error(`Unexpected mock request: ${url}`);
+    });
+    useWorkflowStore.setState({
+      workflowId: "wf-embed",
+      workflowName: "crb-02-embed",
+      saveDirectoryPath: "/tmp/crb-02-embed",
+      useExternalImageStorage: false,
+    });
+    const saved = await useWorkflowStore.getState().saveToFile();
+    expect(saved).toBe(true);
+    expect(mediaPosts).toBe(0);
+    const payload = (savedPayload as unknown as { workflow: { nodes: WorkflowNode[]; edges: WorkflowEdge[]; characterProject: CharacterProject } }).workflow;
+    const savedGen = payload.nodes.find((n) => n.id === "gen")!;
+    const savedHistory = (savedGen.data as unknown as { imageHistory: Array<{ id: string; image?: string }> }).imageHistory;
+    expect(savedHistory).toHaveLength(2);
+    expect(savedHistory.find((h) => h.id === firstId)?.image).toBe(FRONT);
+    expect(savedHistory.find((h) => h.id === secondId)?.image).toBe(REVISED);
+
+    useWorkflowStore.getState().clearWorkflow();
+    expect(readSessionMedia(firstId)).toBeNull();
+    await useWorkflowStore.getState().loadWorkflow(
+      { version: 1, name: "crb-02-embed", nodes: payload.nodes, edges: payload.edges, edgeStyle: "angular", characterProject: payload.characterProject },
+      "/tmp/crb-02-embed",
+    );
+    expect(readSessionMedia(firstId)).toBe(FRONT);
+    expect(readSessionMedia(secondId)).toBe(REVISED);
+    expect(useWorkflowStore.getState().characterProject?.selection).toEqual({ "gen@default": firstId });
+    const secondBytes = readSessionMedia(secondId)!;
+    useWorkflowStore.getState().updateNodeData("gen", {
+      outputImage: secondBytes,
+      selectedHistoryId: secondId,
+      selectedHistoryIndex: 0,
+      status: "idle",
+      error: null,
+    });
+    useWorkflowStore.getState().selectNodeCandidate("gen", secondId);
+    expect(useWorkflowStore.getState().getConnectedInputs("consumer").images[0]).toBe(REVISED);
+  });
+
+  it("in-flight approval keeps the project dirty until the next save", async () => {
+    seedTwoParts();
+    mockFetch.mockResolvedValueOnce(ok(FRONT));
+    await run("gen");
+    const candidateId = (genData().imageHistory as Array<{ id: string }>)[0].id;
+    useWorkflowStore.setState({
+      workflowId: "wf-race",
+      workflowName: "crb-02-race",
+      saveDirectoryPath: "/tmp/crb-02-race",
+      useExternalImageStorage: true,
+    });
+
+    const gate = Promise.withResolvers<unknown>();
+    const workflowBodies: string[] = [];
+    mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/workflow-images") {
+        const body = JSON.parse(init?.body as string) as { imageId: string };
+        return { ok: true, json: async () => ({ success: true, imageId: body.imageId }) };
+      }
+      if (typeof url === "string" && url.startsWith("/api/workflow-images?")) {
+        return { ok: true, json: async () => ({ success: true, image: FRONT }) };
+      }
+      if (url === "/api/workflow") {
+        workflowBodies.push(init?.body as string);
+        if (workflowBodies.length === 1) {
+          await gate.promise;
+        }
+        return { ok: true, json: async () => ({ success: true }) };
+      }
+      throw new Error(`Unexpected mock request: ${url}`);
+    });
+
+    const firstSave = useWorkflowStore.getState().saveToFile();
+    await Promise.resolve();
+    await Promise.resolve();
+    useWorkflowStore.getState().approveNodeCandidate("gen", candidateId);
+    gate.resolve(null);
+    const firstResult = await firstSave;
+    expect(firstResult).toBe(true);
+    expect(useWorkflowStore.getState().hasUnsavedChanges).toBe(true);
+
+    const secondSave = await useWorkflowStore.getState().saveToFile();
+    expect(secondSave).toBe(true);
+    expect(workflowBodies).toHaveLength(2);
+    const secondPayload = JSON.parse(workflowBodies[1]) as { workflow: { characterProject: CharacterProject } };
+    expect(secondPayload.workflow.characterProject.candidates.find((c) => c.id === candidateId)?.review).toBe("approved");
+  });
+});

@@ -3110,8 +3110,23 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       showQuickstart: false,
     });
 
-    // Session bytes belong to the previous graph; drop them with the nodes.
+    // Session bytes belong to the previous graph; drop them with the nodes,
+    // then restore embedded bytes (external storage off) so candidates stay
+    // selectable without disk files.
     clearSessionMedia();
+    for (const node of hydratedWorkflow.nodes) {
+      if (node.type !== "nanoBanana") continue;
+      const data = node.data as NanoBananaNodeData;
+      for (const item of data.imageHistory ?? []) {
+        if (typeof item.image === "string" && item.image.startsWith("data:")) {
+          rememberSessionMedia(item.id, item.image);
+          rememberSessionMedia(item.assetId ?? item.id, item.image);
+        }
+      }
+      if (typeof data.outputImage === "string" && data.outputImage.startsWith("data:") && data.selectedHistoryId) {
+        rememberSessionMedia(data.selectedHistoryId, data.outputImage);
+      }
+    }
     get().syncSessionProtection();
 
     // Clear snapshot unless explicitly preserving (e.g., AI workflow generation)
@@ -3405,15 +3420,16 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       }
 
       // Snapshot the exact serialized state (nodes, edges, edge style, groups,
-      // name) we are about to persist. After the long awaits below (media
-      // externalization + POST) we compare against the live store to detect edits
-      // made during the save window, so we neither clobber them nor falsely mark
-      // the workflow as saved.
+      // name, character project) we are about to persist. After the long awaits
+      // below (media externalization + POST) we compare against the live store
+      // to detect edits made during the save window, so we neither clobber them
+      // nor falsely mark the workflow as saved.
       const savedNodesSnapshot = currentNodes;
       const savedEdgesSnapshot = edges;
       const savedEdgeStyleSnapshot = edgeStyle;
       const savedGroupsSnapshot = groups;
       const savedWorkflowNameSnapshot = workflowName;
+      const savedCharacterProjectSnapshot = get().characterProject;
 
       let workflow: WorkflowFile = {
         version: 1,
@@ -3424,12 +3440,13 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
         edges,
         edgeStyle,
         groups: groups && Object.keys(groups).length > 0 ? groups : undefined,
-        characterProject: get().characterProject ?? undefined,
+        characterProject: savedCharacterProjectSnapshot ?? undefined,
       };
 
       // Persist every still-referenced session candidate so an unselected
       // version survives save/reopen. Files are addressed by asset id; the
-      // candidate id stays stable even when bytes are deduplicated.
+      // candidate id stays stable even when bytes are deduplicated. Only
+      // verified writes count as persisted; anything else aborts the save.
       if (useExternalImageStorage) {
         const project = get().characterProject;
         if (project) {
@@ -3448,24 +3465,39 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
               if (bytes && bytes.startsWith("data:") && !pending.has(asset)) pending.set(asset, bytes);
             }
           }
+          const persisted = new Set<string>();
+          const failed: string[] = [];
           for (const [assetId, imageData] of pending) {
             try {
-              await fetch("/api/workflow-images", {
+              const response = await fetch("/api/workflow-images", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ workflowPath: saveDirectoryPath, imageId: assetId, imageData, folder: "generations" }),
               });
+              let succeeded = response.ok;
+              try {
+                const result = await response.json();
+                succeeded = succeeded && result?.success === true;
+              } catch {
+                succeeded = false;
+              }
+              if (succeeded) persisted.add(assetId);
+              else failed.push(assetId);
             } catch (error) {
               console.error("[character-project] candidate media save failed:", error);
+              failed.push(assetId);
             }
           }
+          if (failed.length > 0) {
+            useToast.getState().show(`Save blocked: ${failed.length} candidate media write(s) failed: ${failed.join(", ")}`, "error");
+            return false;
+          }
           // Never write an unrecoverable project: every candidate asset must
-          // resolve from session or disk before the workflow file is written.
+          // resolve from verified writes or disk before the workflow file is written.
           const missing: string[] = [];
           const generationsPath = get().generationsPath;
           const isResolvable = async (assetId: string): Promise<boolean> => {
-            if (pending.has(assetId)) return true;
-            if (readSessionMedia(assetId)) return true;
+            if (persisted.has(assetId)) return true;
             try {
               const params = new URLSearchParams({ workflowPath: saveDirectoryPath, imageId: assetId, folder: "generations" });
               const response = await fetch(`/api/workflow-images?${params.toString()}`);
@@ -3501,6 +3533,28 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           }
         }
         workflow = await externalizeWorkflowMedia(workflow, saveDirectoryPath);
+      } else {
+        const project = get().characterProject;
+        if (project && project.candidates.length > 0) {
+          const missing: string[] = [];
+          const embeddedNodes = currentNodes.map((node) => {
+            if (node.type !== "nanoBanana") return node;
+            const data = node.data as NanoBananaNodeData;
+            const history = (data.imageHistory ?? []).map((item) => {
+              if (typeof item.image === "string" && item.image.startsWith("data:")) return item;
+              const bytes = readSessionMedia(item.id) ?? readSessionMedia(item.assetId ?? item.id);
+              if (bytes && bytes.startsWith("data:")) return { ...item, image: bytes };
+              missing.push(item.id);
+              return item;
+            });
+            return { ...node, data: { ...data, imageHistory: history } };
+          });
+          if (missing.length > 0) {
+            useToast.getState().show(`Save blocked: ${missing.length} candidate(s) have no embeddable media: ${missing.join(", ")}`, "error");
+            return false;
+          }
+          workflow = { ...workflow, nodes: embeddedNodes };
+        }
       }
 
       const response = await fetch("/api/workflow", {
@@ -3520,8 +3574,9 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
 
         // Did the user edit the graph while the save was in flight? If so we must
         // not overwrite those edits, and the workflow is not actually clean.
-        // Compare every serialized field (nodes, edges, edge style, groups, name),
-        // not just nodes, so edits to any of them keep the workflow dirty.
+        // Compare every serialized field (nodes, edges, edge style, groups, name,
+        // character project), not just nodes, so edits to any of them keep the
+        // workflow dirty.
         const fresh = get();
         const freshNodes = fresh.nodes;
         const changedDuringSave =
@@ -3529,7 +3584,8 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           fresh.edges !== savedEdgesSnapshot ||
           fresh.edgeStyle !== savedEdgeStyleSnapshot ||
           fresh.groups !== savedGroupsSnapshot ||
-          fresh.workflowName !== savedWorkflowNameSnapshot;
+          fresh.workflowName !== savedWorkflowNameSnapshot ||
+          fresh.characterProject !== savedCharacterProjectSnapshot;
 
         // If we externalized media, update store nodes with the refs
         // This prevents duplicate media on subsequent saves
