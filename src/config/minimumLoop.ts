@@ -1,5 +1,5 @@
 import type { NodeType } from "@/types";
-
+import type { ProviderType } from "@/types/providers";
 /** Nodes exposed by the first local prototype navigation. */
 export const MINIMUM_LOOP_NODE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
   "imageInput",
@@ -30,3 +30,8 @@ export function isMinimumLoopNodeType(type: NodeType | string): type is NodeType
 export function minimumLoopNodeTypeForShortcut(key: string): NodeType | null {
   return MINIMUM_LOOP_NODE_SHORTCUTS.find((shortcut) => shortcut.key === key.toLowerCase())?.type ?? null;
 }
+/** Providers configured in FTUX for the first local prototype (image loop only). */
+export const MINIMUM_LOOP_FTUX_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  "gemini",
+  "fal",
+]);

@@ -54,7 +54,6 @@ const getProviderIcon = (provider: string) => {
 export function FTUXModelDefaultsStep({}: FTUXStepProps) {
   const [localDefaults, setLocalDefaults] = useState<NodeDefaultsConfig>({});
   const [showImageDialog, setShowImageDialog] = useState(false);
-  const [showVideoDialog, setShowVideoDialog] = useState(false);
 
   // Load current defaults on mount
   useEffect(() => {
@@ -65,12 +64,11 @@ export function FTUXModelDefaultsStep({}: FTUXStepProps) {
   return (
     <div className="py-6 px-6">
       <h3 className="text-lg font-semibold text-neutral-100 mb-2">
-        Choose Your Models
+        Choose Your Model
       </h3>
       <p className="text-sm text-neutral-400 mb-4">
-        Pick your default AI models for images and videos. You can change these later.
+        Pick your default AI model for images. You can change it later.
       </p>
-
       <div className="space-y-3">
         {/* Default Image Model */}
         <div className="p-3 bg-neutral-900 rounded-lg border border-neutral-700">
@@ -120,53 +118,6 @@ export function FTUXModelDefaultsStep({}: FTUXStepProps) {
           </div>
         </div>
 
-        {/* Default Video Model */}
-        <div className="p-3 bg-neutral-900 rounded-lg border border-neutral-700">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-neutral-100">Default Video Model</span>
-            <div className="flex items-center gap-2">
-              {localDefaults.generateVideo?.selectedModel ? (
-                <>
-                  <div className="flex items-center gap-1.5 text-xs text-neutral-300">
-                    {getProviderIcon(localDefaults.generateVideo.selectedModel.provider)}
-                    <span className="truncate max-w-[150px]">
-                      {localDefaults.generateVideo.selectedModel.displayName}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowVideoDialog(true)}
-                    className="px-2 py-1 text-xs bg-neutral-700 hover:bg-neutral-600 text-neutral-200 rounded transition-colors"
-                  >
-                    Change
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const { generateVideo, ...rest } = localDefaults;
-                      setLocalDefaults(rest);
-                      saveNodeDefaults(rest);
-                    }}
-                    className="text-xs text-neutral-400 hover:text-neutral-200"
-                  >
-                    Clear
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="text-xs text-neutral-400">None set</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowVideoDialog(true)}
-                    className="px-2 py-1 text-xs bg-neutral-700 hover:bg-neutral-600 text-neutral-200 rounded transition-colors"
-                  >
-                    Select
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* Model Selection Dialogs */}
@@ -191,29 +142,6 @@ export function FTUXModelDefaultsStep({}: FTUXStepProps) {
             setShowImageDialog(false);
           }}
           initialCapabilityFilter="image"
-        />
-      )}
-      {showVideoDialog && (
-        <ModelSearchDialog
-          isOpen={showVideoDialog}
-          onClose={() => setShowVideoDialog(false)}
-          onModelSelected={(model: ProviderModel) => {
-            const updatedDefaults = {
-              ...localDefaults,
-              generateVideo: {
-                ...localDefaults.generateVideo,
-                selectedModel: {
-                  provider: model.provider,
-                  modelId: model.id,
-                  displayName: model.name,
-                },
-              },
-            };
-            setLocalDefaults(updatedDefaults);
-            saveNodeDefaults(updatedDefaults);
-            setShowVideoDialog(false);
-          }}
-          initialCapabilityFilter="video"
         />
       )}
     </div>

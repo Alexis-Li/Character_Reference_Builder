@@ -257,23 +257,17 @@ export function OutputGalleryNode({ id, data, selected }: NodeProps<OutputGaller
     const gap = 20;
 
     const newNodeIds: string[] = [];
+    // Minimum loop: only images extract to imageInput. Legacy videos stay
+    // view-only in the gallery and never create videoInput nodes.
     const images = nodeData.images || [];
-    const videos = nodeData.videos || [];
 
     // Reverse so oldest items (end of array) appear at top, newest at bottom
     const reversedImages = [...images].reverse();
-    const reversedVideos = [...videos].reverse();
 
     for (let i = 0; i < reversedImages.length; i++) {
       const nodeId = addNode("imageInput", { x: startX, y: currentY }, { image: reversedImages[i], filename: `gallery-image-${i + 1}.png` });
       newNodeIds.push(nodeId);
       currentY += defaultNodeDimensions.imageInput.height + gap;
-    }
-
-    for (let i = 0; i < reversedVideos.length; i++) {
-      const nodeId = addNode("videoInput", { x: startX, y: currentY }, { video: reversedVideos[i], filename: `gallery-video-${i + 1}.mp4` });
-      newNodeIds.push(nodeId);
-      currentY += defaultNodeDimensions.videoInput.height + gap;
     }
 
     if (newNodeIds.length > 0) {
@@ -284,7 +278,7 @@ export function OutputGalleryNode({ id, data, selected }: NodeProps<OutputGaller
         }))
       );
     }
-  }, [id, nodeData.images, nodeData.videos, getNodes, addNode, setNodes]);
+  }, [id, nodeData.images, getNodes, addNode, setNodes]);
 
   // Keyboard navigation for lightbox
   useEffect(() => {

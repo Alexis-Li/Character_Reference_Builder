@@ -186,13 +186,13 @@ const initialTutorialSteps: TutorialStep[] = [
   },
   {
     id: "demonstrate-downstream",
-    message: "Now let me show you the possibilities... 🎬✨",
+    message: "Now let me show you the possibilities... ✨",
     position: "top-center",
     completed: false,
   },
   {
     id: "demonstrate-complete",
-    message: "Connect more nodes downstream to build generative pipelines, or just use it as an infinite creative canvas.",
+    message: "Chain more image prompts downstream to iterate variations, or compare and collect results in the gallery.",
     position: "top-center",
     waitForClick: true,
     completed: false,
@@ -207,12 +207,9 @@ const initialTutorialSteps: TutorialStep[] = [
   },
   {
     id: "resources",
-    message: "Check out the resources below for help and inspiration:",
+    message: "Your generations stay local in this prototype. Save the project to keep images and comparisons.",
     position: "left",
     waitForClick: true,
-    links: [
-      { text: "Join our Discord community", url: "https://discord.gg/node-banana" },
-    ],
     completed: false,
   },
   {

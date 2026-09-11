@@ -232,7 +232,7 @@ export function TutorialOverlay() {
     }
   }, [tutorialActive]);
 
-  // Auto-add downstream demonstration nodes
+  // Auto-add downstream demonstration nodes (minimum image reference loop only)
   useEffect(() => {
     if (!tutorialActive || demonstrateNodesAdded.current) {
       return;
@@ -265,152 +265,114 @@ export function TutorialOverlay() {
         const baseX = generateNode.position.x;
         const baseY = generateNode.position.y;
 
-        // VIDEO BRANCH (top) - Clean horizontal layout with generous spacing
-        // Add Prompt node for video
-        const videoPromptId = addNode("prompt", {
+        // VARIATION BRANCH (top): second prompt -> second image -> output.
+        // Uses the first generation as a visual reference for an image variation.
+        const variationPromptId = addNode("prompt", {
           x: baseX + 400,
           y: baseY - 350,
         });
 
         schedule(() => {
-          // Add Generate Video node
-          const videoNodeId = addNode("generateVideo", {
+          const variationImageId = addNode("nanoBanana", {
             x: baseX + 750,
             y: baseY - 350,
           });
 
           schedule(() => {
-            // Connect Prompt → Video (text)
+            // Connect Prompt -> Generate Image #2 (text)
             onConnect({
-              source: videoPromptId,
-              target: videoNodeId,
+              source: variationPromptId,
+              target: variationImageId,
               sourceHandle: "text",
               targetHandle: "text",
             });
 
             schedule(() => {
-              // Connect Image → Video (image)
+              // Connect original image as reference
               onConnect({
                 source: generateNode.id,
-                target: videoNodeId,
+                target: variationImageId,
                 sourceHandle: "image",
                 targetHandle: "image",
               });
 
               schedule(() => {
-                // Populate video prompt
-                updateNodeData(videoPromptId, {
-                  prompt: "A bird soaring through clouds at sunset",
+                // Populate variation prompt
+                updateNodeData(variationPromptId, {
+                  prompt: "Same bird, resting on a mossy branch at dawn",
                 });
 
                 schedule(() => {
-                  // Add Output for video
-                  const videoOutputId = addNode("output", {
+                  const variationOutputId = addNode("output", {
                     x: baseX + 1100,
                     y: baseY - 350,
                   });
 
                   schedule(() => {
-                    // Connect Video → Output
+                    // Connect Generate Image #2 -> Output
                     onConnect({
-                      source: videoNodeId,
-                      target: videoOutputId,
-                      sourceHandle: "video",
-                      targetHandle: "video",
+                      source: variationImageId,
+                      target: variationOutputId,
+                      sourceHandle: "image",
+                      targetHandle: "image",
                     });
 
-                    // LLM ANALYSIS BRANCH (bottom) - Clean horizontal layout with generous spacing
+                    // COMPARE/GALLERY BRANCH (bottom): compare both images, collect in gallery.
                     schedule(() => {
-                      // Add Prompt node for LLM
-                      const llmPromptId = addNode("prompt", {
+                      const compareId = addNode("imageCompare", {
                         x: baseX + 400,
                         y: baseY + 350,
                       });
 
                       schedule(() => {
-                        // Add LLM Generate node
-                        const llmNodeId = addNode("llmGenerate", {
-                          x: baseX + 750,
-                          y: baseY + 350,
+                        // Connect original -> Compare (image)
+                        onConnect({
+                          source: generateNode.id,
+                          target: compareId,
+                          sourceHandle: "image",
+                          targetHandle: "image",
                         });
 
                         schedule(() => {
-                          // Connect Prompt → LLM (text)
+                          // Connect variation -> Compare (image-1)
                           onConnect({
-                            source: llmPromptId,
-                            target: llmNodeId,
-                            sourceHandle: "text",
-                            targetHandle: "text",
+                            source: variationImageId,
+                            target: compareId,
+                            sourceHandle: "image",
+                            targetHandle: "image-1",
                           });
 
                           schedule(() => {
-                            // Connect Image → LLM (image for analysis)
-                            onConnect({
-                              source: generateNode.id,
-                              target: llmNodeId,
-                              sourceHandle: "image",
-                              targetHandle: "image",
+                            const galleryId = addNode("outputGallery", {
+                              x: baseX + 750,
+                              y: baseY + 350,
                             });
 
                             schedule(() => {
-                              // Populate LLM prompt
-                              updateNodeData(llmPromptId, {
-                                prompt:
-                                  "Give me an image generation prompt that shows this bird in a nightclub filled with other birds, also in costume. Only output the prompt and nothing else.",
+                              // Collect original in gallery
+                              onConnect({
+                                source: generateNode.id,
+                                target: galleryId,
+                                sourceHandle: "image",
+                                targetHandle: "image",
                               });
 
                               schedule(() => {
-                                // Add second Generate Image node
-                                const generateNode2Id = addNode("nanoBanana", {
-                                  x: baseX + 1100,
-                                  y: baseY + 350,
+                                // Collect variation in gallery
+                                onConnect({
+                                  source: variationImageId,
+                                  target: galleryId,
+                                  sourceHandle: "image",
+                                  targetHandle: "image",
                                 });
 
+                                // Final delay before advancing
                                 schedule(() => {
-                                  // Connect LLM → Generate Image #2 (text prompt)
-                                  onConnect({
-                                    source: llmNodeId,
-                                    target: generateNode2Id,
-                                    sourceHandle: "text",
-                                    targetHandle: "text",
-                                  });
-
-                                  schedule(() => {
-                                    // Also connect original bird image as reference
-                                    onConnect({
-                                      source: generateNode.id,
-                                      target: generateNode2Id,
-                                      sourceHandle: "image",
-                                      targetHandle: "image",
-                                    });
-
-                                    schedule(() => {
-                                      // Add final Output
-                                      const finalOutputId = addNode("output", {
-                                        x: baseX + 1450,
-                                        y: baseY + 350,
-                                      });
-
-                                      schedule(() => {
-                                        // Connect Generate Image #2 → Output
-                                        onConnect({
-                                          source: generateNode2Id,
-                                          target: finalOutputId,
-                                          sourceHandle: "image",
-                                          targetHandle: "image",
-                                        });
-
-                                        // Final delay before advancing
-                                        schedule(() => {
-                                          completeCurrentStep();
-                                          nextTutorialStep();
-                                        }, 1000);
-                                      }, 400);
-                                    }, 600);
-                                  }, 500);
-                                }, 400);
-                              }, 600);
-                            }, 500);
+                                  completeCurrentStep();
+                                  nextTutorialStep();
+                                }, 1000);
+                              }, 400);
+                            }, 400);
                           }, 400);
                         }, 400);
                       }, 400);

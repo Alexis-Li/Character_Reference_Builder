@@ -9,7 +9,7 @@ export function FTUXWelcomeStep({}: FTUXStepProps) {
         Let's get started.
       </h2>
       <p className="text-neutral-300 text-center max-w-md leading-relaxed">
-        Connect AI models like building blocks to generate images, videos, and more.
+        Connect AI models like building blocks to generate reference images.
       </p>
     </div>
   );
