@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addReference,
+  adoptCandidate,
   approveCandidate,
   createCharacterProject,
   definePart,
@@ -15,7 +16,8 @@ import {
   selectionKey,
   serializeProject,
   setPartRequirement,
-  setProjectLocks,
+  updateProjectLocks,
+  updateReference,
   type CharacterProject,
 } from "../characterProject";
 
@@ -25,14 +27,13 @@ function fixture(): CharacterProject {
   project = addReference(project, { id: "ref-back", kind: "original", source: "sha:back", purpose: "Back" });
   project = addReference(project, { id: "ref-fix", kind: "userCorrection", source: "note:belt-width-3cm" });
   project = addReference(project, { id: "ref-style", kind: "auxiliary", source: "note:style-sheet", purpose: "StyleReference" });
-  project = setProjectLocks(project, [
+  project = updateProjectLocks(project, [
     { id: "lock-layers", description: "skirt keeps three layers", sourceReferenceId: "ref-front" },
-  ]);
+  ]).project;
   project = definePart(project, { id: "belt", name: "Belt", requirements: ["width 3cm"], correctionHistory: [] });
   project = definePart(project, { id: "boot", name: "Boot", requirements: [], correctionHistory: [] });
   return project;
 }
-
 function runOk(project: CharacterProject, runId: string, candidateId: string, partId = "belt") {
   return recordSuccessfulRun(project, {
     runId,
@@ -182,5 +183,55 @@ describe("characterProject domain contract", () => {
     const empty = deserializeProject(serializeProject(createCharacterProject("empty", 0)));
     expect(empty.selection).toEqual({});
     expect(resolveDownstream(empty, "belt", "front")).toBeNull();
+  });
+
+  it("lock updates are atomic: related selections go stale, rejected stay, no runs start", () => {
+    let project = runOk(fixture(), "run-1", "cand-1");
+    project = runOk(project, "run-2", "cand-boot-1", "boot");
+    project = selectCandidate(project, "belt", "front", "cand-1");
+    project = rejectCandidate(project, "cand-boot-1");
+    const runsBefore = project.runs.length;
+    const { project: next, affected } = updateProjectLocks(
+      project,
+      [
+        { id: "lock-layers", description: "skirt keeps three layers", sourceReferenceId: "ref-front" },
+        { id: "lock-count", description: "keep two fasteners" },
+      ],
+      "added fastener lock",
+    );
+    expect(affected).toEqual(["cand-1"]);
+    expect(next.runs).toHaveLength(runsBefore);
+    expect(next.candidates.find((item) => item.id === "cand-1")?.review).toBe("stale");
+    expect(next.candidates.find((item) => item.id === "cand-boot-1")?.review).toBe("rejected");
+  });
+
+  it("unchanged locks mark nothing stale", () => {
+    let project = runOk(fixture(), "run-1", "cand-1");
+    project = selectCandidate(project, "belt", "front", "cand-1");
+    const { project: next, affected } = updateProjectLocks(project, [
+      { id: "lock-layers", description: "skirt keeps three layers", sourceReferenceId: "ref-front" },
+    ]);
+    expect(affected).toEqual([]);
+    expect(next.candidates[0].review).toBe("selected");
+  });
+
+  it("reference updates stale only candidates built from that reference", () => {
+    let project = runOk(fixture(), "run-1", "cand-1");
+    project = selectCandidate(project, "belt", "front", "cand-1");
+    const { project: next, affected } = updateReference(project, "ref-front", { source: "sha:front-v2" });
+    expect(affected).toEqual(["cand-1"]);
+    expect(next.references.find((item) => item.id === "ref-front")?.source).toBe("sha:front-v2");
+    expect(next.candidates[0].review).toBe("stale");
+    expect(() => updateReference(project, "missing", { source: "x" })).toThrow();
+  });
+
+  it("adopted candidates start unreviewed with no runs and can be selected", () => {
+    let project = adoptCandidate(fixture(), { candidateId: "legacy-1", partId: "belt", view: "front" });
+    expect(project.runs).toHaveLength(0);
+    expect(project.candidates[0].review).toBe("unreviewed");
+    project = selectCandidate(project, "belt", "front", "legacy-1");
+    expect(resolveDownstream(project, "belt", "front")?.id).toBe("legacy-1");
+    // Re-adopting the same id is a no-op, never a duplicate.
+    expect(adoptCandidate(project, { candidateId: "legacy-1", partId: "belt", view: "front" }).candidates).toHaveLength(1);
   });
 });

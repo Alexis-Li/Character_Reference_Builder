@@ -16,6 +16,8 @@ interface UseGenerationCarouselParams<T extends HistoryItem> {
    * Kept node-specific so each node can write its own output/index fields.
    */
   buildUpdate: (media: string, newIndex: number) => Partial<WorkflowNodeData>;
+  /** Fires after the node update when the user explicitly picks a version. */
+  onSelect?: (id: string, newIndex: number) => void;
 }
 
 /**
@@ -29,6 +31,7 @@ export function useGenerationCarousel<T extends HistoryItem>({
   currentIndex,
   loadFn,
   buildUpdate,
+  onSelect,
 }: UseGenerationCarouselParams<T>) {
   const updateNodeData = useWorkflowStore((state) => state.updateNodeData);
   const [isLoading, setIsLoading] = useState(false);
@@ -53,11 +56,11 @@ export function useGenerationCarousel<T extends HistoryItem>({
 
       if (media) {
         updateNodeData(nodeId, buildUpdate(media, newIndex));
+        onSelect?.(item.id, newIndex);
       }
     },
-    [nodeId, history, currentIndex, isLoading, loadFn, buildUpdate, updateNodeData]
+    [nodeId, history, currentIndex, isLoading, loadFn, buildUpdate, onSelect, updateNodeData]
   );
-
   const handlePrevious = useCallback(() => navigate("previous"), [navigate]);
   const handleNext = useCallback(() => navigate("next"), [navigate]);
 

@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useWorkflowStore } from "@/store/workflowStore";
+import { readSessionMedia } from "@/store/execution/sessionMedia";
 
 /**
  * Returns a loader that fetches a previously-generated asset by ID from the
@@ -14,6 +15,9 @@ export function useLoadGenerationById(resultField: string, label: string) {
 
   return useCallback(
     async (id: string): Promise<string | null> => {
+      // Fresh candidates live here until the generations folder adopts them.
+      const sessionHit = readSessionMedia(id);
+      if (sessionHit) return sessionHit;
       if (!generationsPath) {
         console.error("Generations path not configured");
         return null;

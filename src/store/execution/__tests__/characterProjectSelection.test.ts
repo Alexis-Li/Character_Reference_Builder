@@ -132,4 +132,29 @@ describe("CRB-02 selection-preserving image runs", () => {
     expect((get().imageHistory as unknown[])).toHaveLength(3);
     expect(get().selectedHistoryIndex).toBe(2);
   });
+
+  it("history cap retains the selected version instead of reassigning it", async () => {
+    const history = Array.from({ length: 50 }, (_, i) => ({
+      id: `h-${i}`,
+      timestamp: i,
+      prompt: "p",
+      aspectRatio: "1:1",
+      model: "nano-banana",
+    }));
+    const { ctx, get } = makeHarness({
+      outputImage: FRONT,
+      imageHistory: history,
+      selectedHistoryIndex: 49,
+      selectedHistoryId: "h-49",
+    });
+    (ctx as unknown as Record<string, unknown>).getProtectedCandidateIds = () => ["h-49"];
+    mockFetch.mockResolvedValueOnce(ok(REVISED));
+    await executeNanoBanana(ctx);
+    const kept = get().imageHistory as Array<{ id: string }>;
+    expect(kept.map((h) => h.id)).toContain("h-49");
+    expect(kept).toHaveLength(51);
+    expect(get().outputImage).toBe(FRONT);
+    expect(get().selectedHistoryId).toBe("h-49");
+    expect(get().selectedHistoryIndex).toBe(kept.findIndex((h) => h.id === "h-49"));
+  });
 });

@@ -211,6 +211,8 @@ export interface NanoBananaNodeData extends BaseNodeData {
   error: string | null;
   imageHistory: CarouselImageItem[]; // Carousel history (IDs only)
   selectedHistoryIndex: number; // Currently selected image in carousel
+  /** Stable id of the human-selected candidate; index is only a view cursor. */
+  selectedHistoryId?: string | null;
   fallbackModel?: SelectedModel; // JSON-compatible with Node Banana Pro
   __usedFallback?: boolean; // Set by runWithFallback on successful fallback
   __fallbackModelUsed?: string; // Display name of fallback model that succeeded

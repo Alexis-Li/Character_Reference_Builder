@@ -211,10 +211,15 @@ async function externalizeNodeMedia(
       let inputImageRefs = d.inputImageRefs ? [...d.inputImageRefs] : [];
       const inputImages: string[] = [];
 
-      // Handle output image - AI generated, save to generations
-      // Use selectedHistoryIndex to get the correct history entry (not hardcoded 0)
+      // Handle output image - AI generated, save to generations.
+      // The selection is a stable candidate id; the index is only a view
+      // cursor and must never reassign the selected asset after truncation.
       const selectedIndex = d.selectedHistoryIndex || 0;
-      const expectedRef = d.imageHistory?.[selectedIndex]?.id;
+      const stableSelection =
+        d.selectedHistoryId != null && d.imageHistory?.some((h) => h.id === d.selectedHistoryId)
+          ? d.selectedHistoryId
+          : undefined;
+      const expectedRef = stableSelection ?? d.imageHistory?.[selectedIndex]?.id;
 
       if (d.outputImageRef && isDataUrl(d.outputImage)) {
         // Verify existing ref matches expected history ID

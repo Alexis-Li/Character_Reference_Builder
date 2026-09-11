@@ -106,6 +106,35 @@ import {
   executeComfyApp,
   runBatchIfApplicable,
 } from "./execution";
+import {
+  addReference,
+  adoptCandidate,
+  approveCandidate,
+  createCharacterProject,
+  definePart,
+  markUpstreamChange,
+  recordFailedRun,
+  recordSuccessfulRun,
+  renameCandidate,
+  selectCandidate,
+  selectionKey,
+  updateProjectLocks,
+  updateReference,
+  type CharacterProject,
+  type DesignConstraint,
+} from "@/lib/characterProject";
+import { clearSessionMedia } from "./execution/sessionMedia";
+import type { CharacterRunEvent } from "./execution/types";
+
+/**
+ * Minimum-loop mapping between canvas nodes and the character-project
+ * contract: one generation node produces one part's reference in the default
+ * view. The domain module already supports multi-part/multi-view; only this
+ * mapping stays minimal until the part-aware UI lands (CRB-05).
+ */
+const CHARACTER_DEFAULT_VIEW = "default";
+const partIdForNode = (nodeId: string): string => nodeId;
+const referenceIdForNode = (nodeId: string): string => `ref:${nodeId}`;
 import type { NodeExecutionContext } from "./execution";
 export type { LevelGroup } from "./utils/executionUtils";
 export { CONCURRENCY_SETTINGS_KEY } from "./utils/executionUtils";
@@ -240,6 +269,8 @@ export interface WorkflowFile {
   edges: WorkflowEdge[];
   edgeStyle: EdgeStyle;
   groups?: Record<string, NodeGroup>;  // Optional for backward compatibility
+  /** CRB-02 asset/version/selection graph. Absent = legacy file, no history invented. */
+  characterProject?: CharacterProject | null;
 }
 
 // Clipboard data structure for copy/paste
@@ -335,6 +366,22 @@ interface WorkflowStore {
   saveWorkflow: (name?: string) => void;
   loadWorkflow: (workflow: WorkflowFile, workflowPath?: string, options?: { preserveSnapshot?: boolean }) => Promise<void>;
   clearWorkflow: () => void;
+
+  // Character project asset/version/selection contract (CRB-02). Node
+  // outputImage, carousel history, and downstream inputs are projections of
+  // this graph; every writer below updates both sides together.
+  characterProject: CharacterProject | null;
+  ensureCharacterProject: () => CharacterProject;
+  /** Explicit user pick of a node candidate: writes domain selection. */
+  selectNodeCandidate: (nodeId: string, candidateId: string) => void;
+  approveNodeCandidate: (nodeId: string, candidateId: string) => void;
+  updateCharacterLocks: (locks: DesignConstraint[], note?: string) => string[];
+  updateCharacterReference: (
+    id: string,
+    patch: Partial<{ source: string; label: string; purpose: string }>,
+    note?: string,
+  ) => string[];
+  markCharacterUpstreamStale: (referenceIds: string[], note?: string) => string[];
 
   // Helpers
   getNodeById: (id: string) => WorkflowNode | undefined;
@@ -663,6 +710,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
   isSaving: false,
   useExternalImageStorage: true,  // Default: store images as separate files
   imageRefBasePath: null,  // Directory from which current imageRefs are valid
+  characterProject: null,
 
   // Cost tracking initial state
   incurredCost: 0,
@@ -1584,6 +1632,93 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       }));
     },
     materializeSplitGridCells: (nodeId: string) => get().materializeSplitGridCells(nodeId),
+    recordCharacterRun: (event: CharacterRunEvent) => {
+      // Contract bookkeeping runs beside execution and must never break it.
+      try {
+        const partId = partIdForNode(event.nodeId);
+        const state = get();
+        let project = state.ensureCharacterProject();
+        if (!project.parts.some((part) => part.id === partId)) {
+          project = definePart(project, { id: partId, name: partId, requirements: [], correctionHistory: [] });
+        }
+        // Upstream design basis: image inputs become original references so a
+        // later reference update can mark exactly the runs built from them.
+        const upstreamIds = [...new Set(state.edges.filter((edge) => edge.target === event.nodeId).map((edge) => edge.source))];
+        const referenceIds: string[] = [];
+        for (const sourceId of upstreamIds) {
+          const source = state.nodes.find((n) => n.id === sourceId);
+          if (!source || (source.type !== "imageInput" && source.type !== "annotation")) continue;
+          const refId = referenceIdForNode(sourceId);
+          if (!project.references.some((item) => item.id === refId)) {
+            project = addReference(project, {
+              id: refId,
+              kind: source.type === "imageInput" ? "original" : "auxiliary",
+              source: `node:${sourceId}`,
+            });
+          }
+          referenceIds.push(refId);
+        }
+        if (event.status === "success") {
+          project = recordSuccessfulRun(project, {
+            runId: event.runId,
+            partId,
+            view: CHARACTER_DEFAULT_VIEW,
+            inputCandidateId: event.inputCandidateId,
+            outputs: event.candidates.map((candidate) => ({
+              candidateId: candidate.candidateId,
+              referenceIds: [...new Set([...candidate.referenceIds, ...referenceIds])],
+            })),
+          });
+          // Mirror the node's adopt-first rule so both selections stay joined.
+          if (!project.selection[selectionKey(partId, CHARACTER_DEFAULT_VIEW)] && event.candidates.length > 0) {
+            project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, event.candidates[0].candidateId);
+          }
+        } else {
+          project = recordFailedRun(project, {
+            runId: event.runId,
+            partId,
+            view: CHARACTER_DEFAULT_VIEW,
+            inputCandidateId: event.inputCandidateId,
+            error: event.error ?? "Generation failed",
+          });
+        }
+        set({ characterProject: project, hasUnsavedChanges: true });
+      } catch {
+        // Duplicate run ids (same-ms primary+fallback failures) and any other
+        // bookkeeping conflict resolve to a no-op; execution already reported.
+      }
+    },
+    renameCharacterCandidate: (nodeId: string, fromId: string, toId: string) => {
+      try {
+        const project = get().characterProject;
+        if (!project) return;
+        void nodeId;
+        set({ characterProject: renameCandidate(project, fromId, toId), hasUnsavedChanges: true });
+      } catch {
+        // Bookkeeping only.
+      }
+    },
+    getProtectedCandidateIds: (nodeId: string) => {
+      const project = get().characterProject;
+      if (!project) return [];
+      const partId = partIdForNode(nodeId);
+      const selectedId = project.selection[selectionKey(partId, CHARACTER_DEFAULT_VIEW)];
+      const byId = new Map(project.candidates.map((candidate) => [candidate.id, candidate]));
+      const protectedIds = new Set<string>();
+      if (selectedId) protectedIds.add(selectedId);
+      for (const candidate of project.candidates) {
+        if (candidate.partId !== partId || candidate.view !== CHARACTER_DEFAULT_VIEW) continue;
+        if (candidate.review === "selected" || candidate.review === "approved" || candidate.review === "stale") {
+          protectedIds.add(candidate.id);
+        }
+      }
+      for (const candidate of project.candidates) {
+        if (candidate.parentCandidateId && byId.has(candidate.parentCandidateId)) {
+          protectedIds.add(candidate.parentCandidateId);
+        }
+      }
+      return [...protectedIds];
+    },
     get: get as () => unknown,
   }),
 
@@ -2412,7 +2547,6 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
 
       // Group selected nodes by dependency level for ordered execution
       const levels = groupNodesByLevel(nodesToExecute, selectedEdges);
-
       // Execute selected nodes with dependency-aware concurrent scheduling.
       await runNodesWithConcurrency({
         levels,
@@ -2499,6 +2633,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       edges,
       edgeStyle,
       groups: groups && Object.keys(groups).length > 0 ? groups : undefined,
+      characterProject: get().characterProject ?? undefined,
     };
 
     const json = JSON.stringify(workflow, null, 2);
@@ -2657,9 +2792,13 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       viewedCommentNodeIds: new Set<string>(),
       // Reset global image history (full base64 data URLs) when loading a workflow
       globalImageHistory: [],
+      // Restore the asset/version/selection graph; legacy files stay explicitly empty.
+      characterProject: hydratedWorkflow.characterProject ?? null,
       // Dismiss welcome modal after loading a workflow
       showQuickstart: false,
     });
+    // Session bytes belong to the previous graph; drop them with the nodes.
+    clearSessionMedia();
 
     // Clear snapshot unless explicitly preserving (e.g., AI workflow generation)
     if (!options?.preserveSnapshot) {
@@ -2715,7 +2854,10 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       dimmedNodeIds: new Set<string>(),
       // Reset skipped nodes
       skippedNodeIds: new Set<string>(),
+      // A cleared graph carries no project relations; never fake history.
+      characterProject: null,
     });
+    clearSessionMedia();
     get().clearSnapshot();
     // Clear undo history and cancel any pending debounced snapshot
     pendingDataSnapshot = null;
@@ -2725,6 +2867,57 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     }
     undoManager.clear();
     syncUndoFlags(set);
+  },
+
+  // ---- Character project asset/version/selection contract (CRB-02) ----
+
+  ensureCharacterProject: () => {
+    const existing = get().characterProject;
+    if (existing) return existing;
+    const project = createCharacterProject(`char-${Date.now()}`);
+    set({ characterProject: project, hasUnsavedChanges: true });
+    return project;
+  },
+
+  selectNodeCandidate: (nodeId: string, candidateId: string) => {
+    const partId = partIdForNode(nodeId);
+    let project = get().ensureCharacterProject();
+    project = adoptCandidate(project, { candidateId, partId, view: CHARACTER_DEFAULT_VIEW });
+    project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, candidateId);
+    set({ characterProject: project, hasUnsavedChanges: true });
+  },
+
+  approveNodeCandidate: (nodeId: string, candidateId: string) => {
+    const partId = partIdForNode(nodeId);
+    let project = get().ensureCharacterProject();
+    project = adoptCandidate(project, { candidateId, partId, view: CHARACTER_DEFAULT_VIEW });
+    project = approveCandidate(project, candidateId);
+    set({ characterProject: project, hasUnsavedChanges: true });
+  },
+
+  updateCharacterLocks: (locks: DesignConstraint[], note?: string) => {
+    const project = get().ensureCharacterProject();
+    const { project: next, affected } = updateProjectLocks(project, locks, note);
+    set({ characterProject: next, hasUnsavedChanges: true });
+    return affected;
+  },
+
+  updateCharacterReference: (
+    id: string,
+    patch: Partial<{ source: string; label: string; purpose: string }>,
+    note?: string,
+  ) => {
+    const project = get().ensureCharacterProject();
+    const { project: next, affected } = updateReference(project, id, patch, note);
+    set({ characterProject: next, hasUnsavedChanges: true });
+    return affected;
+  },
+
+  markCharacterUpstreamStale: (referenceIds: string[], note?: string) => {
+    const project = get().ensureCharacterProject();
+    const { project: next, affected } = markUpstreamChange(project, { referenceIds, note });
+    set({ characterProject: next, hasUnsavedChanges: true });
+    return affected;
   },
 
   addToGlobalHistory: (item: Omit<ImageHistoryItem, "id">) => {
@@ -2862,6 +3055,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
         edges,
         edgeStyle,
         groups: groups && Object.keys(groups).length > 0 ? groups : undefined,
+        characterProject: get().characterProject ?? undefined,
       };
 
       // If external media storage is enabled, externalize media before saving

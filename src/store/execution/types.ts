@@ -4,7 +4,6 @@
  * Defines the interface for per-node-type execution functions.
  * Used by both executeWorkflow and regenerateNode to avoid duplication.
  */
-
 import type {
   WorkflowNode,
   WorkflowEdge,
@@ -13,6 +12,20 @@ import type {
   ImageHistoryItem,
 } from "@/types";
 import type { ConnectedInputs } from "@/store/utils/connectedInputs";
+
+/**
+ * One image run reported to the character-project contract.
+ * Candidate ids join the node's carousel history entries 1:1.
+ */
+export interface CharacterRunEvent {
+  nodeId: string;
+  runId: string;
+  status: "success" | "failed";
+  candidates: Array<{ candidateId: string; referenceIds: string[] }>;
+  /** Selection this run was taken against; links rerun chains. */
+  inputCandidateId?: string;
+  error?: string;
+}
 
 /**
  * Context passed to every node executor.
@@ -48,6 +61,16 @@ export interface NodeExecutionContext {
   trackSaveGeneration: (key: string, promise: Promise<void>) => void;
   appendOutputGalleryImage: (targetId: string, image: string) => void;
   appendOutputGalleryVideo: (targetId: string, video: string) => void;
+  /**
+   * Records the run in the character-project contract (CRB-02). Optional so
+   * older or external contexts keep working; absent means node-local history
+   * only. Never throws for executor purposes.
+   */
+  recordCharacterRun?: (event: CharacterRunEvent) => void;
+  /** Follows a generations-folder id dedupe so node and contract stay joined. */
+  renameCharacterCandidate?: (nodeId: string, fromId: string, toId: string) => void;
+  /** Candidate ids the history cap must retain (selected/approved/stale/branch parents). */
+  getProtectedCandidateIds?: (nodeId: string) => string[];
   /** Rebuilds a splitGrid node's cells from its template when stale; returns true if rebuilt */
   materializeSplitGridCells: (nodeId: string) => boolean;
   get: () => unknown;

@@ -13,7 +13,15 @@ import { calculateGenerationCost } from "@/utils/costCalculator";
 import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { pollGenerateTask } from "./pollTaskCompletion";
 import { runWithFallback } from "./runWithFallback";
+import { rememberSessionMedia } from "./sessionMedia";
 import type { NodeExecutionContext } from "./types";
+
+/**
+ * Carousel entries kept per node. The cap below only trims entries no
+ * contract state points at; selected, reviewed, and branch-linked versions
+ * are always retained (CRB-02 append-only).
+ */
+const MAX_NODE_IMAGE_HISTORY = 50;
 
 export interface NanoBananaOptions {
   /** When true, falls back to stored inputImages/inputPrompt if no connections provide them. */
@@ -195,21 +203,59 @@ export async function executeNanoBanana(
           aspectRatio: nodeData.aspectRatio,
           model: nodeData.model,
         };
-        const updatedHistory = [newHistoryItem, ...(nodeData.imageHistory || [])].slice(0, 50);
+        // Session bytes first: the candidate is selectable before/independently
+        // of the generations-folder save.
+        rememberSessionMedia(imageId, result.image);
         const priorSelection = nodeData.outputImage;
+        const priorSelectedId = nodeData.selectedHistoryId ?? null;
         const priorIndex = nodeData.selectedHistoryIndex ?? 0;
+        const protectedIds = new Set([
+          ...(ctx.getProtectedCandidateIds?.(node.id) ?? []),
+          ...(priorSelectedId ? [priorSelectedId] : []),
+        ]);
+        const updatedHistory = [newHistoryItem, ...(nodeData.imageHistory || [])].filter(
+          (item, index) => index < MAX_NODE_IMAGE_HISTORY || protectedIds.has(item.id),
+        );
+        const selectedIndex =
+          priorSelection != null
+            ? Math.max(
+                updatedHistory.findIndex((item) => priorSelectedId != null && item.id === priorSelectedId),
+                0,
+              )
+            : 0;
+        // Legacy states may carry a selection without its history id; keep the
+        // previous index then, clamped into the retained history.
+        const nextIndex =
+          priorSelection != null && priorSelectedId == null
+            ? Math.min(priorIndex + 1, updatedHistory.length - 1)
+            : selectedIndex;
 
         updateNodeData(node.id, {
           ...(priorSelection != null
             ? {
                 outputImage: priorSelection,
-                selectedHistoryIndex: Math.min(priorIndex + 1, updatedHistory.length - 1),
+                selectedHistoryId: priorSelectedId,
+                selectedHistoryIndex: nextIndex,
               }
-            : { outputImage: result.image, selectedHistoryIndex: 0 }),
+            : { outputImage: result.image, selectedHistoryId: imageId, selectedHistoryIndex: 0 }),
           status: "complete",
           error: null,
           imageHistory: updatedHistory,
         });
+
+        // Report the run to the character-project contract when the context
+        // carries it; node-local history above stays the fallback otherwise.
+        try {
+          ctx.recordCharacterRun?.({
+            nodeId: node.id,
+            runId: `run-${timestamp}`,
+            status: "success",
+            candidates: [{ candidateId: imageId, referenceIds: [] }],
+            ...(priorSelectedId ? { inputCandidateId: priorSelectedId } : {}),
+          });
+        } catch {
+          // Contract bookkeeping must never fail a completed generation.
+        }
 
         // Push new image to connected downstream outputGallery nodes (atomic append)
         const edges = getEdges();
@@ -253,7 +299,17 @@ export async function executeNanoBanana(
                   const entryIndex = histCopy.findIndex((h) => h.id === imageId);
                   if (entryIndex !== -1) {
                     histCopy[entryIndex] = { ...histCopy[entryIndex], id: saveResult.imageId };
-                    updateNodeData(node.id, { imageHistory: histCopy });
+                    const patch: Partial<NanoBananaNodeData> = { imageHistory: histCopy };
+                    if (currentData.selectedHistoryId === imageId) {
+                      patch.selectedHistoryId = saveResult.imageId;
+                    }
+                    updateNodeData(node.id, patch);
+                    rememberSessionMedia(saveResult.imageId, result.image);
+                    try {
+                      ctx.renameCharacterCandidate?.(node.id, imageId, saveResult.imageId);
+                    } catch {
+                      // Contract bookkeeping must never fail a completed generation.
+                    }
                   }
                 }
               }
@@ -285,11 +341,21 @@ export async function executeNanoBanana(
       } else if (error instanceof Error) {
         errorMessage = error.message;
       }
-
       updateNodeData(node.id, {
         status: "error",
         error: errorMessage,
       });
+      try {
+        ctx.recordCharacterRun?.({
+          nodeId: node.id,
+          runId: `run-${Date.now()}`,
+          status: "failed",
+          candidates: [],
+          error: errorMessage,
+        });
+      } catch {
+        // Contract bookkeeping must never mask the original failure.
+      }
       throw new Error(errorMessage);
     }
   };

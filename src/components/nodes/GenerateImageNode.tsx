@@ -339,9 +339,14 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
     buildUpdate: (image, newIndex) => ({
       outputImage: image,
       selectedHistoryIndex: newIndex,
+      selectedHistoryId: nodeData.imageHistory?.[newIndex]?.id ?? null,
       status: "idle",
       error: null,
     }),
+    // Explicit user pick: the contract selection follows the carousel.
+    onSelect: (candidateId) => {
+      useWorkflowStore.getState().selectNodeCandidate(id, candidateId);
+    },
   });
 
   // Handle model selection from browse dialog

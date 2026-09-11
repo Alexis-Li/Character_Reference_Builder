@@ -138,11 +138,128 @@ export function definePart(project: CharacterProject, part: Part): CharacterProj
   });
 }
 
-export function setProjectLocks(
+/**
+ * Replace the project locks and mark every affected candidate stale in the
+ * same transition. Locks are inherited by all parts, so selected, approved,
+ * and unreviewed candidates across parts go stale for human re-review.
+ * Rejected candidates stay rejected. No run is started.
+ */
+export function updateProjectLocks(
   project: CharacterProject,
   locks: DesignConstraint[],
+  note?: string,
+): { project: CharacterProject; affected: string[] } {
+  const lockIds = new Set(locks.map((lock) => lock.id));
+  const removed = project.projectLocks.some((lock) => !lockIds.has(lock.id));
+  const changed =
+    removed ||
+    locks.length !== project.projectLocks.length ||
+    locks.some((lock) => {
+      const prev = project.projectLocks.find((item) => item.id === lock.id);
+      return !prev || prev.description !== lock.description;
+    });
+  const next = touch({ ...project, projectLocks: [...locks] });
+  if (!changed) return { project: next, affected: [] };
+  const staleable = new Set(["selected", "approved", "unreviewed"]);
+  const affected: string[] = [];
+  const candidates = next.candidates.map((candidate) => {
+    if (staleable.has(candidate.review)) {
+      affected.push(candidate.id);
+      return {
+        ...candidate,
+        review: "stale" as CandidateReviewState,
+        inferenceNotes: note ?? candidate.inferenceNotes,
+      };
+    }
+    return candidate;
+  });
+  return { project: touch({ ...next, candidates }), affected };
+}
+
+/**
+ * Update one design reference and mark candidates built from it stale in the
+ * same transition. Candidates from other references keep their state.
+ */
+export function updateReference(
+  project: CharacterProject,
+  id: string,
+  patch: Partial<Pick<DesignReference, "source" | "label" | "purpose">>,
+  note?: string,
+): { project: CharacterProject; affected: string[] } {
+  if (!project.references.some((item) => item.id === id)) {
+    throw new Error(`Unknown reference ${id}.`);
+  }
+  const next = touch({
+    ...project,
+    references: project.references.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+  });
+  return markUpstreamChange(next, { referenceIds: [id], note });
+}
+
+/**
+ * Register a candidate the user can already see (legacy node output or an
+ * imported file) without inventing a run. The candidate starts unreviewed;
+ * provenance stays empty so nothing is claimed about its origin.
+ */
+export function adoptCandidate(
+  project: CharacterProject,
+  input: { candidateId: string; partId: string; view: string; referenceIds?: string[] },
 ): CharacterProject {
-  return touch({ ...project, projectLocks: [...locks] });
+  if (project.candidates.some((item) => item.id === input.candidateId)) return project;
+  if (!project.parts.some((item) => item.id === input.partId)) {
+    project = definePart(project, {
+      id: input.partId,
+      name: input.partId,
+      requirements: [],
+      correctionHistory: [],
+    });
+  }
+  return touch({
+    ...project,
+    candidates: [
+      ...project.candidates,
+      {
+        id: input.candidateId,
+        partId: input.partId,
+        view: input.view,
+        runId: "",
+        referenceIds: [...(input.referenceIds ?? [])],
+        review: "unreviewed" as CandidateReviewState,
+      },
+    ],
+  });
+}
+
+/**
+ * Remap a candidate id (e.g. the generations folder deduplicated the file
+ * onto an existing stable id). Selection references follow the rename; if
+ * the target already exists the entries merge instead of duplicating.
+ */
+export function renameCandidate(
+  project: CharacterProject,
+  fromId: string,
+  toId: string,
+): CharacterProject {
+  if (fromId === toId) return project;
+  if (!project.candidates.some((item) => item.id === fromId)) return project;
+  const seen = new Set<string>();
+  const candidates: Candidate[] = [];
+  for (const candidate of project.candidates) {
+    const id = candidate.id === fromId ? toId : candidate.id;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    candidates.push(id === candidate.id ? candidate : { ...candidate, id });
+  }
+  const selection: Record<string, string> = {};
+  for (const [key, value] of Object.entries(project.selection)) {
+    selection[key] = value === fromId ? toId : value;
+  }
+  const runs = project.runs.map((run) => ({
+    ...run,
+    candidateIds: run.candidateIds.map((id) => (id === fromId ? toId : id)),
+    inputCandidateId: run.inputCandidateId === fromId ? toId : run.inputCandidateId,
+  }));
+  return touch({ ...project, candidates, selection, runs });
 }
 
 /**
