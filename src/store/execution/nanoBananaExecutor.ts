@@ -9,12 +9,14 @@ import type {
   NanoBananaNodeData,
   SelectedModel,
 } from "@/types";
-import { calculateGenerationCost } from "@/utils/costCalculator";
-import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { pollGenerateTask } from "./pollTaskCompletion";
 import { runWithFallback } from "./runWithFallback";
+import { calculateGenerationCost } from "@/utils/costCalculator";
+import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
+import { getGenerateImageDefaults } from "@/store/utils/localStorage";
 import { rememberSessionMedia } from "./sessionMedia";
 import { newCharacterId } from "@/lib/characterProject";
+import { imageCapabilities, resolveGenerationModel, ProviderCallRecord } from "@/lib/providers/imageCapabilities";
 import type { NodeExecutionContext } from "./types";
 
 /**
@@ -111,6 +113,28 @@ export async function executeNanoBanana(
     const sanitizedDynamicInputs = { ...dynamicInputs };
     delete sanitizedDynamicInputs.prompt;
 
+    // CRB-03: record the model-resolution layer BEFORE the request so the
+    // call record reflects what actually served this run (primary or
+    // fallback), never which entry happened to be configured last.
+    const projectDefault = getGenerateImageDefaults()?.selectedModel;
+    const resolution = resolveGenerationModel({
+      nodeSelected: modelToUse,
+      projectDefault,
+    });
+    const declared = imageCapabilities(modelToUse.provider, modelToUse.modelId);
+    const callRecord: ProviderCallRecord = {
+      at: Date.now(),
+      provider: modelToUse.provider,
+      modelId: modelToUse.modelId,
+      displayName: modelToUse.displayName,
+      resolvedFrom: resolution.resolvedFrom,
+      declared: declared !== null,
+      ...(declared ? { capabilities: declared } : {}),
+      referenceCount: images.length,
+      purposes: null,
+      auth: "api-key",
+    };
+
     const requestPayload = {
       images,
       prompt: finalPrompt,
@@ -153,6 +177,7 @@ export async function executeNanoBanana(
         updateNodeData(node.id, {
           status: "error",
           error: errorMessage,
+          lastCall: callRecord,
         });
         throw new Error(errorMessage);
       }
@@ -175,6 +200,7 @@ export async function executeNanoBanana(
           updateNodeData(node.id, {
             status: "error",
             error: result.error || "Generation failed",
+            lastCall: callRecord,
           });
           throw new Error(result.error || "Generation failed");
         }
@@ -233,7 +259,6 @@ export async function executeNanoBanana(
           priorSelection != null && priorSelectedId == null
             ? Math.min(priorIndex + 1, updatedHistory.length - 1)
             : selectedIndex;
-
         updateNodeData(node.id, {
           ...(priorSelection != null
             ? {
@@ -245,6 +270,7 @@ export async function executeNanoBanana(
           status: "complete",
           error: null,
           imageHistory: updatedHistory,
+          lastCall: callRecord,
         });
 
         // Report the run to the character-project contract when the context
@@ -324,6 +350,7 @@ export async function executeNanoBanana(
         updateNodeData(node.id, {
           status: "error",
           error: result.error || "Generation failed",
+          lastCall: callRecord,
         });
         throw new Error(result.error || "Generation failed");
       }
@@ -344,6 +371,7 @@ export async function executeNanoBanana(
       updateNodeData(node.id, {
         status: "error",
         error: errorMessage,
+        lastCall: callRecord,
       });
       try {
         ctx.recordCharacterRun?.({

@@ -3,6 +3,13 @@
  *
  * Handles image generation using OpenAI's Images API (gpt-image-1, gpt-image-2).
  * Supports both text-to-image (/v1/images/generations) and image-to-image (/v1/images/edits).
+ *
+ * CRB-03 (Issue #4): this is the second compatible entry of the capability
+ * contract. ALL reference inputs are forwarded in fixed order via the
+ * multipart `image[]` field (P04 — the pre-fix snapshot dropped every image
+ * after the first). When callers pass structured references, purposes ride
+ * along in the filename (e.g. `1-target.png`) so the vendor's prompt-side
+ * ordering can be cross-checked; filenames never carry credentials.
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
@@ -28,12 +35,14 @@ export async function generateWithOpenAI(
   apiKey: string,
   input: GenerationInput
 ): Promise<GenerationOutput> {
-  console.log(`[API:${requestId}] OpenAI generation - Model: ${input.model.id}, Images: ${input.images?.length || 0}, Prompt: ${input.prompt.length} chars`);
+  console.log(`[API:${requestId}] OpenAI generation - Model: ${input.model.id}, Images: ${input.images?.length || 0}, References: ${input.references?.length ?? 0}, Prompt: ${input.prompt.length} chars`);
 
   const OPENAI_API_BASE = "https://api.openai.com/v1";
   const modelId = input.model.id;
 
-  const hasImages = input.images && input.images.length > 0;
+  const hasImages = (input.images && input.images.length > 0)
+    || Boolean(input.references?.length)
+    || Boolean(input.mask);
   // If images are provided, use the edits endpoint; otherwise use generations
   const isImageToImage = hasImages;
 
@@ -58,15 +67,34 @@ export async function generateWithOpenAI(
     if (parameters.quality) formData.append("quality", String(parameters.quality));
     if (parameters.n) formData.append("n", String(parameters.n));
     if (parameters.background) formData.append("background", String(parameters.background));
+    // CRB-03 (P04): send EVERY reference image in fixed order. gpt-image
+    // edits accepts up to 4 inputs via repeated image[] fields; truncating
+    // to the first image silently dropped retained views and auxiliary
+    // references, so inputs are appended as-is and capability gaps are
+    // rejected earlier in the route (checkReferenceGaps), never here.
+    const orderedImages = input.references?.length
+      ? input.references.map((reference) => ({
+          data: reference.image,
+          filenameSuffix: reference.purpose ? `-${reference.purpose}` : "",
+        }))
+      : (input.images ?? []).map((image) => ({ data: image, filenameSuffix: "" }));
 
-    // Add first image only (OpenAI edits supports up to 4 images, but single image is the safest default)
-    const image = input.images![0];
-    const { data, mimeType } = extractBase64Data(image);
-    const ext = mimeType === "image/jpeg" ? "jpg" : "png";
-    const blob = new Blob([Buffer.from(data, "base64")], { type: mimeType });
-    formData.append("image", blob, `image.${ext}`);
+    orderedImages.forEach((image, index) => {
+      const { data, mimeType } = extractBase64Data(image.data);
+      const ext = mimeType === "image/jpeg" ? "jpg" : "png";
+      const blob = new Blob([Buffer.from(data, "base64")], { type: mimeType });
+      formData.append("image", blob, `${index + 1}${image.filenameSuffix}.${ext}`);
+    });
 
-    console.log(`[API:${requestId}] OpenAI edits request: 1 image, model=${modelId}`);
+    // CRB-03: the mask rides in its own multipart field per the Images API;
+    // it is never mixed into the reference image[] list.
+    if (input.mask) {
+      const { data, mimeType } = extractBase64Data(input.mask);
+      const blob = new Blob([Buffer.from(data, "base64")], { type: mimeType });
+      formData.append("mask", blob, "mask.png");
+    }
+
+    console.log(`[API:${requestId}] OpenAI edits request: ${orderedImages.length} image(s), model=${modelId}`);
 
     response = await fetch(endpoint, {
       method: "POST",

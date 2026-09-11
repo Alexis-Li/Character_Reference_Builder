@@ -12,7 +12,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { GenerateRequest, GenerateResponse, ModelType, SelectedModel, ProviderType } from "@/types";
-import { GenerationInput, ModelCapability } from "@/lib/providers/types";
+import { GenerationInput, ModelCapability, checkReferenceGaps, imageCapabilities, normalizeReferences, ReferenceInput } from "@/lib/providers/types";
 import { generateWithGemini, generateWithGeminiVideo } from "./providers/gemini";
 import { generateWithReplicate } from "./providers/replicate";
 import { generateWithFalQueue } from "./providers/fal";
@@ -33,6 +33,10 @@ interface MultiProviderGenerateRequest extends GenerateRequest {
   parameters?: Record<string, unknown>;
   /** Dynamic inputs from schema-based connections (e.g., image_url, tail_image_url, prompt) */
   dynamicInputs?: Record<string, string | string[]>;
+  /** Structured reference inputs with roles, in fixed order (CRB-03). */
+  references?: unknown;
+  /** Optional edit mask as data URL (CRB-03). */
+  mask?: string;
 }
 
 
@@ -62,6 +66,8 @@ export async function POST(request: NextRequest) {
       selectedModel,
       parameters,
       dynamicInputs,
+      references: rawReferences,
+      mask,
       mediaType,
     } = body;
 
@@ -100,6 +106,39 @@ export async function POST(request: NextRequest) {
     // Determine which provider to use
     const provider: ProviderType = selectedModel?.provider || "gemini";
     console.log(`[API:${requestId}] Provider: ${provider}, Model: ${selectedModel?.modelId || model}`);
+
+    // CRB-03: structured reference inputs are validated against the entry's
+    // declared capabilities BEFORE any provider call. Gaps return every
+    // actionable message; inputs are never truncated or silently degraded.
+    let references: ReferenceInput[];
+    try {
+      references = normalizeReferences(rawReferences);
+    } catch (error) {
+      return NextResponse.json<GenerateResponse>(
+        { success: false, error: error instanceof Error ? error.message : "Invalid references" },
+        { status: 400 }
+      );
+    }
+    if (mask !== undefined && typeof mask !== "string") {
+      return NextResponse.json<GenerateResponse>(
+        { success: false, error: "mask must be a data URL string" },
+        { status: 400 }
+      );
+    }
+    const entryModelId = selectedModel?.modelId || model;
+    const capabilityGaps = checkReferenceGaps(
+      imageCapabilities(provider, entryModelId),
+      { references, mask, prompt: prompt || undefined },
+      { provider, modelId: entryModelId }
+    );
+    if (capabilityGaps.length > 0) {
+      console.log(`[API:${requestId}] Capability gaps: ${capabilityGaps.map((g) => g.kind).join(", ")}`);
+      return NextResponse.json<GenerateResponse>(
+        { success: false, error: "Capability gaps must be resolved before submission", gaps: capabilityGaps },
+        { status: 422 }
+      );
+    }
+
 
     // Route to appropriate provider
     if (provider === "replicate") {
@@ -154,6 +193,8 @@ export async function POST(request: NextRequest) {
         },
         prompt: prompt || "",
         images: processedImages,
+        references,
+        mask,
         parameters,
         dynamicInputs: processedDynamicInputs,
       };
@@ -229,6 +270,8 @@ export async function POST(request: NextRequest) {
         },
         prompt: prompt || "",
         images: processedImages,
+        references,
+        mask,
         parameters,
         dynamicInputs: processedDynamicInputs,
       };
@@ -308,6 +351,8 @@ export async function POST(request: NextRequest) {
         },
         prompt: prompt || "",
         images: processedImages,
+        references,
+        mask,
         parameters,
         dynamicInputs: processedDynamicInputs,
       };
@@ -386,6 +431,8 @@ export async function POST(request: NextRequest) {
         },
         prompt: prompt || "",
         images: processedImages,
+        references,
+        mask,
         parameters,
         dynamicInputs: processedDynamicInputs,
       };
@@ -465,6 +512,8 @@ export async function POST(request: NextRequest) {
         },
         prompt: prompt || "",
         images: processedImages,
+        references,
+        mask,
         parameters,
         dynamicInputs: processedDynamicInputs,
       };
@@ -573,7 +622,9 @@ export async function POST(request: NextRequest) {
       aspectRatio,
       resolution,
       useGoogleSearch,
-      useImageSearch
+      useImageSearch,
+      references,
+      mask
     );
   } catch (error) {
     // Extract error information

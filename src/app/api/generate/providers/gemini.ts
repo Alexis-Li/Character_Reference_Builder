@@ -7,7 +7,7 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { GenerateResponse, ModelType } from "@/types";
-import { GenerationOutput } from "@/lib/providers/types";
+import { GenerationOutput, ReferenceInput } from "@/lib/providers/types";
 
 /**
  * Map model types to Gemini model IDs
@@ -31,12 +31,20 @@ export async function generateWithGemini(
   aspectRatio?: string,
   resolution?: string,
   useGoogleSearch?: boolean,
-  useImageSearch?: boolean
+  useImageSearch?: boolean,
+  references?: ReferenceInput[],
+  mask?: string
 ): Promise<NextResponse<GenerateResponse>> {
   console.log(`[API:${requestId}] Gemini generation - Model: ${model}, Images: ${images?.length || 0}, Prompt: ${prompt?.length || 0} chars`);
 
-  // Extract base64 data and MIME types from data URLs
-  const imageData = (images || []).map((image, idx) => {
+  // CRB-03: structured references keep their documented roles and fixed
+  // order inline (prompt first, then every image in request order). When
+  // only legacy flat images arrive, behavior is unchanged. Purposes ride in
+  // the part order, never in credentials-bearing metadata.
+  const imageSources: string[] = references?.length
+    ? references.map((reference) => reference.image)
+    : (images || []);
+  const imageData = imageSources.map((image, idx) => {
     if (image.includes("base64,")) {
       const [header, data] = image.split("base64,");
       // Extract MIME type from header (e.g., "data:image/png;" -> "image/png")
@@ -48,6 +56,11 @@ export async function generateWithGemini(
     console.log(`[API:${requestId}]   Image ${idx + 1}: raw, ${(image.length / 1024).toFixed(1)}KB`);
     return { data: image, mimeType: "image/png" };
   });
+  if (mask) {
+    const maskData = mask.includes("base64,") ? mask.split("base64,")[1] : mask;
+    imageData.push({ data: maskData, mimeType: "image/png" });
+    console.log(`[API:${requestId}]   Mask appended as final image part`);
+  }
 
   // Initialize Gemini client
   const ai = new GoogleGenAI({ apiKey });

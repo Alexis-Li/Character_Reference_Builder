@@ -1,4 +1,26 @@
 /**
+ * Structured reference inputs and capability checks live in
+ * imageCapabilities.ts (CRB-03); re-exported here so provider code can
+ * import the whole contract from one module.
+ */
+export {
+  type ReferencePurpose,
+  type ReferenceInput,
+  type ImageCapabilities,
+  type CapabilityGap,
+  type CapabilityGapKind,
+  type ModelResolutionSource,
+  type ModelResolution,
+  type ProviderAuthChannel,
+  type ProviderCallRecord,
+  imageCapabilities,
+  estimateImageBytes,
+  checkReferenceGaps,
+  normalizeReferences,
+  resolveGenerationModel,
+} from "./imageCapabilities";
+
+/**
  * Provider Abstraction Types
  *
  * Defines the interface contract for all AI providers (Gemini, Replicate, fal.ai).
@@ -7,6 +29,7 @@
  */
 
 import { ProviderType } from "@/types";
+import type { ReferenceInput } from "./imageCapabilities";
 
 /**
  * Model capabilities - what operations a model can perform
@@ -88,8 +111,12 @@ export interface GenerationInput {
   model: ProviderModel;
   /** Text prompt for the generation */
   prompt: string;
-  /** Input images as base64 data URLs or HTTP URLs */
+  /** Input images as base64 data URLs or HTTP URLs (flat view of references for schema-driven providers). */
   images?: string[];
+  /** Structured reference inputs with documented roles, in fixed order (CRB-03). */
+  references?: ReferenceInput[];
+  /** Optional edit mask (data URL). Requires the entry's mask capability. */
+  mask?: string;
   /** Model-specific parameters (varies by provider/model) */
   parameters?: Record<string, unknown>;
   /** Dynamic inputs mapped from schema (e.g., { "image_url": "data:...", "tail_image_url": "data:..." }) */

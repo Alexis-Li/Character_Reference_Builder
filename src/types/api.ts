@@ -6,6 +6,7 @@
  */
 
 import type { AspectRatio, Resolution, ModelType } from "./models";
+import type { CapabilityGap } from "@/lib/providers/imageCapabilities";
 import type { LLMProvider, LLMModelType } from "./providers";
 
 // API Request/Response types for Image Generation
@@ -30,6 +31,8 @@ export interface GenerateResponse {
   model3dUrl?: string; // For 3D models, return GLB URL directly
   contentType?: "image" | "video" | "3d" | "audio";
   error?: string;
+  /** Pre-submit capability gaps (CRB-03). Present when the request is rejected before any provider call. */
+  gaps?: CapabilityGap[];
   // Client-side polling fields (for long-running Kie tasks)
   polling?: boolean; // true = task submitted, poll for completion
   taskId?: string; // Kie task ID to poll

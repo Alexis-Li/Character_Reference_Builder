@@ -19,6 +19,7 @@ export type { AnnotationNodeData, BaseNodeData };
 import type { AspectRatio, Resolution, ModelType } from "./models";
 import type { LLMProvider, LLMModelType, SelectedModel, ProviderType } from "./providers";
 import type { ComfyAppDefinition, ComfyWorkflowInspection } from "@/lib/comfy/types";
+import type { ProviderCallRecord } from "@/lib/providers/imageCapabilities";
 
 export type { ComfyAppDefinition, ComfyWorkflowInspection };
 
@@ -221,6 +222,8 @@ export interface NanoBananaNodeData extends BaseNodeData {
   __usedFallback?: boolean; // Set by runWithFallback on successful fallback
   __fallbackModelUsed?: string; // Display name of fallback model that succeeded
   __primaryError?: string; // Error message from the primary attempt
+  /** CRB-03: evidence of the last actual provider call from this node. */
+  lastCall?: ProviderCallRecord;
 }
 
 /**
