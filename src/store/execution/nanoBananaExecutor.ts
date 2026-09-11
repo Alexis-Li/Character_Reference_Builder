@@ -184,7 +184,10 @@ export async function executeNanoBanana(
           model: nodeData.model,
         });
 
-        // Add to node's carousel history
+        // Append-only candidate history (CRB-02): a successful rerun must not
+        // silently replace the human-selected result. The new image is always
+        // recorded; outputImage keeps the explicit selection and only adopts
+        // the fresh result when nothing was selected yet.
         const newHistoryItem = {
           id: imageId,
           timestamp,
@@ -193,13 +196,19 @@ export async function executeNanoBanana(
           model: nodeData.model,
         };
         const updatedHistory = [newHistoryItem, ...(nodeData.imageHistory || [])].slice(0, 50);
+        const priorSelection = nodeData.outputImage;
+        const priorIndex = nodeData.selectedHistoryIndex ?? 0;
 
         updateNodeData(node.id, {
-          outputImage: result.image,
+          ...(priorSelection != null
+            ? {
+                outputImage: priorSelection,
+                selectedHistoryIndex: Math.min(priorIndex + 1, updatedHistory.length - 1),
+              }
+            : { outputImage: result.image, selectedHistoryIndex: 0 }),
           status: "complete",
           error: null,
           imageHistory: updatedHistory,
-          selectedHistoryIndex: 0,
         });
 
         // Push new image to connected downstream outputGallery nodes (atomic append)
@@ -292,6 +301,9 @@ export async function executeNanoBanana(
     displayName: nodeData.model,
   };
 
+  // CRB-02: no clearOutput — a failed primary must not wipe the selected
+  // result while the fallback is attempted, and a doubly-failed run must
+  // leave outputImage, history, and carousel selection untouched (P06).
   await runWithFallback({
     nodeId: node.id,
     primary: primaryModel,
@@ -299,6 +311,5 @@ export async function executeNanoBanana(
     fallbackParameters: nodeData.fallbackParameters,
     updateNodeData,
     runOnce,
-    clearOutput: { outputImage: null },
   });
 }
