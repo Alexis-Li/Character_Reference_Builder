@@ -21,6 +21,8 @@
 
 可复跑脚本：`scripts/validation/part-reference-ui.cjs`。先启动本机服务，设置外置 `CRB_TEMP_ROOT`，通过 `NODE_PATH` 提供临时安装的 `playwright` 包，运行 `node scripts/validation/part-reference-ui.cjs`；本机需安装 Edge。服务地址可通过 `CRB_BASE_URL` 指定，默认 `http://127.0.0.1:3210`。脚本拦截生成请求，使用测试图片，无真实付费生成。
 
-## 待用户验收
+## 验收结论（2026-09-12）
 
-浏览器交互验证使用合成图片和云端响应替身，不等同于模型师使用真实角色资料进行人工验收。真实图像质量、歧义目标理解、遮挡推测准确性和付费 Provider 效果仍需用户验收。Issue 保持开启。
+功能路径已按上述证据复核并通过验收，[Issue #6](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6) 已关闭。验收复核再次通过生产构建、133 个测试文件共 2718 项测试、51 项定向回归及完整 Edge 浏览器路径；详细结论见 [Issue 评论](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6#issuecomment-5644999649)。
+
+浏览器交互验证使用合成图片和云端响应替身，不等同于模型师使用真实角色资料评价生成质量。真实图像质量、歧义目标理解、遮挡推测准确性、成本和付费 Provider 替换效果由 CRB-07（[#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8)）继续验证，不再作为 CRB-05 的开放状态。
