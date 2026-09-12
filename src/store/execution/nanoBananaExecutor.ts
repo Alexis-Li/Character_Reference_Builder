@@ -7,6 +7,8 @@
 
 import type {
   CloudFailureReason,
+  CloudQuerySupport,
+  CloudRequestExecution,
   CloudRequestRecord,
   NanoBananaNodeData,
   SelectedModel,
@@ -92,7 +94,7 @@ export async function executeNanoBanana(
       ...(switchReason ? { switchReason } : {}),
       estimatedCostUsd: estimateSelectedModelCost(actualEntry, nodeData.resolution),
       actualCostUsd: null,
-      querySupport: actualEntry.provider === "kie" ? "supported" : "unsupported",
+      querySupport: "unsupported",
     };
   };
 
@@ -279,10 +281,26 @@ export async function executeNanoBanana(
           const errorText = await response.text();
           let errorMessage = `HTTP ${response.status}`;
           let serverCall: ProviderCallRecord | undefined;
+          let execution: CloudRequestExecution = "unknown";
+          let querySupport: CloudQuerySupport = "unsupported";
+          let upstreamRequestId: string | undefined;
           try {
             const errorJson = JSON.parse(errorText);
             errorMessage = errorJson.error || errorMessage;
             serverCall = errorJson.call;
+            if (
+              errorJson.execution === "not-executed" ||
+              errorJson.execution === "submitted" ||
+              errorJson.execution === "unknown"
+            ) {
+              execution = errorJson.execution;
+            }
+            if (errorJson.querySupport === "supported" || errorJson.querySupport === "unsupported") {
+              querySupport = errorJson.querySupport;
+            }
+            if (typeof errorJson.upstreamRequestId === "string" && errorJson.upstreamRequestId) {
+              upstreamRequestId = errorJson.upstreamRequestId;
+            }
           } catch {
             if (errorText) errorMessage += ` - ${errorText.substring(0, 200)}`;
           }
@@ -300,43 +318,56 @@ export async function executeNanoBanana(
                     : serverCall
                       ? "provider-failed"
                       : "unknown";
-          const definitelyNotSubmitted = !serverCall;
-          const eligible = definitelyNotSubmitted && (
+          const eligible = execution === "not-executed" && (
             failureReason === "capability-unavailable" ||
             failureReason === "provider-unavailable" ||
             failureReason === "quota-unavailable"
           );
           requestRecord = {
             ...requestRecord,
-            status: definitelyNotSubmitted ? "not-submitted" : "failed",
+            status: execution === "not-executed"
+              ? "not-submitted"
+              : execution === "submitted"
+                ? "failed"
+                : "unknown",
+            querySupport,
+            ...(upstreamRequestId ? { upstreamRequestId } : {}),
             failureReason,
             error: errorMessage,
           };
           persistRequest(requestRecord);
 
           updateNodeData(node.id, {
-            status: "error",
-            error: errorMessage,
+            status: execution === "unknown" ? "unknown" : "error",
+            error: execution === "unknown"
+              ? `${errorMessage} The provider may have executed; no automatic retry was sent.`
+              : errorMessage,
             ...(serverCall ? { lastCall: serverCall } : {}),
           });
-          recordDefiniteFailure(errorMessage);
+          if (execution !== "unknown") recordDefiniteFailure(errorMessage);
           throw new CloudAttemptError(
             errorMessage,
-            definitelyNotSubmitted ? "not-executed" : "submitted",
+            execution,
             failureReason,
             eligible,
           );
         }
 
         result = await response.json();
+        requestRecord = {
+          ...requestRecord,
+          querySupport: result.querySupport ?? requestRecord.querySupport,
+          ...(result.upstreamRequestId ? { upstreamRequestId: result.upstreamRequestId } : {}),
+        };
+        persistRequest(requestRecord);
       }
 
       // Handle polling response (long-running Kie tasks)
       if (result.polling) {
         requestRecord = {
           ...requestRecord,
-          upstreamRequestId: result.taskId,
-          querySupport: "supported",
+          upstreamRequestId: result.upstreamRequestId ?? result.taskId,
+          querySupport: result.querySupport ?? "supported",
         };
         persistRequest(requestRecord);
         result = await pollGenerateTask({
@@ -541,25 +572,36 @@ export async function executeNanoBanana(
           trackSaveGeneration(imageId, savePromise);
         }
       } else {
-        // No provider submission record exists for this outcome (the server
-        // attaches one only for submitted transport failures, which arrive
-        // via the !response.ok branch above). Leave lastCall untouched.
+        const execution = result.execution ?? "unknown";
+        const failureReason: CloudFailureReason = execution === "submitted"
+          ? "provider-failed"
+          : execution === "unknown"
+            ? "unknown"
+            : "input";
         updateNodeData(node.id, {
-          status: "error",
-          error: result.error || "Generation failed",
+          status: execution === "unknown" ? "unknown" : "error",
+          error: execution === "unknown"
+            ? `${result.error || "Generation failed"} The provider may have executed; no automatic retry was sent.`
+            : result.error || "Generation failed",
         });
         requestRecord = {
           ...requestRecord,
-          status: result.call ? "failed" : "not-submitted",
-          failureReason: result.call ? "provider-failed" : "input",
+          status: execution === "not-executed"
+            ? "not-submitted"
+            : execution === "submitted"
+              ? "failed"
+              : "unknown",
+          querySupport: result.querySupport ?? requestRecord.querySupport,
+          ...(result.upstreamRequestId ? { upstreamRequestId: result.upstreamRequestId } : {}),
+          failureReason,
           error: result.error || "Generation failed",
         };
         persistRequest(requestRecord);
-        recordDefiniteFailure(result.error || "Generation failed");
+        if (execution !== "unknown") recordDefiniteFailure(result.error || "Generation failed");
         throw new CloudAttemptError(
           result.error || "Generation failed",
-          result.call ? "submitted" : "not-executed",
-          result.call ? "provider-failed" : "input",
+          execution,
+          failureReason,
         );
       }
     } catch (error) {

@@ -680,6 +680,22 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
         data-tutorial="generate-output-area"
       >
         {/* Preview area */}
+        {latestRequest && (
+          <div
+            className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-medium pointer-events-auto z-10 ${
+              latestRequest.status === "completed"
+                ? "bg-emerald-900/80 text-emerald-200"
+                : latestRequest.status === "unknown" || latestRequest.status === "wait-cancelled"
+                  ? "bg-amber-900/80 text-amber-200"
+                  : latestRequest.status === "failed" || latestRequest.status === "not-submitted"
+                    ? "bg-red-900/80 text-red-200"
+                    : "bg-neutral-900/80 text-neutral-200"
+            }`}
+            title={requestSummary}
+          >
+            {requestStatusLabel}{latestRequest.attempt === "fallback" ? " · Fallback" : ""}
+          </div>
+        )}
         {nodeData.outputImage ? (
           <>
             <img
@@ -687,22 +703,6 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
               alt="Generated"
               className="w-full h-full object-cover"
             />
-            {latestRequest && (
-              <div
-                className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-medium pointer-events-auto z-10 ${
-                  latestRequest.status === "completed"
-                    ? "bg-emerald-900/80 text-emerald-200"
-                    : latestRequest.status === "unknown" || latestRequest.status === "wait-cancelled"
-                      ? "bg-amber-900/80 text-amber-200"
-                      : latestRequest.status === "failed" || latestRequest.status === "not-submitted"
-                        ? "bg-red-900/80 text-red-200"
-                        : "bg-neutral-900/80 text-neutral-200"
-                }`}
-                title={requestSummary}
-              >
-                {requestStatusLabel}{latestRequest.attempt === "fallback" ? " · Fallback" : ""}
-              </div>
-            )}
             {/* Loading overlay for generation */}
             {nodeData.status === "loading" && (
               <div className="absolute inset-0 bg-neutral-900/70 flex items-center justify-center">

@@ -703,6 +703,45 @@ describe("GenerateImageNode", () => {
     expect(badge).toHaveAttribute("title", expect.stringContaining("Cost: unknown"));
   });
 
+  it.each([
+    ["not-submitted", "Not submitted", "error"],
+    ["failed", "Failed", "error"],
+    ["unknown", "Result unknown", "unknown"],
+    ["wait-cancelled", "Local wait cancelled", "wait-cancelled"],
+  ] as const)("shows the %s request trace before any image exists", (requestStatus, label, nodeStatus) => {
+    const primary = { provider: "gemini" as const, modelId: "nano-banana", displayName: "Nano Banana" };
+    const fallback = { provider: "openai" as const, modelId: "gpt-image-1", displayName: "GPT Image 1" };
+    render(
+      <TestWrapper>
+        <GenerateImageNode {...createNodeProps({
+          outputImage: null,
+          status: nodeStatus,
+          error: "Request did not complete",
+          requestHistory: [{
+            id: `request-${requestStatus}`,
+            createdAt: 1,
+            updatedAt: 2,
+            status: requestStatus,
+            attempt: "fallback",
+            originalEntry: primary,
+            actualEntry: fallback,
+            switchReason: "capability-unavailable: primary rejected before submission",
+            estimatedCostUsd: null,
+            actualCostUsd: null,
+            querySupport: "unsupported",
+            error: "Request did not complete",
+          }],
+        })} />
+      </TestWrapper>
+    );
+
+    const badge = screen.getByText(`${label} · Fallback`);
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Original: gemini/Nano Banana"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Actual: openai/GPT Image 1"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Switch: capability-unavailable"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Cost: unknown"));
+  });
+
   describe("Fetch Models on Provider Change", () => {
     it("should fetch models when provider is fal", async () => {
       render(

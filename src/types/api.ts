@@ -7,7 +7,12 @@
 
 import type { AspectRatio, Resolution, ModelType } from "./models";
 import type { CapabilityGap, ProviderCallRecord } from "@/lib/providers/imageCapabilities";
-import type { LLMProvider, LLMModelType } from "./providers";
+import type {
+  CloudQuerySupport,
+  CloudRequestExecution,
+  LLMProvider,
+  LLMModelType,
+} from "./providers";
 
 // API Request/Response types for Image Generation
 export interface GenerateRequest {
@@ -23,6 +28,12 @@ export interface GenerateRequest {
 
 export interface GenerateResponse {
   success: boolean;
+  /** Explicit server evidence; absence in an old response must be treated as unknown. */
+  execution: CloudRequestExecution;
+  /** Whether this app can query the upstream request again. */
+  querySupport: CloudQuerySupport;
+  /** Provider request id when one is known and safe to persist. */
+  upstreamRequestId?: string;
   image?: string;
   video?: string;
   videoUrl?: string; // For large videos, return URL directly

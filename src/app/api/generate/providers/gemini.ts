@@ -15,6 +15,8 @@ import {
   type ProviderCallRecord,
 } from "@/lib/providers/imageCapabilities";
 
+const SUBMITTED = { execution: "submitted" as const, querySupport: "unsupported" as const };
+
 /**
  * Map model types to Gemini model IDs
  */
@@ -167,6 +169,7 @@ export async function generateWithGemini(
       return NextResponse.json<GenerateResponse>(
         {
           success: false,
+          ...SUBMITTED,
           error: "Rate limit reached. Please wait and try again.",
           call: { ...callBase, stage: "failed" },
         },
@@ -176,6 +179,7 @@ export async function generateWithGemini(
     return NextResponse.json<GenerateResponse>(
       {
         success: false,
+        ...SUBMITTED,
         error: message.substring(0, 200),
         call: { ...callBase, stage: "failed" },
       },
@@ -194,6 +198,7 @@ export async function generateWithGemini(
     return NextResponse.json<GenerateResponse>(
       {
         success: false,
+        ...SUBMITTED,
         error: "No response from AI model",
         call: { ...callBase, stage: "failed" },
       },
@@ -209,6 +214,7 @@ export async function generateWithGemini(
     return NextResponse.json<GenerateResponse>(
       {
         success: false,
+        ...SUBMITTED,
         error: "No content in response",
         call: { ...callBase, stage: "failed" },
       },
@@ -229,6 +235,7 @@ export async function generateWithGemini(
 
       const responsePayload: GenerateResponse = {
         success: true,
+        ...SUBMITTED,
         image: dataUrl,
         call: { ...callBase, stage: "succeeded" },
       };
@@ -252,6 +259,7 @@ export async function generateWithGemini(
       return NextResponse.json<GenerateResponse>(
         {
           success: false,
+          ...SUBMITTED,
           error: `Model returned text instead of image: ${part.text.substring(0, 200)}`,
           call: { ...callBase, stage: "failed" },
         },
@@ -263,6 +271,7 @@ export async function generateWithGemini(
   return NextResponse.json<GenerateResponse>(
     {
       success: false,
+      ...SUBMITTED,
       error: "No image in response",
       call: { ...callBase, stage: "failed" },
     },

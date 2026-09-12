@@ -23,11 +23,13 @@ export const clearFalInputMappingCache = _clearFalInputMappingCache;
  */
 export function buildMediaResponse(
   output: { type: string; data: string; url?: string },
-  call?: import("@/lib/providers/imageCapabilities").ProviderCallRecord
+  call?: import("@/lib/providers/imageCapabilities").ProviderCallRecord,
 ): NextResponse {
+  const evidence = { execution: "submitted" as const, querySupport: "unsupported" as const };
   if (output.type === "3d") {
     return NextResponse.json<GenerateResponse>({
       success: true,
+      ...evidence,
       model3dUrl: output.url,
       contentType: "3d",
       ...(call ? { call } : {}),
@@ -38,6 +40,7 @@ export function buildMediaResponse(
     const isLarge = !output.data && output.url;
     return NextResponse.json<GenerateResponse>({
       success: true,
+      ...evidence,
       video: isLarge ? undefined : output.data,
       videoUrl: isLarge ? output.url : undefined,
       contentType: "video",
@@ -49,6 +52,7 @@ export function buildMediaResponse(
     const isLarge = !output.data && output.url;
     return NextResponse.json<GenerateResponse>({
       success: true,
+      ...evidence,
       audio: isLarge ? undefined : output.data,
       audioUrl: isLarge ? output.url : undefined,
       contentType: "audio",
@@ -58,6 +62,7 @@ export function buildMediaResponse(
 
   return NextResponse.json<GenerateResponse>({
     success: true,
+    ...evidence,
     image: output.data,
     contentType: "image",
     ...(call ? { call } : {}),

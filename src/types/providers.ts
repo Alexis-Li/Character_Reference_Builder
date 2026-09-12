@@ -32,6 +32,11 @@ export type CloudRequestStatus =
   | "unknown"
   | "wait-cancelled";
 
+/** Server evidence about whether a provider could have consumed the request. */
+export type CloudRequestExecution = "not-executed" | "submitted" | "unknown";
+
+export type CloudQuerySupport = "supported" | "unsupported";
+
 export type CloudFailureReason =
   | "capability-unavailable"
   | "provider-unavailable"
@@ -56,7 +61,7 @@ export interface CloudRequestRecord {
   estimatedCostUsd: number | null;
   /** Provider billing is not treated as known until a provider reports it. */
   actualCostUsd: number | null;
-  querySupport: "supported" | "unsupported";
+  querySupport: CloudQuerySupport;
   upstreamRequestId?: string;
   failureReason?: CloudFailureReason;
   error?: string;

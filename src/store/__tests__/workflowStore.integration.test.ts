@@ -1630,7 +1630,7 @@ describe("workflowStore integration tests", () => {
     });
 
     describe("API error handling", () => {
-      it("should set node error status on HTTP error response", async () => {
+      it("should set node unknown status on an HTTP error without execution evidence", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
           ok: false,
           status: 500,
@@ -1658,7 +1658,7 @@ describe("workflowStore integration tests", () => {
         await store.executeWorkflow();
 
         const nanoBananaNode = useWorkflowStore.getState().nodes.find(n => n.id === "nanoBanana-1");
-        expect(nanoBananaNode?.data).toHaveProperty("status", "error");
+        expect(nanoBananaNode?.data).toHaveProperty("status", "unknown");
         expect(useWorkflowStore.getState().isRunning).toBe(false);
 
         vi.unstubAllGlobals();

@@ -30,14 +30,14 @@ export async function POST(request: NextRequest) {
 
     if (!taskId || !provider) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: "taskId and provider are required" },
+        { success: false, execution: "not-executed", querySupport: "unsupported", error: "taskId and provider are required" },
         { status: 400 }
       );
     }
 
     if (provider !== 'kie') {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: `Unsupported poll provider: ${provider}` },
+        { success: false, execution: "not-executed", querySupport: "unsupported", error: `Unsupported poll provider: ${provider}` },
         { status: 400 }
       );
     }
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
     const apiKey = request.headers.get("X-Kie-Key") || process.env.KIE_API_KEY;
     if (!apiKey) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: "Kie.ai API key not configured" },
+        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: "Kie.ai API key not configured" },
         { status: 401 }
       );
     }
@@ -57,6 +57,9 @@ export async function POST(request: NextRequest) {
     if (pollResult.status === "processing") {
       return NextResponse.json<GenerateResponse>({
         success: true,
+        execution: "submitted",
+        querySupport: "supported",
+        upstreamRequestId: taskId,
         polling: true,
         taskId,
         pollProvider: provider,
@@ -68,7 +71,7 @@ export async function POST(request: NextRequest) {
 
     if (pollResult.status === "failed") {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: `${modelName}: ${pollResult.error}` },
+        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: `${modelName}: ${pollResult.error}` },
         { status: 500 }
       );
     }
@@ -90,7 +93,7 @@ export async function POST(request: NextRequest) {
 
     if (!result.success) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: result.error || "Failed to fetch result" },
+        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: result.error || "Failed to fetch result" },
         { status: 500 }
       );
     }
@@ -98,16 +101,23 @@ export async function POST(request: NextRequest) {
     const output = result.outputs?.[0];
     if (!output?.data && !output?.url) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: "No output in generation result" },
+        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: "No output in generation result" },
         { status: 500 }
       );
     }
 
-    return buildMediaResponse(output);
+    const response = buildMediaResponse(output);
+    const responseBody = await response.json() as GenerateResponse;
+    return NextResponse.json<GenerateResponse>({
+      ...responseBody,
+      execution: "submitted",
+      querySupport: "supported",
+      upstreamRequestId: taskId,
+    });
   } catch (error) {
     console.error(`[API:${requestId}] Poll error:`, error);
     return NextResponse.json<GenerateResponse>(
-      { success: false, error: error instanceof Error ? error.message : "Poll failed" },
+      { success: false, execution: "unknown", querySupport: "unsupported", error: error instanceof Error ? error.message : "Poll failed" },
       { status: 500 }
     );
   }

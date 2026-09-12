@@ -425,9 +425,9 @@ export type ProviderCallStage = "succeeded" | "failed";
 /**
  * Evidence of one provider submission, generated server-side after the
  * request actually reached the provider transport (fetch/SDK). Pre-submit
- * rejections (422 gaps, 401 missing key, 400 validation) produce no record;
- * absence of a record means no submission. HTTP/network failures after the
- * transport started are recorded as `failed`, never as success.
+ * rejections (422 gaps, 401 missing key, 400 validation) produce no record.
+ * Its absence is never execution evidence; CRB-04 uses the explicit API
+ * execution field for that decision.
  */
 export interface ProviderCallRecord {
   /** Epoch ms when the submission attempt started. */

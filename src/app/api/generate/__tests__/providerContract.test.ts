@@ -415,7 +415,7 @@ describe("pre-submit capability gaps", () => {
     expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 
-  it("pre-submit rejections carry no call record: absence means no submission", async () => {
+  it("pre-submit rejections carry explicit not-executed evidence without a call record", async () => {
     const overLimit = await POST(postRequest({
       prompt: "test",
       selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
@@ -424,6 +424,7 @@ describe("pre-submit capability gaps", () => {
     expect(overLimit.status).toBe(422);
     const overData = await overLimit.json();
     expect("call" in overData).toBe(false);
+    expect(overData).toMatchObject({ execution: "not-executed", querySupport: "unsupported" });
 
     const noKey = await POST(postRequest({
       prompt: "test",
@@ -433,6 +434,7 @@ describe("pre-submit capability gaps", () => {
     expect(noKey.status).toBe(401);
     const noKeyData = await noKey.json();
     expect("call" in noKeyData).toBe(false);
+    expect(noKeyData).toMatchObject({ execution: "not-executed", querySupport: "unsupported" });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockGenerateContent).not.toHaveBeenCalled();
   });

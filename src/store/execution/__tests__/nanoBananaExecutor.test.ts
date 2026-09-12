@@ -238,10 +238,10 @@ describe("executeNanoBanana", () => {
     await expect(executeNanoBanana(ctx)).rejects.toThrow("Server exploded");
 
     const calls = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls;
-    const errorCall = calls.find(
-      (c: unknown[]) => (c[1] as Record<string, unknown>).status === "error"
+    const unknownCall = calls.find(
+      (c: unknown[]) => (c[1] as Record<string, unknown>).status === "unknown"
     );
-    expect(errorCall).toBeDefined();
+    expect(unknownCall).toBeDefined();
   });
 
   it("should throw on API failure (success=false)", async () => {
@@ -374,7 +374,11 @@ describe("executeNanoBanana", () => {
       .mockResolvedValueOnce({
         ok: false,
         status: 422,
-        text: () => Promise.resolve(JSON.stringify({ error: "Primary lacks this capability" })),
+        text: () => Promise.resolve(JSON.stringify({
+          error: "Primary lacks this capability",
+          execution: "not-executed",
+          querySupport: "unsupported",
+        })),
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -462,7 +466,12 @@ describe("executeNanoBanana", () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 429,
-      text: () => Promise.resolve(JSON.stringify({ error: "Rate limit exceeded", call: rateLimitedCall })),
+      text: () => Promise.resolve(JSON.stringify({
+        error: "Rate limit exceeded",
+        execution: "submitted",
+        querySupport: "unsupported",
+        call: rateLimitedCall,
+      })),
     });
     const ctx = makeCtx(node);
 
@@ -473,6 +482,47 @@ describe("executeNanoBanana", () => {
       .map((call: unknown[]) => call[1] as Record<string, unknown>);
     expect(patches.some((patch) => patch.status === "error")).toBe(true);
     expect(patches.some((patch) => patch.outputImage === null)).toBe(false);
+    expect(node.data.outputImage).toBe(selected);
+  });
+
+  it.each([
+    ["replicate", 429],
+    ["fal", 503],
+    ["kie", 429],
+    ["wavespeed", 500],
+  ] as const)("treats %s HTTP %s without execution evidence as unknown and never falls back", async (provider, status) => {
+    const selected = "data:image/png;base64,selected";
+    const primary = { provider, modelId: `${provider}-image`, displayName: `${provider} image` };
+    const node = makeNode({
+      selectedModel: primary,
+      outputImage: selected,
+      selectedHistoryId: "cand-selected",
+      fallbackModel: {
+        provider: "openai",
+        modelId: "gpt-image-1",
+        displayName: "GPT Image 1",
+        pricing: { type: "per-run", amount: 0.1 },
+      },
+      fallbackPolicy: { enabled: true, maxCostUsd: 1 },
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status,
+      text: () => Promise.resolve(JSON.stringify({ error: `${provider} unavailable` })),
+    });
+    const ctx = makeCtx(node);
+
+    await expect(executeNanoBanana(ctx)).rejects.toThrow(`${provider} unavailable`);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const patches = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls
+      .map((call: unknown[]) => call[1] as Record<string, unknown>);
+    expect(patches.some((patch) => patch.status === "unknown")).toBe(true);
+    expect(patches.some((patch) => patch.outputImage === null)).toBe(false);
+    const histories = patches
+      .map((patch) => patch.requestHistory as Array<{ status: string }> | undefined)
+      .filter((history): history is Array<{ status: string }> => Boolean(history));
+    expect(histories.at(-1)?.[0]?.status).toBe("unknown");
     expect(node.data.outputImage).toBe(selected);
   });
 
@@ -557,12 +607,21 @@ describe("executeNanoBanana", () => {
       .mockResolvedValueOnce({
         ok: false,
         status: 422,
-        text: () => Promise.resolve(JSON.stringify({ error: "Primary lacks capability" })),
+        text: () => Promise.resolve(JSON.stringify({
+          error: "Primary lacks capability",
+          execution: "not-executed",
+          querySupport: "unsupported",
+        })),
       })
       .mockResolvedValueOnce({
         ok: false,
         status: 500,
-        text: () => Promise.resolve(JSON.stringify({ error: "Fallback failed", call: fallbackCall })),
+        text: () => Promise.resolve(JSON.stringify({
+          error: "Fallback failed",
+          execution: "submitted",
+          querySupport: "unsupported",
+          call: fallbackCall,
+        })),
       });
     const ctx = makeCtx(node);
 
@@ -671,7 +730,12 @@ describe("executeNanoBanana", () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 422,
-      text: () => Promise.resolve(JSON.stringify({ success: false, error: "Capability gaps must be resolved before submission" })),
+      text: () => Promise.resolve(JSON.stringify({
+        success: false,
+        error: "Capability gaps must be resolved before submission",
+        execution: "not-executed",
+        querySupport: "unsupported",
+      })),
     });
 
     await expect(executeNanoBanana(ctx)).rejects.toThrow();
@@ -679,7 +743,7 @@ describe("executeNanoBanana", () => {
     const errorCall = calls.find(
       (c: unknown[]) => (c[1] as Record<string, unknown>).status === "error"
     );
-    // Absence of a server record means no submission: nothing is written.
+    // The explicit execution field proves pre-submit rejection; `call` remains transport-only.
     expect("lastCall" in ((errorCall![1] as Record<string, unknown>))).toBe(false);
   });
 
@@ -704,7 +768,13 @@ describe("executeNanoBanana", () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
-      text: () => Promise.resolve(JSON.stringify({ success: false, error: "No response from AI model", call: serverCall })),
+      text: () => Promise.resolve(JSON.stringify({
+        success: false,
+        execution: "submitted",
+        querySupport: "unsupported",
+        error: "No response from AI model",
+        call: serverCall,
+      })),
     });
 
     await expect(executeNanoBanana(ctx)).rejects.toThrow();
@@ -736,7 +806,12 @@ describe("executeNanoBanana", () => {
       .mockResolvedValueOnce({
         ok: false,
         status: 422,
-        text: () => Promise.resolve(JSON.stringify({ success: false, error: "Primary capability unavailable" })),
+        text: () => Promise.resolve(JSON.stringify({
+          success: false,
+          error: "Primary capability unavailable",
+          execution: "not-executed",
+          querySupport: "unsupported",
+        })),
       })
       .mockResolvedValueOnce({
         ok: true,

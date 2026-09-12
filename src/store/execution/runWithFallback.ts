@@ -2,12 +2,13 @@
 
 import type {
   CloudFailureReason,
+  CloudRequestExecution,
   FallbackPolicy,
   SelectedModel,
   WorkflowNodeData,
 } from "@/types";
 
-export type AttemptExecution = "not-executed" | "submitted" | "unknown";
+export type AttemptExecution = CloudRequestExecution;
 
 /** Error carrying evidence about whether the provider could have executed. */
 export class CloudAttemptError extends Error {

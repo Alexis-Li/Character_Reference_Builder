@@ -24,6 +24,14 @@ import { buildMediaResponse } from "./shared";
 export const maxDuration = 600; // 10 minute timeout for video generation polling
 export const dynamic = 'force-dynamic'; // Ensure this route is always dynamic
 
+const NOT_EXECUTED = { execution: "not-executed" as const, querySupport: "unsupported" as const };
+const UNKNOWN_EXECUTION = {
+  execution: "unknown" as const,
+  querySupport: "unsupported" as const,
+  statusUnknown: true as const,
+};
+const SUBMITTED = { execution: "submitted" as const, querySupport: "unsupported" as const };
+
 
 /**
  * Extended request format that supports both legacy and multi-provider requests
@@ -53,6 +61,7 @@ function capabilitiesForMediaType(mediaType?: string): ModelCapability[] {
 
 export async function POST(request: NextRequest) {
   const requestId = Math.random().toString(36).substring(7);
+  let providerInvocationStarted = false;
   console.log(`\n[API:${requestId}] ========== NEW GENERATE REQUEST ==========`);
 
   try {
@@ -100,6 +109,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json<GenerateResponse>(
         {
           success: false,
+          ...NOT_EXECUTED,
           error: "Prompt, image, video, or audio input is required",
         },
         { status: 400 }
@@ -122,13 +132,13 @@ export async function POST(request: NextRequest) {
       references = normalizeReferences(rawReferences);
     } catch (error) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: error instanceof Error ? error.message : "Invalid references" },
+        { success: false, ...NOT_EXECUTED, error: error instanceof Error ? error.message : "Invalid references" },
         { status: 400 }
       );
     }
     if (mask !== undefined && typeof mask !== "string") {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: "mask must be a data URL string" },
+        { success: false, ...NOT_EXECUTED, error: "mask must be a data URL string" },
         { status: 400 }
       );
     }
@@ -155,7 +165,7 @@ export async function POST(request: NextRequest) {
     if (capabilityGaps.length > 0) {
       console.log(`[API:${requestId}] Capability gaps: ${capabilityGaps.map((g) => g.kind).join(", ")}`);
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: "Capability gaps must be resolved before submission", gaps: capabilityGaps },
+        { success: false, ...NOT_EXECUTED, error: "Capability gaps must be resolved before submission", gaps: capabilityGaps },
         { status: 422 }
       );
     }
@@ -164,7 +174,7 @@ export async function POST(request: NextRequest) {
     if (provider === "replicate") {
       if (!selectedModel?.modelId || !selectedModel?.displayName) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "selectedModel with modelId and displayName is required for Replicate" },
+          { success: false, ...NOT_EXECUTED, error: "selectedModel with modelId and displayName is required for Replicate" },
           { status: 400 }
         );
       }
@@ -175,6 +185,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...NOT_EXECUTED,
             error: "Replicate API key not configured. Add REPLICATE_API_KEY to .env.local or configure in Settings.",
           },
           { status: 401 }
@@ -219,12 +230,14 @@ export async function POST(request: NextRequest) {
         dynamicInputs: processedDynamicInputs,
       };
 
+      providerInvocationStarted = true;
       const result = await generateWithReplicate(requestId, replicateApiKey, genInput);
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...UNKNOWN_EXECUTION,
             error: result.error || "Generation failed",
           },
           { status: 500 }
@@ -235,7 +248,7 @@ export async function POST(request: NextRequest) {
       const output = result.outputs?.[0];
       if (!output?.data && !output?.url) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "No output in generation result" },
+          { success: false, ...SUBMITTED, error: "No output in generation result" },
           { status: 500 }
         );
       }
@@ -246,7 +259,7 @@ export async function POST(request: NextRequest) {
     if (provider === "fal") {
       if (!selectedModel?.modelId || !selectedModel?.displayName) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "selectedModel with modelId and displayName is required for fal.ai" },
+          { success: false, ...NOT_EXECUTED, error: "selectedModel with modelId and displayName is required for fal.ai" },
           { status: 400 }
         );
       }
@@ -296,12 +309,14 @@ export async function POST(request: NextRequest) {
         dynamicInputs: processedDynamicInputs,
       };
 
+      providerInvocationStarted = true;
       const result = await generateWithFalQueue(requestId, falApiKey, genInput);
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...UNKNOWN_EXECUTION,
             error: result.error || "Generation failed",
           },
           { status: 500 }
@@ -312,7 +327,7 @@ export async function POST(request: NextRequest) {
       const output = result.outputs?.[0];
       if (!output?.data && !output?.url) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "No output in generation result" },
+          { success: false, ...SUBMITTED, error: "No output in generation result" },
           { status: 500 }
         );
       }
@@ -323,7 +338,7 @@ export async function POST(request: NextRequest) {
     if (provider === "kie") {
       if (!selectedModel?.modelId || !selectedModel?.displayName) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "selectedModel with modelId and displayName is required for Kie.ai" },
+          { success: false, ...NOT_EXECUTED, error: "selectedModel with modelId and displayName is required for Kie.ai" },
           { status: 400 }
         );
       }
@@ -334,6 +349,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...NOT_EXECUTED,
             error: "Kie.ai API key not configured. Add KIE_API_KEY to .env.local or configure in Settings.",
           },
           { status: 401 }
@@ -379,9 +395,13 @@ export async function POST(request: NextRequest) {
 
       // Submit task and return immediately — client polls for completion
       try {
+        providerInvocationStarted = true;
         const { taskId } = await submitKieTask(requestId, kieApiKey, genInput);
         return NextResponse.json<GenerateResponse>({
           success: true,
+          execution: "submitted",
+          querySupport: "supported",
+          upstreamRequestId: taskId,
           polling: true,
           taskId,
           pollProvider: 'kie',
@@ -393,6 +413,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...UNKNOWN_EXECUTION,
             error: error instanceof Error ? error.message : "Task submission failed",
           },
           { status: 500 }
@@ -403,7 +424,7 @@ export async function POST(request: NextRequest) {
     if (provider === "wavespeed") {
       if (!selectedModel?.modelId || !selectedModel?.displayName) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "selectedModel with modelId and displayName is required for WaveSpeed" },
+          { success: false, ...NOT_EXECUTED, error: "selectedModel with modelId and displayName is required for WaveSpeed" },
           { status: 400 }
         );
       }
@@ -414,6 +435,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...NOT_EXECUTED,
             error: "WaveSpeed API key not configured. Add WAVESPEED_API_KEY to .env.local or configure in Settings.",
           },
           { status: 401 }
@@ -457,12 +479,14 @@ export async function POST(request: NextRequest) {
         dynamicInputs: processedDynamicInputs,
       };
 
+      providerInvocationStarted = true;
       const result = await generateWithWaveSpeed(requestId, wavespeedApiKey, genInput);
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...UNKNOWN_EXECUTION,
             error: result.error || "Generation failed",
           },
           { status: 500 }
@@ -473,7 +497,7 @@ export async function POST(request: NextRequest) {
       const output = result.outputs?.[0];
       if (!output?.data && !output?.url) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "No output in generation result" },
+          { success: false, ...SUBMITTED, error: "No output in generation result" },
           { status: 500 }
         );
       }
@@ -484,7 +508,7 @@ export async function POST(request: NextRequest) {
     if (provider === "openai") {
       if (!selectedModel?.modelId || !selectedModel?.displayName) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "selectedModel with modelId and displayName is required for OpenAI" },
+          { success: false, ...NOT_EXECUTED, error: "selectedModel with modelId and displayName is required for OpenAI" },
           { status: 400 }
         );
       }
@@ -501,6 +525,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...NOT_EXECUTED,
             error: "OpenAI API key not configured. Add OPENAI_API_KEY to .env.local or configure in Settings.",
           },
           { status: 401 }
@@ -547,6 +572,7 @@ export async function POST(request: NextRequest) {
         dynamicInputs: processedDynamicInputs,
       };
 
+      providerInvocationStarted = true;
       const result = oauthToken
         ? await generateWithOpenAIOAuth(requestId, oauthToken, genInput)
         : await generateWithOpenAI(requestId, openaiApiKey!, genInput);
@@ -555,6 +581,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
+            ...(result.call ? SUBMITTED : UNKNOWN_EXECUTION),
             error: result.error || "Generation failed",
             ...(result.call ? { call: result.call } : {}),
           },
@@ -566,7 +593,7 @@ export async function POST(request: NextRequest) {
       const output = result.outputs?.[0];
       if (!output?.data && !output?.url) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "No output in generation result" },
+          { success: false, ...SUBMITTED, error: "No output in generation result" },
           { status: 500 }
         );
       }
@@ -582,6 +609,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json<GenerateResponse>(
         {
           success: false,
+          ...NOT_EXECUTED,
           error: "API key not configured. Add GEMINI_API_KEY to .env.local or configure in Settings.",
         },
         { status: 401 }
@@ -603,7 +631,7 @@ export async function POST(request: NextRequest) {
     // If no prompt provided but images exist, that's valid (image-to-image)
     if (resolvedPrompt !== undefined && resolvedPrompt !== null && typeof resolvedPrompt !== 'string') {
       return NextResponse.json<GenerateResponse>(
-        { success: false, error: "prompt must be a string" },
+        { success: false, ...NOT_EXECUTED, error: "prompt must be a string" },
         { status: 400 }
       );
     }
@@ -618,6 +646,7 @@ export async function POST(request: NextRequest) {
           : dynamicInputs.negative_prompt;
         if (neg) veoParams.negativePrompt = neg;
       }
+      providerInvocationStarted = true;
       const result = await generateWithGeminiVideo(
         requestId,
         geminiApiKey,
@@ -629,7 +658,7 @@ export async function POST(request: NextRequest) {
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: result.error || "Video generation failed" },
+          { success: false, ...UNKNOWN_EXECUTION, error: result.error || "Video generation failed" },
           { status: 500 }
         );
       }
@@ -637,13 +666,14 @@ export async function POST(request: NextRequest) {
       const output = result.outputs?.[0];
       if (!output?.data && !output?.url) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, error: "No output in video generation result" },
+          { success: false, ...SUBMITTED, error: "No output in video generation result" },
           { status: 500 }
         );
       }
 
       return buildMediaResponse(output);
     }
+    providerInvocationStarted = true;
     return await generateWithGemini(
       requestId,
       geminiApiKey,
@@ -686,6 +716,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json<GenerateResponse>(
         {
           success: false,
+          ...(providerInvocationStarted ? UNKNOWN_EXECUTION : NOT_EXECUTED),
           error: "Rate limit reached. Please wait and try again.",
         },
         { status: 429 }
@@ -696,6 +727,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<GenerateResponse>(
       {
         success: false,
+        ...(providerInvocationStarted ? UNKNOWN_EXECUTION : NOT_EXECUTED),
         error: errorMessage,
       },
       { status: 500 }
