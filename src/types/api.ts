@@ -31,6 +31,8 @@ export interface GenerateResponse {
   model3dUrl?: string; // For 3D models, return GLB URL directly
   contentType?: "image" | "video" | "3d" | "audio";
   error?: string;
+  /** Query ended without proving success or failure; callers must not resubmit automatically. */
+  statusUnknown?: boolean;
   /** Pre-submit capability gaps (CRB-03). Present when the request is rejected before any provider call. */
   gaps?: CapabilityGap[];
   /**

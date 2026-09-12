@@ -23,6 +23,7 @@ import { useLoadGenerationById } from "@/hooks/useLoadGenerationById";
 import { useGenerationCarousel } from "@/hooks/useGenerationCarousel";
 import { useErrorToast } from "@/hooks/useErrorToast";
 import { useAutoResizeOnMedia } from "@/hooks/useAutoResizeOnMedia";
+import { estimateSelectedModelCost, formatCost } from "@/utils/costCalculator";
 
 /** Reorder items so they read column-first in a row-based CSS grid.
  *  e.g. [1,2,3,4,5,6,7,8] with 2 cols → [1,5,2,6,3,7,4,8] */
@@ -64,6 +65,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
   const [modelsFetchError, setModelsFetchError] = useState<string | null>(null);
   const [isBrowseDialogOpen, setIsBrowseDialogOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"primary" | "fallback">("primary");
+  const latestRequest = nodeData.requestHistory?.[0];
 
   useEffect(() => {
     if (!nodeData.fallbackModel && settingsTab === "fallback") {
@@ -359,6 +361,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
       modelId: model.id,
       displayName: model.name,
       capabilities: model.capabilities,
+      ...(model.pricing ? { pricing: { type: model.pricing.type, amount: model.pricing.amount } } : {}),
     };
     updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });
     setIsBrowseDialogOpen(false);
@@ -388,6 +391,30 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
   const supportsResolution = currentModelId === "nano-banana-pro" || currentModelId === "nano-banana-2";
   const aspectRatios = currentModelId === "nano-banana-2" ? EXTENDED_ASPECT_RATIOS : BASE_ASPECT_RATIOS;
   const resolutions = currentModelId === "nano-banana-2" ? RESOLUTIONS_NB2 : RESOLUTIONS_PRO;
+  const fallbackEstimate = nodeData.fallbackModel
+    ? estimateSelectedModelCost(nodeData.fallbackModel, nodeData.resolution)
+    : null;
+  const requestStatusLabel = latestRequest ? ({
+    "not-submitted": "Not submitted",
+    submitting: "Submitting",
+    completed: "Complete",
+    failed: "Failed",
+    unknown: "Result unknown",
+    "wait-cancelled": "Local wait cancelled",
+  } as const)[latestRequest.status] : null;
+  const requestSummary = latestRequest
+    ? [
+        `Original: ${latestRequest.originalEntry.provider}/${latestRequest.originalEntry.displayName}`,
+        `Actual: ${latestRequest.actualEntry.provider}/${latestRequest.actualEntry.displayName}`,
+        latestRequest.switchReason ? `Switch: ${latestRequest.switchReason}` : null,
+        latestRequest.actualCostUsd !== null
+          ? `Actual cost: ${formatCost(latestRequest.actualCostUsd)}`
+          : latestRequest.estimatedCostUsd !== null
+            ? `Estimated cost: ${formatCost(latestRequest.estimatedCostUsd)} (actual unknown)`
+            : "Cost: unknown",
+        latestRequest.error ? `Detail: ${latestRequest.error}` : null,
+      ].filter(Boolean).join("\n")
+    : "";
   const hasCarouselImages = (nodeData.imageHistory || []).length > 1;
 
   // Count visible Gemini controls to match ModelParameters grid/max-width rules
@@ -566,12 +593,50 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
 
           {/* Fallback tab content */}
           {settingsTab === "fallback" && nodeData.fallbackModel && (
-            <ModelParameters
-              modelId={nodeData.fallbackModel.modelId}
-              provider={nodeData.fallbackModel.provider}
-              parameters={nodeData.fallbackParameters || {}}
-              onParametersChange={(p) => updateNodeData(id, { fallbackParameters: p })}
-            />
+            <div className="space-y-2 max-w-[320px]">
+              <div className="rounded border border-neutral-700 bg-neutral-900/60 p-2 space-y-1.5">
+                <label className="flex items-start gap-2 text-[11px] text-neutral-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={nodeData.fallbackPolicy?.enabled === true}
+                    onChange={(event) => updateNodeData(id, {
+                      fallbackPolicy: {
+                        enabled: event.target.checked,
+                        maxCostUsd: nodeData.fallbackPolicy?.maxCostUsd ?? null,
+                      },
+                    })}
+                    className="nodrag nopan mt-0.5 w-3 h-3"
+                  />
+                  Authorize one automatic fallback for this node
+                </label>
+                <label className="flex items-center gap-2 text-[11px] text-neutral-400">
+                  Budget (USD)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={nodeData.fallbackPolicy?.maxCostUsd ?? ""}
+                    onChange={(event) => updateNodeData(id, {
+                      fallbackPolicy: {
+                        enabled: nodeData.fallbackPolicy?.enabled === true,
+                        maxCostUsd: event.target.value === "" ? null : Number(event.target.value),
+                      },
+                    })}
+                    placeholder="Required"
+                    className="nodrag nopan w-24 text-[11px] py-1 px-2 bg-[#1a1a1a] rounded focus:outline-none focus:ring-1 focus:ring-neutral-600 text-white"
+                  />
+                </label>
+                <p className="text-[10px] text-neutral-500">
+                  API keys do not authorize fallback. Estimated cost: {fallbackEstimate === null ? "unknown — automatic fallback will pause" : formatCost(fallbackEstimate)}.
+                </p>
+              </div>
+              <ModelParameters
+                modelId={nodeData.fallbackModel.modelId}
+                provider={nodeData.fallbackModel.provider}
+                parameters={nodeData.fallbackParameters || {}}
+                onParametersChange={(p) => updateNodeData(id, { fallbackParameters: p })}
+              />
+            </div>
           )}
         </InlineParameterPanel>
       ) : undefined}
@@ -622,12 +687,20 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
               alt="Generated"
               className="w-full h-full object-cover"
             />
-            {nodeData.__usedFallback && (
+            {latestRequest && (
               <div
-                className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-emerald-900/70 text-emerald-300 text-[9px] font-medium pointer-events-auto z-10"
-                title={`Primary failed: ${nodeData.__primaryError ?? "unknown"}\nUsed fallback: ${nodeData.__fallbackModelUsed ?? ""}`}
+                className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-medium pointer-events-auto z-10 ${
+                  latestRequest.status === "completed"
+                    ? "bg-emerald-900/80 text-emerald-200"
+                    : latestRequest.status === "unknown" || latestRequest.status === "wait-cancelled"
+                      ? "bg-amber-900/80 text-amber-200"
+                      : latestRequest.status === "failed" || latestRequest.status === "not-submitted"
+                        ? "bg-red-900/80 text-red-200"
+                        : "bg-neutral-900/80 text-neutral-200"
+                }`}
+                title={requestSummary}
               >
-                Fallback used
+                {requestStatusLabel}{latestRequest.attempt === "fallback" ? " · Fallback" : ""}
               </div>
             )}
             {/* Loading overlay for generation */}
@@ -767,7 +840,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 />
               </svg>
-            ) : nodeData.status === "error" ? (
+            ) : nodeData.status === "error" || nodeData.status === "unknown" || nodeData.status === "wait-cancelled" ? (
               <span className="text-[10px] text-red-400 text-center px-2">
                 {nodeData.error || "Failed"}
               </span>

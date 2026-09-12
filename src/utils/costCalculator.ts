@@ -1,4 +1,4 @@
-import { ModelType, Resolution, MODEL_DISPLAY_NAMES, NanoBananaNodeData, GenerateVideoNodeData, Generate3DNodeData, WorkflowNode, ProviderType } from "@/types";
+import { ModelType, Resolution, MODEL_DISPLAY_NAMES, NanoBananaNodeData, GenerateVideoNodeData, Generate3DNodeData, WorkflowNode, ProviderType, SelectedModel } from "@/types";
 
 // Pricing in USD per image (Gemini API)
 export const PRICING = {
@@ -34,6 +34,26 @@ export function calculateGenerationCost(model: ModelType, resolution: Resolution
     return PRICING[model]["1K"];
   }
   return PRICING[model][resolution];
+}
+
+/** Conservative one-run estimate used by CRB-04 budget authorization. */
+export function estimateSelectedModelCost(
+  model: SelectedModel,
+  resolution: Resolution,
+): number | null {
+  if (model.pricing?.type === "per-run" && Number.isFinite(model.pricing.amount)) {
+    return model.pricing.amount;
+  }
+  if (model.provider !== "gemini") return null;
+  const aliases: Partial<Record<string, ModelType>> = {
+    "gemini-2.5-flash-image": "nano-banana",
+    "gemini-3-pro-image-preview": "nano-banana-pro",
+    "gemini-3.1-flash-image-preview": "nano-banana-2",
+    "gemini-3.1-flash-lite-image": "nano-banana-2-lite",
+  };
+  const legacy = aliases[model.modelId] ?? model.modelId;
+  if (!(legacy in PRICING)) return null;
+  return calculateGenerationCost(legacy as ModelType, resolution);
 }
 
 /**

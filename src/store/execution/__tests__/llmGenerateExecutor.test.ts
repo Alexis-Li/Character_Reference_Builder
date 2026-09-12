@@ -70,6 +70,7 @@ function makeCtx(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockFetch.mockReset();
 });
 
 describe("executeLlmGenerate", () => {
@@ -240,7 +241,7 @@ describe("executeLlmGenerate", () => {
     expect(body.images).toEqual(["stored.png"]);
   });
 
-  it("falls back on primary failure with provider mapping and stamps metadata", async () => {
+  it("keeps generic automatic fallback disabled by default", async () => {
     // Primary is google/gemini-2.5-flash, fallback is stored as anthropic (no mapping needed)
     const node = makeNode({
       fallbackModel: {
@@ -261,30 +262,18 @@ describe("executeLlmGenerate", () => {
       });
 
     const ctx = makeCtx(node);
-    await executeLlmGenerate(ctx);
+    await expect(executeLlmGenerate(ctx)).rejects.toThrow("Primary LLM boom");
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
     // First call should use google/gemini-2.5-flash
     const firstBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(firstBody.provider).toBe("google");
     expect(firstBody.model).toBe("gemini-2.5-flash");
 
-    // Second call (fallback) should use anthropic/claude-sonnet-4.5
-    const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(secondBody.provider).toBe("anthropic");
-    expect(secondBody.model).toBe("claude-sonnet-4.5");
-
-    const calls = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls;
-    const stampCall = calls.find(
-      (c: unknown[]) => (c[1] as Record<string, unknown>).__usedFallback === true
-    );
-    expect(stampCall).toBeDefined();
-    expect((stampCall![1] as Record<string, unknown>).__fallbackModelUsed).toBe("Claude Sonnet 4.5");
-    expect((stampCall![1] as Record<string, unknown>).__primaryError).toBe("Primary LLM boom");
   });
 
-  it("maps gemini->google when fallback is gemini", async () => {
+  it("does not map or submit a configured Gemini fallback without authorization", async () => {
     const node = makeNode({
       provider: "anthropic",
       model: "claude-sonnet-4.5",
@@ -306,11 +295,8 @@ describe("executeLlmGenerate", () => {
       });
 
     const ctx = makeCtx(node);
-    await executeLlmGenerate(ctx);
+    await expect(executeLlmGenerate(ctx)).rejects.toThrow("Claude down");
 
-    const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    // Fallback provider "gemini" must be mapped to "google" for the /api/llm route
-    expect(secondBody.provider).toBe("google");
-    expect(secondBody.model).toBe("gemini-2.5-flash");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

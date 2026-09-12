@@ -297,7 +297,7 @@ describe("executeGenerateVideo", () => {
     expect(videoHistory.length).toBe(50); // capped at 50
   });
 
-  it("falls back on primary failure and stamps metadata", async () => {
+  it("keeps generic automatic fallback disabled by default", async () => {
     const node = makeNode({
       fallbackModel: {
         provider: "replicate",
@@ -317,19 +317,8 @@ describe("executeGenerateVideo", () => {
       });
 
     const ctx = makeCtx(node);
-    await executeGenerateVideo(ctx);
+    await expect(executeGenerateVideo(ctx)).rejects.toThrow("Primary video boom");
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-
-    const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(secondBody.selectedModel.modelId).toBe("video-fallback");
-
-    const calls = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls;
-    const stampCall = calls.find(
-      (c: unknown[]) => (c[1] as Record<string, unknown>).__usedFallback === true
-    );
-    expect(stampCall).toBeDefined();
-    expect((stampCall![1] as Record<string, unknown>).__fallbackModelUsed).toBe("Replicate Video Fallback");
-    expect((stampCall![1] as Record<string, unknown>).__primaryError).toBe("Primary video boom");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

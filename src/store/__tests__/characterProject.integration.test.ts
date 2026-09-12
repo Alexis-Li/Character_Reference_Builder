@@ -168,7 +168,7 @@ describe("character project store integration", () => {
     expect(downstream.images[0]).toBe(REVISED);
   });
 
-  it("failed primary and fallback keep the selection and record the failures", async () => {
+  it("unknown primary result does not call fallback and keeps the selection", async () => {
     seedTwoParts();
     mockFetch.mockResolvedValueOnce(ok(FRONT));
     await run();
@@ -190,7 +190,8 @@ describe("character project store integration", () => {
     expect(genData().outputImage).toBe(FRONT);
     const project = useWorkflowStore.getState().characterProject!;
     expect(project.candidates).toHaveLength(1);
-    expect(project.runs.filter((r) => r.status === "failed").length).toBeGreaterThanOrEqual(1);
+    expect(project.runs.filter((r) => r.status === "failed")).toHaveLength(0);
+    expect((genData().requestHistory as Array<{ status: string }>)[0].status).toBe("unknown");
     expect(project.selection).toEqual({ "gen@default": project.candidates[0].id });
   });
 

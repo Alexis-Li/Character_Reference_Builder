@@ -1686,7 +1686,7 @@ describe("workflowStore integration tests", () => {
         await store.executeWorkflow();
 
         const nanoBananaNode = useWorkflowStore.getState().nodes.find(n => n.id === "nanoBanana-1");
-        expect(nanoBananaNode?.data).toHaveProperty("status", "error");
+        expect(nanoBananaNode?.data).toHaveProperty("status", "unknown");
         expect((nanoBananaNode?.data as Record<string, unknown>).error).toContain("Network error");
         expect(useWorkflowStore.getState().isRunning).toBe(false);
 

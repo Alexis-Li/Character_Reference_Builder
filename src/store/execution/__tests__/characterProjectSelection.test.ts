@@ -13,6 +13,7 @@ vi.stubGlobal("fetch", mockFetch);
 
 vi.mock("@/utils/costCalculator", () => ({
   calculateGenerationCost: vi.fn().mockReturnValue(0),
+  estimateSelectedModelCost: vi.fn().mockReturnValue(0),
 }));
 
 const FRONT = "data:image/png;base64,c2VsZWN0ZWQtZnJvbnQ";

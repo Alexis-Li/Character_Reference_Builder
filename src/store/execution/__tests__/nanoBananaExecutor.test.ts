@@ -4,6 +4,14 @@ import { useWorkflowStore } from "@/store/workflowStore";
 import type { NodeExecutionContext } from "../types";
 import type { WorkflowNode } from "@/types";
 
+const { mockPollGenerateTask } = vi.hoisted(() => ({
+  mockPollGenerateTask: vi.fn(),
+}));
+
+vi.mock("../pollTaskCompletion", () => ({
+  pollGenerateTask: mockPollGenerateTask,
+}));
+
 // Mock fetch globally
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -11,6 +19,9 @@ vi.stubGlobal("fetch", mockFetch);
 // Mock calculateGenerationCost
 vi.mock("@/utils/costCalculator", () => ({
   calculateGenerationCost: vi.fn().mockReturnValue(0.05),
+  estimateSelectedModelCost: vi.fn().mockImplementation((model: { pricing?: { amount: number } }) =>
+    model.pricing?.amount ?? 0.05
+  ),
 }));
 
 function makeNode(data: Record<string, unknown> = {}): WorkflowNode {
@@ -347,20 +358,23 @@ describe("executeNanoBanana", () => {
     expect(ctx.appendOutputGalleryImage).toHaveBeenCalledWith("gal-1", "data:image/png;base64,result");
   });
 
-  it("falls back on primary failure and stamps metadata", async () => {
+  it("falls back only after a definite pre-submit capability rejection and explicit budget grant", async () => {
     const node = makeNode({
       fallbackModel: {
-        provider: "replicate",
-        modelId: "flux-dev",
-        displayName: "Flux Dev",
+        provider: "openai",
+        modelId: "gpt-image-1",
+        displayName: "GPT Image 1",
+        pricing: { type: "per-run", amount: 0.1 },
       },
+      fallbackPolicy: { enabled: true, maxCostUsd: 0.2 },
     });
 
-    // Primary fails, fallback succeeds
+    // The primary is rejected locally by the capability guard; no provider call occurred.
     mockFetch
       .mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve({ success: false, error: "Primary boom" }),
+        ok: false,
+        status: 422,
+        text: () => Promise.resolve(JSON.stringify({ error: "Primary lacks this capability" })),
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -374,7 +388,7 @@ describe("executeNanoBanana", () => {
 
     // Second fetch should carry the fallback model
     const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
-    expect(secondBody.selectedModel.modelId).toBe("flux-dev");
+    expect(secondBody.selectedModel.modelId).toBe("gpt-image-1");
 
     // Metadata stamp should be present in the final updateNodeData call
     const calls = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls;
@@ -382,8 +396,182 @@ describe("executeNanoBanana", () => {
       (c: unknown[]) => (c[1] as Record<string, unknown>).__usedFallback === true
     );
     expect(stampCall).toBeDefined();
-    expect((stampCall![1] as Record<string, unknown>).__fallbackModelUsed).toBe("Flux Dev");
-    expect((stampCall![1] as Record<string, unknown>).__primaryError).toBe("Primary boom");
+    expect((stampCall![1] as Record<string, unknown>).__fallbackModelUsed).toBe("GPT Image 1");
+    expect((stampCall![1] as Record<string, unknown>).__primaryError).toBe("Primary lacks this capability");
+  });
+
+  it("P02 preserves an existing selected image when a network response is lost", async () => {
+    const selected = "data:image/png;base64,selected";
+    const node = makeNode({ outputImage: selected, selectedHistoryId: "cand-selected" });
+    mockFetch.mockRejectedValueOnce(new TypeError("NetworkError when attempting to fetch resource"));
+    const ctx = makeCtx(node);
+
+    await expect(executeNanoBanana(ctx)).rejects.toThrow("Network error");
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const patches = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls
+      .map((call: unknown[]) => call[1] as Record<string, unknown>);
+    expect(patches.some((patch) => patch.status === "unknown")).toBe(true);
+    expect(patches.some((patch) => patch.outputImage === null)).toBe(false);
+    expect(node.data.outputImage).toBe(selected);
+  });
+
+  it("P05 does not use an authorized fallback when the primary result is unknown", async () => {
+    const node = makeNode({
+      fallbackModel: {
+        provider: "openai",
+        modelId: "gpt-image-1",
+        displayName: "GPT Image 1",
+        pricing: { type: "per-run", amount: 0.1 },
+      },
+      fallbackPolicy: { enabled: true, maxCostUsd: 1 },
+    });
+    mockFetch.mockRejectedValueOnce(new TypeError("connection reset"));
+
+    await expect(executeNanoBanana(makeCtx(node))).rejects.toThrow("connection reset");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fallback after a submitted rate-limited request and preserves the selection", async () => {
+    const selected = "data:image/png;base64,selected";
+    const node = makeNode({
+      outputImage: selected,
+      selectedHistoryId: "cand-selected",
+      fallbackModel: {
+        provider: "openai",
+        modelId: "gpt-image-1",
+        displayName: "GPT Image 1",
+        pricing: { type: "per-run", amount: 0.1 },
+      },
+      fallbackPolicy: { enabled: true, maxCostUsd: 1 },
+    });
+    const rateLimitedCall = {
+      at: 1,
+      provider: "gemini",
+      modelId: "nano-banana",
+      displayName: "Nano Banana",
+      resolvedFrom: "node-override",
+      declared: true,
+      referenceCount: 0,
+      purposes: null,
+      purposeSource: "none",
+      hasMask: false,
+      auth: "api-key",
+      stage: "failed",
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      text: () => Promise.resolve(JSON.stringify({ error: "Rate limit exceeded", call: rateLimitedCall })),
+    });
+    const ctx = makeCtx(node);
+
+    await expect(executeNanoBanana(ctx)).rejects.toThrow("Rate limit exceeded");
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const patches = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls
+      .map((call: unknown[]) => call[1] as Record<string, unknown>);
+    expect(patches.some((patch) => patch.status === "error")).toBe(true);
+    expect(patches.some((patch) => patch.outputImage === null)).toBe(false);
+    expect(node.data.outputImage).toBe(selected);
+  });
+
+  it("queries an existing supported request on reopen without resubmitting when status stays unknown", async () => {
+    const existingRequest = {
+      id: "request-existing",
+      createdAt: 1,
+      updatedAt: 2,
+      status: "unknown" as const,
+      attempt: "primary" as const,
+      originalEntry: { provider: "kie" as const, modelId: "kie-image", displayName: "Kie Image" },
+      actualEntry: { provider: "kie" as const, modelId: "kie-image", displayName: "Kie Image" },
+      estimatedCostUsd: null,
+      actualCostUsd: null,
+      querySupport: "supported" as const,
+      upstreamRequestId: "upstream-123",
+    };
+    const node = makeNode({
+      selectedModel: existingRequest.actualEntry,
+      requestHistory: [existingRequest],
+    });
+    mockPollGenerateTask.mockResolvedValueOnce({
+      success: false,
+      statusUnknown: true,
+      error: "Status lookup unavailable",
+    });
+    const ctx = makeCtx(node);
+
+    await expect(executeNanoBanana(ctx)).rejects.toThrow("Status lookup unavailable");
+
+    expect(mockPollGenerateTask).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "upstream-123",
+      provider: "kie",
+      modelId: "kie-image",
+    }));
+    expect(mockFetch).not.toHaveBeenCalled();
+    const patches = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls
+      .map((call: unknown[]) => call[1] as Record<string, unknown>);
+    expect(patches.some((patch) => patch.status === "unknown")).toBe(true);
+    const histories = patches
+      .map((patch) => patch.requestHistory as Array<{ id: string; status: string }> | undefined)
+      .filter((history): history is Array<{ id: string; status: string }> => Boolean(history));
+    expect(histories.at(-1)?.[0]).toMatchObject({ id: "request-existing", status: "unknown" });
+  });
+
+  it("marks local cancellation without claiming the upstream request was cancelled", async () => {
+    const controller = new AbortController();
+    const node = makeNode();
+    mockFetch.mockImplementationOnce(async () => {
+      controller.abort("user-cancelled");
+      throw new DOMException("Aborted", "AbortError");
+    });
+    const ctx = makeCtx(node, { signal: controller.signal });
+
+    await expect(executeNanoBanana(ctx)).rejects.toMatchObject({ name: "AbortError" });
+    const patches = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls
+      .map((call: unknown[]) => call[1] as Record<string, unknown>);
+    const cancelled = patches.find((patch) => patch.status === "wait-cancelled");
+    expect(cancelled?.error).toContain("may still be running");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("P06 preserves the selected asset when both primary and fallback fail", async () => {
+    const selected = "data:image/png;base64,selected";
+    const node = makeNode({
+      outputImage: selected,
+      selectedHistoryId: "cand-selected",
+      fallbackModel: {
+        provider: "openai",
+        modelId: "gpt-image-1",
+        displayName: "GPT Image 1",
+        pricing: { type: "per-run", amount: 0.1 },
+      },
+      fallbackPolicy: { enabled: true, maxCostUsd: 0.2 },
+    });
+    const fallbackCall = {
+      at: 2, provider: "openai", modelId: "gpt-image-1", displayName: "GPT Image 1",
+      resolvedFrom: "node-override", declared: true, referenceCount: 0,
+      purposes: null, purposeSource: "none", hasMask: false, auth: "api-key", stage: "failed",
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        text: () => Promise.resolve(JSON.stringify({ error: "Primary lacks capability" })),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve(JSON.stringify({ error: "Fallback failed", call: fallbackCall })),
+      });
+    const ctx = makeCtx(node);
+
+    await expect(executeNanoBanana(ctx)).rejects.toThrow("Fallback failed");
+
+    const patches = (ctx.updateNodeData as ReturnType<typeof vi.fn>).mock.calls
+      .map((call: unknown[]) => call[1] as Record<string, unknown>);
+    expect(patches.some((patch) => patch.outputImage === null)).toBe(false);
+    expect(node.data.outputImage).toBe(selected);
   });
 
   it("sends declared edge roles verbatim and persists the server record", async () => {
@@ -530,14 +718,14 @@ describe("executeNanoBanana", () => {
   it("sends node-override for fallback serving and persists its record", async () => {
     const node = makeNode({
       modelSource: "project-default",
-      fallbackModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT Image 1" },
+      fallbackModel: {
+        provider: "openai",
+        modelId: "gpt-image-1",
+        displayName: "GPT Image 1",
+        pricing: { type: "per-run", amount: 0.1 },
+      },
+      fallbackPolicy: { enabled: true, maxCostUsd: 0.2 },
     });
-    const primaryCall = {
-      at: 1, provider: "gemini", modelId: "nano-banana", displayName: "Nano Banana",
-      resolvedFrom: "project-default", declared: true, referenceCount: 0,
-      purposes: null, purposeSource: "none",
-      hasMask: false, auth: "api-key", stage: "failed",
-    };
     const fallbackCall = {
       at: 2, provider: "openai", modelId: "gpt-image-1", displayName: "GPT Image 1",
       resolvedFrom: "node-override", declared: true, referenceCount: 0,
@@ -547,8 +735,8 @@ describe("executeNanoBanana", () => {
     mockFetch
       .mockResolvedValueOnce({
         ok: false,
-        status: 500,
-        text: () => Promise.resolve(JSON.stringify({ success: false, error: "Primary boom", call: primaryCall })),
+        status: 422,
+        text: () => Promise.resolve(JSON.stringify({ success: false, error: "Primary capability unavailable" })),
       })
       .mockResolvedValueOnce({
         ok: true,

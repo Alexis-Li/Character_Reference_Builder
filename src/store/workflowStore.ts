@@ -2582,13 +2582,23 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       saveLogSession();
       await logger.endSession();
     } catch (error) {
-      logger.error('node.error', 'Node regeneration failed', {
-        nodeId,
-      }, error instanceof Error ? error : undefined);
-      updateNodeData(nodeId, {
-        status: "error",
-        error: error instanceof Error ? error.message : "Regeneration failed",
-      });
+      const cancelled = error instanceof DOMException && error.name === "AbortError";
+      const currentStatus = (get().nodes.find((item) => item.id === nodeId)?.data as Record<string, unknown> | undefined)?.status;
+      if (cancelled) {
+        logger.info('node.execution', 'Node regeneration local wait cancelled', { nodeId });
+      } else {
+        logger.error('node.error', 'Node regeneration failed', {
+          nodeId,
+        }, error instanceof Error ? error : undefined);
+        // The cloud executor owns unknown/wait-cancelled semantics. Do not
+        // collapse those recoverable states into a definite failure here.
+        if (currentStatus !== "unknown" && currentStatus !== "wait-cancelled") {
+          updateNodeData(nodeId, {
+            status: "error",
+            error: error instanceof Error ? error.message : "Regeneration failed",
+          });
+        }
+      }
       set({ isRunning: false, currentNodeIds: [], _abortController: null });
 
       saveLogSession();

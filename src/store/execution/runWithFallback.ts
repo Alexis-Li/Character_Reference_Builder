@@ -1,29 +1,50 @@
-/**
- * runWithFallback
- *
- * Shared helper that wraps a primary model attempt with an optional fallback.
- * On primary failure (non-abort), the helper runs the fallback once and stamps
- * metadata onto the node so the UI can render a "Fallback used" badge.
- *
- * If the primary and fallback resolve to the same provider + modelId, the
- * fallback is skipped to avoid double-billing.
- *
- * JSON-compatible with Node Banana Pro: the fallbackModel field and the three
- * __-prefixed metadata fields match NBP's shape exactly so config round-trips
- * cleanly between the two apps.
- */
+/** Conservative primary/fallback execution policy (CRB-04). */
 
-import type { SelectedModel, WorkflowNodeData } from "@/types";
+import type {
+  CloudFailureReason,
+  FallbackPolicy,
+  SelectedModel,
+  WorkflowNodeData,
+} from "@/types";
+
+export type AttemptExecution = "not-executed" | "submitted" | "unknown";
+
+/** Error carrying evidence about whether the provider could have executed. */
+export class CloudAttemptError extends Error {
+  constructor(
+    message: string,
+    public readonly execution: AttemptExecution,
+    public readonly reason: CloudFailureReason,
+    /** Only these pre-submit conditions may enter fallback evaluation. */
+    public readonly fallbackEligible = false,
+  ) {
+    super(message);
+    this.name = "CloudAttemptError";
+  }
+}
+
+export interface RunAttemptContext {
+  attempt: "primary" | "fallback";
+  switchReason?: string;
+}
 
 export interface RunWithFallbackOptions {
   nodeId: string;
   primary: SelectedModel;
   fallback?: SelectedModel;
   fallbackParameters?: Record<string, unknown>;
+  fallbackPolicy?: FallbackPolicy;
+  fallbackEstimatedCost?: number | null;
+  /** Returns an actionable reason when the fallback cannot perform this request. */
+  validateFallback?: () => string | null;
   updateNodeData: (id: string, data: Partial<WorkflowNodeData>) => void;
-  runOnce: (model: SelectedModel, parametersOverride?: Record<string, unknown>) => Promise<void>;
-  /** Data to merge when transitioning to fallback (e.g. { outputImage: null }) */
+  /** @deprecated Outputs are intentionally preserved across every failed attempt. */
   clearOutput?: Partial<WorkflowNodeData>;
+  runOnce: (
+    model: SelectedModel,
+    parametersOverride?: Record<string, unknown>,
+    context?: RunAttemptContext,
+  ) => Promise<void>;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -40,12 +61,33 @@ function isSameModel(a: SelectedModel, b: SelectedModel): boolean {
   return a.provider === b.provider && a.modelId === b.modelId;
 }
 
-export async function runWithFallback(
-  options: RunWithFallbackOptions
-): Promise<void> {
-  const { nodeId, primary, fallback, fallbackParameters, updateNodeData, runOnce, clearOutput } = options;
+function fallbackBlockReason(options: RunWithFallbackOptions): string | null {
+  if (!options.fallback) return "No fallback entry is configured.";
+  if (isSameModel(options.primary, options.fallback)) {
+    return "The fallback entry is the same as the primary entry.";
+  }
+  if (!options.fallbackPolicy?.enabled) {
+    return "Automatic fallback is not authorized for this node.";
+  }
+  const capabilityGap = options.validateFallback?.() ?? null;
+  if (capabilityGap) return `The fallback cannot perform this request: ${capabilityGap}`;
+  const estimate = options.fallbackEstimatedCost;
+  if (estimate === null || estimate === undefined || !Number.isFinite(estimate)) {
+    return "Fallback cost is unknown, so the budget cannot be controlled.";
+  }
+  const budget = options.fallbackPolicy.maxCostUsd;
+  if (budget === null || !Number.isFinite(budget) || budget < 0) {
+    return "No valid fallback budget has been authorized.";
+  }
+  if (estimate > budget) {
+    return `Estimated fallback cost $${estimate.toFixed(4)} exceeds the authorized $${budget.toFixed(4)} budget.`;
+  }
+  return null;
+}
 
-  // Clear any prior fallback metadata before we start.
+export async function runWithFallback(options: RunWithFallbackOptions): Promise<void> {
+  const { nodeId, primary, fallback, fallbackParameters, updateNodeData, runOnce } = options;
+
   updateNodeData(nodeId, {
     __usedFallback: undefined,
     __fallbackModelUsed: undefined,
@@ -54,48 +96,60 @@ export async function runWithFallback(
 
   let primaryError: unknown;
   try {
-    await runOnce(primary, undefined);
+    await runOnce(primary, undefined, { attempt: "primary" });
     return;
-  } catch (err) {
-    if (isAbortError(err)) throw err;
-    primaryError = err;
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    primaryError = error;
   }
 
-  // No fallback, or same model as primary — rethrow the primary error.
-  if (!fallback || isSameModel(primary, fallback)) {
+  // Unknown/submitted outcomes, content/input errors, and unclassified errors
+  // never launch another paid request. Only an explicitly eligible,
+  // definitely-not-executed attempt may proceed to the remaining gates.
+  if (
+    !(primaryError instanceof CloudAttemptError) ||
+    primaryError.execution !== "not-executed" ||
+    !primaryError.fallbackEligible
+  ) {
     throw primaryError;
   }
 
-  const primaryErrMsg = errorMessage(primaryError);
+  const blocked = fallbackBlockReason(options);
+  if (blocked || !fallback) {
+    if (options.fallbackPolicy?.enabled && fallback) {
+      updateNodeData(nodeId, {
+        status: "error",
+        error: `Primary was not submitted. Automatic fallback paused: ${blocked}`,
+      });
+    }
+    throw primaryError;
+  }
 
-  // Clear error state and stale output, show the fallback is now running.
+  const primaryMessage = errorMessage(primaryError);
+  const switchReason = `${primaryError.reason}: ${primaryMessage}`;
   updateNodeData(nodeId, {
-    ...clearOutput,
     status: "loading",
     error: null,
-    __usedFallback: true,
-    __fallbackModelUsed: fallback.displayName,
-    __primaryError: primaryErrMsg,
+    __primaryError: primaryMessage,
   });
 
   try {
-    await runOnce(fallback, fallbackParameters);
-    // Success on fallback: stamp metadata and ensure status reflects completion.
+    await runOnce(fallback, fallbackParameters, {
+      attempt: "fallback",
+      switchReason,
+    });
     updateNodeData(nodeId, {
       status: "complete",
       error: null,
       __usedFallback: true,
       __fallbackModelUsed: fallback.displayName,
-      __primaryError: primaryErrMsg,
+      __primaryError: primaryMessage,
     });
-  } catch (err) {
-    if (isAbortError(err)) throw err;
-    const fallbackErrMsg = errorMessage(err);
-    const combined = `Primary failed: ${primaryErrMsg}. Fallback failed: ${fallbackErrMsg}`;
-    updateNodeData(nodeId, {
-      status: "error",
-      error: combined,
-    });
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    if (error instanceof CloudAttemptError && error.execution === "unknown") throw error;
+    const combined = `Primary was not submitted: ${primaryMessage}. Fallback failed: ${errorMessage(error)}`;
+    updateNodeData(nodeId, { status: "error", error: combined });
     throw new Error(combined);
   }
 }

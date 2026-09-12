@@ -17,7 +17,14 @@ export type { AnnotationNodeData, BaseNodeData };
 
 // Import from domain files to avoid circular dependencies
 import type { AspectRatio, Resolution, ModelType } from "./models";
-import type { LLMProvider, LLMModelType, SelectedModel, ProviderType } from "./providers";
+import type {
+  CloudRequestRecord,
+  FallbackPolicy,
+  LLMProvider,
+  LLMModelType,
+  SelectedModel,
+  ProviderType,
+} from "./providers";
 import type { ComfyAppDefinition, ComfyWorkflowInspection } from "@/lib/comfy/types";
 import type { ProviderCallRecord, ModelResolutionSource } from "@/lib/providers/imageCapabilities";
 
@@ -59,7 +66,14 @@ export type NodeType =
 /**
  * Node execution status
  */
-export type NodeStatus = "idle" | "loading" | "complete" | "error" | "skipped";
+export type NodeStatus =
+  | "idle"
+  | "loading"
+  | "complete"
+  | "error"
+  | "unknown"
+  | "wait-cancelled"
+  | "skipped";
 
 /**
  * Image input node - loads/uploads images into the workflow
@@ -226,11 +240,15 @@ export interface NanoBananaNodeData extends BaseNodeData {
   /** Stable id of the human-selected candidate; index is only a view cursor. */
   selectedHistoryId?: string | null;
   fallbackModel?: SelectedModel; // JSON-compatible with Node Banana Pro
+  /** Automatic fallback is off unless the user explicitly enables this policy. */
+  fallbackPolicy?: FallbackPolicy;
   __usedFallback?: boolean; // Set by runWithFallback on successful fallback
   __fallbackModelUsed?: string; // Display name of fallback model that succeeded
   __primaryError?: string; // Error message from the primary attempt
   /** CRB-03: last provider submission record returned by the server, if any. */
   lastCall?: ProviderCallRecord;
+  /** Newest first; saved with the workflow for reopen/recovery. */
+  requestHistory?: CloudRequestRecord[];
 }
 
 /**

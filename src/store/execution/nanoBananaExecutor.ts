@@ -6,16 +6,18 @@
  */
 
 import type {
+  CloudFailureReason,
+  CloudRequestRecord,
   NanoBananaNodeData,
   SelectedModel,
 } from "@/types";
 import { pollGenerateTask } from "./pollTaskCompletion";
-import { runWithFallback } from "./runWithFallback";
-import { calculateGenerationCost } from "@/utils/costCalculator";
+import { CloudAttemptError, runWithFallback, type RunAttemptContext } from "./runWithFallback";
+import { calculateGenerationCost, estimateSelectedModelCost } from "@/utils/costCalculator";
 import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { rememberSessionMedia } from "./sessionMedia";
 import { newCharacterId } from "@/lib/characterProject";
-import { resolveGenerationModel } from "@/lib/providers/imageCapabilities";
+import { checkReferenceGaps, imageCapabilities, resolveGenerationModel } from "@/lib/providers/imageCapabilities";
 import type { ProviderCallRecord, ReferenceInput, ReferencePurpose } from "@/lib/providers/imageCapabilities";
 
 import type { NodeExecutionContext } from "./types";
@@ -25,6 +27,7 @@ import type { NodeExecutionContext } from "./types";
  * are always retained (CRB-02 append-only).
  */
 const MAX_NODE_IMAGE_HISTORY = 50;
+const MAX_REQUEST_HISTORY = 50;
 
 export interface NanoBananaOptions {
   /** When true, falls back to stored inputImages/inputPrompt if no connections provide them. */
@@ -58,6 +61,40 @@ export async function executeNanoBanana(
   // Get fresh node data from store
   const freshNode = getFreshNode(node.id);
   const nodeData = (freshNode?.data || node.data) as NanoBananaNodeData;
+  const primaryModel: SelectedModel = nodeData.selectedModel ?? {
+    provider: "gemini",
+    modelId: nodeData.model,
+    displayName: nodeData.model,
+  };
+  let requestHistory = [...(nodeData.requestHistory ?? [])];
+
+  const persistRequest = (record: CloudRequestRecord): void => {
+    record = { ...record, updatedAt: Date.now() };
+    requestHistory = [record, ...requestHistory.filter((item) => item.id !== record.id)]
+      .filter((item, index) => index < MAX_REQUEST_HISTORY || item.status === "unknown" || item.status === "wait-cancelled");
+    updateNodeData(node.id, { requestHistory });
+  };
+
+  const makeRequest = (
+    actualEntry: SelectedModel,
+    attempt: "primary" | "fallback",
+    switchReason?: string,
+  ): CloudRequestRecord => {
+    const now = Date.now();
+    return {
+      id: newCharacterId("request"),
+      createdAt: now,
+      updatedAt: now,
+      status: "not-submitted",
+      attempt,
+      originalEntry: primaryModel,
+      actualEntry,
+      ...(switchReason ? { switchReason } : {}),
+      estimatedCostUsd: estimateSelectedModelCost(actualEntry, nodeData.resolution),
+      actualCostUsd: null,
+      querySupport: actualEntry.provider === "kie" ? "supported" : "unsupported",
+    };
+  };
 
   // Determine images and text (with optional fallback to stored values).
   // `imageRoles` parallels `images`: a role is present only when the edge
@@ -101,6 +138,8 @@ export async function executeNanoBanana(
   }
 
   if (!promptText) {
+    const request = makeRequest(primaryModel, "primary");
+    persistRequest({ ...request, failureReason: "input", error: "Missing text input" });
     updateNodeData(node.id, {
       status: "error",
       error: "Missing text input",
@@ -110,6 +149,19 @@ export async function executeNanoBanana(
 
   // Capture promptText as a definitely-non-null string for use inside the closure.
   const finalPrompt: string = promptText;
+  const recordDefiniteFailure = (message: string): void => {
+    try {
+      ctx.recordCharacterRun?.({
+        nodeId: node.id,
+        runId: newCharacterId("run"),
+        status: "failed",
+        candidates: [],
+        error: message,
+      });
+    } catch (bookkeepingError) {
+      console.error("[nanoBanana] character-run bookkeeping failed:", bookkeepingError);
+    }
+  };
 
   updateNodeData(node.id, {
     inputImages: images,
@@ -120,7 +172,11 @@ export async function executeNanoBanana(
 
   // Inner runOnce: performs the actual fetch/process/history work for a given model.
   // Extracted so runWithFallback can invoke it twice (primary, then fallback) if needed.
-  const runOnce = async (modelToUse: SelectedModel, parametersOverride?: Record<string, unknown>): Promise<void> => {
+  const runOnce = async (
+    modelToUse: SelectedModel,
+    parametersOverride?: Record<string, unknown>,
+    attemptContext: RunAttemptContext = { attempt: "primary" },
+  ): Promise<void> => {
     const provider = modelToUse.provider;
     const headers = buildGenerateHeaders(provider, providerSettings);
 
@@ -177,42 +233,112 @@ export async function executeNanoBanana(
       throw new Error(errorMsg);
     }
 
-    try {
-      const response = await fetch("/api/generate", {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestPayload),
-        ...(signal ? { signal } : {}),
-      });
+    let requestRecord = makeRequest(
+      modelToUse,
+      attemptContext.attempt,
+      attemptContext.switchReason,
+    );
+    persistRequest(requestRecord);
+    requestRecord = { ...requestRecord, status: "submitting" };
+    persistRequest(requestRecord);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `HTTP ${response.status}`;
-        let serverCall: ProviderCallRecord | undefined;
-        try {
-          const errorJson = JSON.parse(errorText);
-          errorMessage = errorJson.error || errorMessage;
-          // The server attaches a call record only when the request reached
-          // the provider transport (submitted failure). Pre-submit
-          // rejections (422 gaps, 401 key, 400 validation) carry none, and
-          // the previous lastCall is left untouched — never fabricated here.
-          serverCall = errorJson.call;
-        } catch {
-          if (errorText) errorMessage += ` - ${errorText.substring(0, 200)}`;
+    try {
+      let result: Awaited<ReturnType<Response["json"]>>;
+      const recoverable = requestHistory.find((item) =>
+        item.id !== requestRecord.id &&
+        (item.status === "unknown" || item.status === "wait-cancelled") &&
+        item.querySupport === "supported" &&
+        item.upstreamRequestId &&
+        item.actualEntry.provider === modelToUse.provider &&
+        item.actualEntry.modelId === modelToUse.modelId
+      );
+
+      if (recoverable?.upstreamRequestId) {
+        // A provider with status lookup is queried before any new submission.
+        requestHistory = requestHistory.filter((item) => item.id !== requestRecord.id);
+        requestRecord = { ...recoverable, status: "submitting", error: undefined, failureReason: undefined };
+        persistRequest(requestRecord);
+        result = await pollGenerateTask({
+          taskId: recoverable.upstreamRequestId,
+          provider: modelToUse.provider,
+          modelId: modelToUse.modelId,
+          modelName: modelToUse.displayName,
+          mediaType: "image",
+          headers,
+          signal,
+        });
+      } else {
+        const response = await fetch("/api/generate", {
+          method: "POST",
+          headers,
+          body: JSON.stringify(requestPayload),
+          ...(signal ? { signal } : {}),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          let errorMessage = `HTTP ${response.status}`;
+          let serverCall: ProviderCallRecord | undefined;
+          try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.error || errorMessage;
+            serverCall = errorJson.call;
+          } catch {
+            if (errorText) errorMessage += ` - ${errorText.substring(0, 200)}`;
+          }
+
+          const failureReason: CloudFailureReason = response.status === 422
+            ? "capability-unavailable"
+            : response.status === 429
+              ? "quota-unavailable"
+              : response.status === 401 || response.status === 403
+                ? "authentication"
+                : response.status === 400
+                  ? "input"
+                  : response.status === 404 || response.status === 503
+                    ? "provider-unavailable"
+                    : serverCall
+                      ? "provider-failed"
+                      : "unknown";
+          const definitelyNotSubmitted = !serverCall;
+          const eligible = definitelyNotSubmitted && (
+            failureReason === "capability-unavailable" ||
+            failureReason === "provider-unavailable" ||
+            failureReason === "quota-unavailable"
+          );
+          requestRecord = {
+            ...requestRecord,
+            status: definitelyNotSubmitted ? "not-submitted" : "failed",
+            failureReason,
+            error: errorMessage,
+          };
+          persistRequest(requestRecord);
+
+          updateNodeData(node.id, {
+            status: "error",
+            error: errorMessage,
+            ...(serverCall ? { lastCall: serverCall } : {}),
+          });
+          recordDefiniteFailure(errorMessage);
+          throw new CloudAttemptError(
+            errorMessage,
+            definitelyNotSubmitted ? "not-executed" : "submitted",
+            failureReason,
+            eligible,
+          );
         }
 
-        updateNodeData(node.id, {
-          status: "error",
-          error: errorMessage,
-          ...(serverCall ? { lastCall: serverCall } : {}),
-        });
-        throw new Error(errorMessage);
+        result = await response.json();
       }
-
-      let result = await response.json();
 
       // Handle polling response (long-running Kie tasks)
       if (result.polling) {
+        requestRecord = {
+          ...requestRecord,
+          upstreamRequestId: result.taskId,
+          querySupport: "supported",
+        };
+        persistRequest(requestRecord);
         result = await pollGenerateTask({
           taskId: result.taskId,
           provider: result.pollProvider,
@@ -224,12 +350,50 @@ export async function executeNanoBanana(
         });
 
         if (!result.success) {
+          const status = result.statusUnknown ? "unknown" : "failed";
+          requestRecord = {
+            ...requestRecord,
+            status,
+            failureReason: result.statusUnknown ? "network" : "provider-failed",
+            error: result.error || "Generation failed",
+          };
+          persistRequest(requestRecord);
           updateNodeData(node.id, {
-            status: "error",
+            status: result.statusUnknown ? "unknown" : "error",
             error: result.error || "Generation failed",
           });
-          throw new Error(result.error || "Generation failed");
+          if (!result.statusUnknown) recordDefiniteFailure(result.error || "Generation failed");
+          throw new CloudAttemptError(
+            result.error || "Generation failed",
+            result.statusUnknown ? "unknown" : "submitted",
+            result.statusUnknown ? "network" : "provider-failed",
+          );
         }
+      }
+
+      // Reopened unknown/cancelled requests query their existing upstream id
+      // directly, so their poll result does not pass through `result.polling`
+      // above. Preserve an inconclusive lookup as unknown; a definitive
+      // provider rejection is failed. Neither outcome submits a replacement.
+      if (recoverable?.upstreamRequestId && !result.success) {
+        const status = result.statusUnknown ? "unknown" : "failed";
+        requestRecord = {
+          ...requestRecord,
+          status,
+          failureReason: result.statusUnknown ? "network" : "provider-failed",
+          error: result.error || "Generation failed",
+        };
+        persistRequest(requestRecord);
+        updateNodeData(node.id, {
+          status: result.statusUnknown ? "unknown" : "error",
+          error: result.error || "Generation failed",
+        });
+        if (!result.statusUnknown) recordDefiniteFailure(result.error || "Generation failed");
+        throw new CloudAttemptError(
+          result.error || "Generation failed",
+          result.statusUnknown ? "unknown" : "submitted",
+          result.statusUnknown ? "network" : "provider-failed",
+        );
       }
 
       if (result.success && result.image) {
@@ -300,6 +464,8 @@ export async function executeNanoBanana(
           // non-contract provider omits it, the previous record is kept.
           ...(result.call ? { lastCall: result.call } : {}),
         });
+        requestRecord = { ...requestRecord, status: "completed" };
+        persistRequest(requestRecord);
 
         // Report the run to the character-project contract when the context
         // carries it; node-local history above stays the fallback otherwise.
@@ -382,12 +548,37 @@ export async function executeNanoBanana(
           status: "error",
           error: result.error || "Generation failed",
         });
-        throw new Error(result.error || "Generation failed");
+        requestRecord = {
+          ...requestRecord,
+          status: result.call ? "failed" : "not-submitted",
+          failureReason: result.call ? "provider-failed" : "input",
+          error: result.error || "Generation failed",
+        };
+        persistRequest(requestRecord);
+        recordDefiniteFailure(result.error || "Generation failed");
+        throw new CloudAttemptError(
+          result.error || "Generation failed",
+          result.call ? "submitted" : "not-executed",
+          result.call ? "provider-failed" : "input",
+        );
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
+        requestRecord = {
+          ...requestRecord,
+          status: "wait-cancelled",
+          failureReason: "cancelled",
+          error: "Local waiting was cancelled; the provider request may still be running.",
+        };
+        persistRequest(requestRecord);
+        updateNodeData(node.id, {
+          status: "wait-cancelled",
+          error: requestRecord.error,
+        });
         throw error;
       }
+
+      if (error instanceof CloudAttemptError) throw error;
 
       // Convert network errors to user-friendly messages
       let errorMessage = "Generation failed";
@@ -398,33 +589,19 @@ export async function executeNanoBanana(
       } else if (error instanceof Error) {
         errorMessage = error.message;
       }
-      // Local failure (network to /api/generate, thrown provider error
-      // without a server record, abort aside): no submission evidence exists
-      // here, so lastCall is left untouched.
-      updateNodeData(node.id, {
-        status: "error",
+      requestRecord = {
+        ...requestRecord,
+        status: "unknown",
+        failureReason: "network",
         error: errorMessage,
+      };
+      persistRequest(requestRecord);
+      updateNodeData(node.id, {
+        status: "unknown",
+        error: `${errorMessage} The provider may have executed; no automatic retry was sent.`,
       });
-      try {
-        ctx.recordCharacterRun?.({
-          nodeId: node.id,
-          runId: newCharacterId("run"),
-          status: "failed",
-          candidates: [],
-          error: errorMessage,
-        });
-      } catch (bookkeepingError) {
-        console.error("[nanoBanana] character-run bookkeeping failed:", bookkeepingError);
-      }
-      throw new Error(errorMessage);
+      throw new CloudAttemptError(errorMessage, "unknown", "network");
     }
-  };
-
-  // Synthesize a SelectedModel for the primary from legacy fields if selectedModel is missing.
-  const primaryModel: SelectedModel = nodeData.selectedModel ?? {
-    provider: "gemini",
-    modelId: nodeData.model,
-    displayName: nodeData.model,
   };
 
   // CRB-02: no clearOutput — a failed primary must not wipe the selected
@@ -435,6 +612,20 @@ export async function executeNanoBanana(
     primary: primaryModel,
     fallback: nodeData.fallbackModel,
     fallbackParameters: nodeData.fallbackParameters,
+    fallbackPolicy: nodeData.fallbackPolicy,
+    fallbackEstimatedCost: nodeData.fallbackModel
+      ? estimateSelectedModelCost(nodeData.fallbackModel, nodeData.resolution)
+      : null,
+    validateFallback: nodeData.fallbackModel
+      ? () => checkReferenceGaps(
+          imageCapabilities(nodeData.fallbackModel!.provider, nodeData.fallbackModel!.modelId),
+          { references: images.map((image, index) => ({
+            image,
+            ...(imageRoles[index] ? { purpose: imageRoles[index] } : {}),
+          })), prompt: finalPrompt },
+          nodeData.fallbackModel,
+        )[0]?.message ?? null
+      : undefined,
     updateNodeData,
     runOnce,
   });

@@ -23,6 +23,55 @@ export interface SelectedModel {
   capabilities?: string[];  // Model capabilities (e.g., "text-to-image", "image-to-3d")
 }
 
+/** Persisted lifecycle of one cloud request attempt (CRB-04). */
+export type CloudRequestStatus =
+  | "not-submitted"
+  | "submitting"
+  | "completed"
+  | "failed"
+  | "unknown"
+  | "wait-cancelled";
+
+export type CloudFailureReason =
+  | "capability-unavailable"
+  | "provider-unavailable"
+  | "quota-unavailable"
+  | "authentication"
+  | "input"
+  | "content-rejected"
+  | "provider-failed"
+  | "network"
+  | "cancelled"
+  | "unknown";
+
+export interface CloudRequestRecord {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  status: CloudRequestStatus;
+  attempt: "primary" | "fallback";
+  originalEntry: SelectedModel;
+  actualEntry: SelectedModel;
+  switchReason?: string;
+  estimatedCostUsd: number | null;
+  /** Provider billing is not treated as known until a provider reports it. */
+  actualCostUsd: number | null;
+  querySupport: "supported" | "unsupported";
+  upstreamRequestId?: string;
+  failureReason?: CloudFailureReason;
+  error?: string;
+}
+
+/**
+ * Explicit automatic-fallback authorization for one node. Merely storing a
+ * fallback model or API key never enables a paid request.
+ */
+export interface FallbackPolicy {
+  enabled: boolean;
+  /** Hard ceiling for the one fallback attempt; null means no budget grant. */
+  maxCostUsd: number | null;
+}
+
 export interface ProviderConfig {
   id: ProviderType;
   name: string;

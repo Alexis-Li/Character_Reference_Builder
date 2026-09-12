@@ -40,7 +40,7 @@ export async function pollGenerateTask(
   while (true) {
     // Check client-side timeout
     if (Date.now() - startTime > MAX_POLL_TIME) {
-      return { success: false, error: `${modelName}: Generation timed out after 10 minutes` };
+      return { success: false, statusUnknown: true, error: `${modelName}: status is still unknown after 10 minutes` };
     }
 
     // Check abort signal
@@ -80,7 +80,7 @@ export async function pollGenerateTask(
       consecutiveErrors++;
       console.warn(`[poll] Network error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, error);
       if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-        return { success: false, error: `${modelName}: Polling failed after ${MAX_CONSECUTIVE_ERRORS} consecutive network errors` };
+        return { success: false, statusUnknown: true, error: `${modelName}: status lookup failed after ${MAX_CONSECUTIVE_ERRORS} consecutive network errors` };
       }
       interval = Math.min(interval + INTERVAL_STEP, MAX_INTERVAL);
       continue;
@@ -93,7 +93,7 @@ export async function pollGenerateTask(
         console.warn(`[poll] Transient error ${response.status} (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS})`);
         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
           const errorText = await response.text().catch(() => "");
-          return { success: false, error: `${modelName}: Polling failed - ${errorText || `HTTP ${response.status}`}` };
+          return { success: false, statusUnknown: true, error: `${modelName}: status lookup failed - ${errorText || `HTTP ${response.status}`}` };
         }
         interval = Math.min(interval + INTERVAL_STEP, MAX_INTERVAL);
         continue;
@@ -117,7 +117,7 @@ export async function pollGenerateTask(
     } catch {
       consecutiveErrors++;
       if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-        return { success: false, error: `${modelName}: Polling failed - invalid response` };
+        return { success: false, statusUnknown: true, error: `${modelName}: status lookup returned an invalid response` };
       }
       continue;
     }

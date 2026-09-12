@@ -2430,7 +2430,9 @@ export function WorkflowCanvas() {
                       ? "text-blue-400 border-blue-600/60 hover:text-blue-200"
                       : "text-neutral-500 border-neutral-600 hover:text-neutral-200"
                   }`}
-                  title={hasFallback ? `Fallback: ${fallbackName}` : "Set fallback model (runs if primary fails)"}
+                  title={hasFallback
+                    ? `Fallback configured: ${fallbackName}. Automatic use requires explicit authorization and budget.`
+                    : "Configure fallback model (automatic use remains disabled until authorized)"}
                 >
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 12a8 8 0 0 1 16 0M12 4v8M8 12Q9 7 12 4M16 12Q15 7 12 4M4 12l8 8M20 12l-8 8M11 20h2" />
@@ -2620,7 +2622,7 @@ export function WorkflowCanvas() {
           initialCapabilityFilter={fallbackDialogState.capability}
           showClearOption
           onClearSelection={() => {
-            updateNodeData(fallbackDialogState.nodeId, { fallbackModel: undefined, fallbackParameters: undefined });
+            updateNodeData(fallbackDialogState.nodeId, { fallbackModel: undefined, fallbackParameters: undefined, fallbackPolicy: undefined });
             setFallbackDialogState(null);
           }}
           onModelSelected={(model) => {
@@ -2630,8 +2632,10 @@ export function WorkflowCanvas() {
                 modelId: model.id,
                 displayName: model.name,
                 capabilities: model.capabilities,
+                ...(model.pricing ? { pricing: { type: model.pricing.type, amount: model.pricing.amount } } : {}),
               },
               fallbackParameters: {},
+              fallbackPolicy: { enabled: false, maxCostUsd: null },
             });
             setFallbackDialogState(null);
           }}

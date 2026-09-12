@@ -660,6 +660,47 @@ describe("GenerateImageNode", () => {
         expect(fallbackFetches.length).toBeGreaterThan(0);
       });
     });
+
+    it("requires explicit fallback authorization and a budget", () => {
+      render(
+        <TestWrapper>
+          <GenerateImageNode {...createNodeProps({
+            selectedModel: { provider: "gemini", modelId: "nano-banana", displayName: "Nano Banana" },
+            fallbackModel: { provider: "replicate", modelId: "flux-schnell", displayName: "FLUX Schnell" },
+            fallbackPolicy: { enabled: false, maxCostUsd: null },
+            parametersExpanded: true,
+          })} />
+        </TestWrapper>
+      );
+
+      fireEvent.click(screen.getByText("FLUX Schnell"));
+      expect(screen.getByRole("checkbox", { name: /Authorize one automatic fallback/ })).not.toBeChecked();
+      expect(screen.getByPlaceholderText("Required")).toHaveValue(null);
+      expect(screen.getByText(/unknown — automatic fallback will pause/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows a traceable unknown request with unknown cost", () => {
+    const primary = { provider: "gemini" as const, modelId: "nano-banana", displayName: "Nano Banana" };
+    render(
+      <TestWrapper>
+        <GenerateImageNode {...createNodeProps({
+          outputImage: "data:image/png;base64,selected",
+          status: "unknown",
+          requestHistory: [{
+            id: "request-1", createdAt: 1, updatedAt: 2, status: "unknown",
+            attempt: "primary", originalEntry: primary, actualEntry: primary,
+            estimatedCostUsd: null, actualCostUsd: null, querySupport: "unsupported",
+            failureReason: "network", error: "Response lost",
+          }],
+        })} />
+      </TestWrapper>
+    );
+
+    const badge = screen.getByText("Result unknown");
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Original: gemini/Nano Banana"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Actual: gemini/Nano Banana"));
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Cost: unknown"));
   });
 
   describe("Fetch Models on Provider Change", () => {
