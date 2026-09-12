@@ -210,6 +210,7 @@ export interface ModelInputDef {
  * Nano Banana node - AI image generation
  */
 export interface NanoBananaNodeData extends BaseNodeData {
+  partTask?: { partId: string; view: string; inputCandidateId?: string; instructions?: string[]; inferenceNotes: string };
   inputImages: string[]; // Now supports multiple images
   inputImageRefs?: string[]; // External image references for storage optimization
   inputPrompt: string | null;

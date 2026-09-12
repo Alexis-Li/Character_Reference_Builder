@@ -490,7 +490,7 @@ export function selectCandidate(
   return touch({
     ...project,
     candidates: project.candidates.map((item) => {
-      if (item.id === candidateId) return { ...item, review: "selected" };
+      if (item.id === candidateId) return { ...item, review: item.review === "approved" ? "approved" : "selected" };
       if (item.id === previousId && item.review === "selected") return { ...item, review: "unreviewed" };
       return item;
     }),

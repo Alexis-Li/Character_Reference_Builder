@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { PartReferenceWorkspace } from "@/components/PartReferenceWorkspace";
 import { Header } from "@/components/Header";
 import { WorkflowCanvas } from "@/components/WorkflowCanvas";
 import { FloatingActionBar } from "@/components/FloatingActionBar";
@@ -58,6 +59,7 @@ export default function Home() {
     <ReactFlowProvider>
       <div className="h-screen flex flex-col">
         <Header />
+        <PartReferenceWorkspace />
         <ErrorBoundary
           label="Canvas"
           onError={(error, info) =>

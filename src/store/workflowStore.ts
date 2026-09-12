@@ -1819,7 +1819,9 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     materializeSplitGridCells: (nodeId: string) => get().materializeSplitGridCells(nodeId),
     recordCharacterRun: (event: CharacterRunEvent) => {
       try {
-        const partId = partIdForNode(event.nodeId);
+        const task = (get().nodes.find((node) => node.id === event.nodeId)?.data as NanoBananaNodeData | undefined)?.partTask;
+        const partId = task?.partId ?? partIdForNode(event.nodeId);
+        const view = task?.view ?? CHARACTER_DEFAULT_VIEW;
         const state = get();
         let project = state.ensureCharacterProject();
         if (!project.parts.some((part) => part.id === partId)) {
@@ -1840,7 +1842,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           if (!existing) {
             project = addReference(project, {
               id: refId,
-              kind: source.type === "imageInput" ? "original" : "auxiliary",
+              kind: source.type === "imageInput" && !source.data.partReferenceCopy ? "original" : "auxiliary",
               source: versioned,
             });
           } else if (existing.source !== versioned) {
@@ -1857,24 +1859,25 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           project = recordSuccessfulRun(project, {
             runId: event.runId,
             partId,
-            view: CHARACTER_DEFAULT_VIEW,
-            inputCandidateId: event.inputCandidateId,
+            view,
+            inputCandidateId: task?.inputCandidateId ?? event.inputCandidateId,
             outputs: event.candidates.map((candidate) => ({
               candidateId: candidate.candidateId,
               assetId: candidate.assetId ?? candidate.candidateId,
+              inferenceNotes: task?.inferenceNotes,
               referenceIds: [...new Set([...candidate.referenceIds, ...referenceIds])],
             })),
           });
           // Mirror the node's adopt-first rule so both selections stay joined.
-          if (!project.selection[selectionKey(partId, CHARACTER_DEFAULT_VIEW)] && event.candidates.length > 0) {
+          if (!task && !project.selection[selectionKey(partId, CHARACTER_DEFAULT_VIEW)] && event.candidates.length > 0) {
             project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, event.candidates[0].candidateId);
           }
         } else {
           project = recordFailedRun(project, {
             runId: event.runId,
             partId,
-            view: CHARACTER_DEFAULT_VIEW,
-            inputCandidateId: event.inputCandidateId,
+            view,
+            inputCandidateId: task?.inputCandidateId ?? event.inputCandidateId,
             error: event.error ?? "Generation failed",
           });
         }
@@ -3038,7 +3041,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           if (!project.references.some((item) => item.id === refId)) {
             project = addReference(project, {
               id: refId,
-              kind: source.type === "imageInput" ? "original" : "auxiliary",
+              kind: source.type === "imageInput" && !source.data.partReferenceCopy ? "original" : "auxiliary",
               source: versionedSourceForUpstream(source.id, source.type, source.data as Record<string, unknown>),
             });
           }
@@ -3245,7 +3248,8 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
     const partId = partIdForNode(nodeId);
     let project = get().ensureCharacterProject();
     project = adoptCandidate(project, { candidateId, partId, view: CHARACTER_DEFAULT_VIEW });
-    project = selectCandidate(project, partId, CHARACTER_DEFAULT_VIEW, candidateId);
+    const candidate = project.candidates.find(c => c.id === candidateId)!;
+    project = selectCandidate(project, candidate.partId, candidate.view, candidateId);
     set({ characterProject: project, hasUnsavedChanges: true });
     get().syncSessionProtection();
   },

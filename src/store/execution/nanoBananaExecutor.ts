@@ -19,6 +19,8 @@ import { calculateGenerationCost, estimateSelectedModelCost } from "@/utils/cost
 import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { rememberSessionMedia } from "./sessionMedia";
 import { newCharacterId } from "@/lib/characterProject";
+import type { CharacterProject } from "@/lib/characterProject";
+import { partReferencePrompt } from "@/lib/partReference";
 import { checkReferenceGaps, imageCapabilities, resolveGenerationModel } from "@/lib/providers/imageCapabilities";
 import type { ProviderCallRecord, ReferenceInput, ReferencePurpose } from "@/lib/providers/imageCapabilities";
 
@@ -150,7 +152,12 @@ export async function executeNanoBanana(
   }
 
   // Capture promptText as a definitely-non-null string for use inside the closure.
-  const finalPrompt: string = promptText;
+  const project = nodeData.partTask
+    ? (ctx.get() as { characterProject?: CharacterProject | null } | undefined)?.characterProject
+    : undefined;
+  const finalPrompt: string = nodeData.partTask && project
+    ? partReferencePrompt(project, nodeData.partTask.partId, nodeData.partTask.view, (nodeData.partTask.instructions ?? []).join("\n"))
+    : promptText;
   const recordDefiniteFailure = (message: string): void => {
     try {
       ctx.recordCharacterRun?.({

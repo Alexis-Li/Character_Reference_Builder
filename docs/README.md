@@ -8,11 +8,12 @@
 | [开发任务](first-development-tasks.md) | 实施顺序、依赖与交付要求 | 总规格 #1 与开发任务 #2–#9 已发布并分配；完整前端建设后置 |
 | [技术决策](adr/0001-minimum-loop-foundation.md) | 原型底座及业务、Provider、资产边界的取舍 | 采用 Node Banana 固定快照作为起点；生产准入未通过 |
 | [最小闭环验证](validation/minimum-loop-2026-09-10.md) | 验证方法、实际通过项、失败及待验收项 | 工程验证已执行；真实生成质量与成本待验收 |
+| [单部件界面验证](validation/part-reference-issue-6.md) | CRB-05 操作路径与浏览器回归 | 本地功能验证通过，真实素材待用户验收 |
 | [可复用项目](research/reusable-projects.md) | 社区项目清单、来源与复用边界 | 保留已有研究，区分采用、候选、设计参考和排除方案 |
 | [Provider 证据](research/provider-feasibility-2026-09-10.md) | 官方接口与适配器源码核查 | 2026-09-10 核查记录；无真实云端调用 |
 | [验证脚本](../scripts/validation/README.md) | 复跑探针和真实文件检查 | 可运行；候选快照存在 4 项已复现需求缺口 |
 | [领域词汇表](../CONTEXT.md) | 角色项目、部件、参考资料等术语 | 统一沟通用语，不包含实现方案 |
-| [预设说明](../presets/README.md) | 工作流、提示词与参考模板职责 | 目录就绪，内容待实现 |
+| [预设说明](../presets/README.md) | 工作流、提示词与参考模板职责 | 默认单部件预设已提供，加载不生成 |
 | [Issue tracker](agents/issue-tracker.md) | GitHub Issues 操作约定 | 已配置 |
 | [Triage labels](agents/triage-labels.md) | 分诊角色与标签映射 | 远端状态以使用前检查为准 |
 | [Domain docs](agents/domain.md) | 领域文档消费规则 | 单上下文布局 |
