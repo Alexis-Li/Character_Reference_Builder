@@ -5,11 +5,11 @@
 | 文档 | 职责 | 当前状态 |
 | --- | --- | --- |
 | [产品需求](product-requirements.md) | 用户场景、功能、交互、MVP 范围及验收 | 需求评审稿；图像参考范围已明确，能力实现与质量待验证 |
-| [开发任务](first-development-tasks.md) | 实施顺序、依赖与交付要求 | 总规格 #1 保持开启；#2–#6 已验收关闭，#7 已完成首轮审查整改待复验，#8–#9 待执行 |
+| [开发任务](first-development-tasks.md) | 实施顺序、依赖与交付要求 | 总规格 #1 保持开启；#2–#6 已验收关闭，#7 已完成二次审查整改待复验，#8–#9 待执行 |
 | [技术决策](adr/0001-minimum-loop-foundation.md) | 原型底座及业务、Provider、资产边界的取舍 | 采用 Node Banana 固定快照作为起点；生产准入未通过 |
 | [最小闭环验证](validation/minimum-loop-2026-09-10.md) | 验证方法、实际通过项、失败及待验收项 | 工程验证已执行；真实生成质量与成本待验收 |
 | [单部件界面验证](validation/part-reference-issue-6.md) | CRB-05 操作路径与浏览器回归 | 功能路径已验收，Issue #6 已关闭；真实 Provider 效果转由 CRB-07 验证 |
-| [可迁移项目验证](validation/portable-project-issue-7.md) | CRB-06 真实目录保存、迁移、恢复与参考包导出 | 首轮审查问题已修复并通过本地回归，Issue #7 待复验 |
+| [可迁移项目验证](validation/portable-project-issue-7.md) | CRB-06 真实目录保存、迁移、恢复与参考包导出 | 二次审查问题已修复并通过本地回归，Issue #7 待复验 |
 | [可复用项目](research/reusable-projects.md) | 社区项目清单、来源与复用边界 | 保留已有研究，区分采用、候选、设计参考和排除方案 |
 | [Provider 证据](research/provider-feasibility-2026-09-10.md) | 官方接口与适配器源码核查 | 2026-09-10 核查记录；无真实云端调用 |
 | [验证脚本](../scripts/validation/README.md) | 复跑探针和真实文件检查 | 可运行；候选快照存在 4 项已复现需求缺口 |

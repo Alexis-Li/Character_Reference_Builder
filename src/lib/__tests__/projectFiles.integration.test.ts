@@ -8,6 +8,7 @@ import {
   auditProjectAssets,
   createReferencePackage,
   readRecoverableJson,
+  sanitizePortableValue,
   savePortableWorkflow,
   type PersistableWorkflow,
 } from "../projectFiles.server";
@@ -212,28 +213,73 @@ describe("CRB-06 real project files", () => {
     const posixPath = "/home/artist/characters/hero/front.png";
     input.characterProject!.references[0].source = httpsSource;
     input.characterProject!.parts[0].requirements = [
-      `Keep source ${httpsSource}`,
-      `Do not persist ${uncPath}`,
-      `Do not persist ${extendedPath}`,
-      `Do not persist ${drivePath}`,
-      `Do not persist ${fileUrl}`,
-      `Do not persist ${posixPath}`,
+      `保留来源：${httpsSource}`,
+      `原画路径：${uncPath}`,
+      `扩展路径：${extendedPath}`,
+      `盘符路径：${drivePath}`,
+      `文件地址：${fileUrl}`,
+      `本机路径：${posixPath}`,
     ];
     input.characterProject!.candidates[0].inferenceNotes =
-      `Source ${httpsSource}; local copies ${uncPath}, ${extendedPath}, ${drivePath}, ${fileUrl}, ${posixPath}`;
+      `来源：${httpsSource}；原画路径：${uncPath}；扩展路径：${extendedPath}；盘符路径：${drivePath}；文件地址：${fileUrl}；本机路径：${posixPath}`;
+
+    expect(sanitizePortableValue(`原画路径：${uncPath}`)).toBe("原画路径：[local-path-redacted]");
+    expect(sanitizePortableValue(`原画路径${uncPath}`)).toBe("原画路径[local-path-redacted]");
+    expect(sanitizePortableValue(`来源：${httpsSource}；原画路径：${uncPath}`)).toBe(
+      `来源：${httpsSource}；原画路径：[local-path-redacted]`,
+    );
 
     await savePortableWorkflow(projectDirectory, filePath, input);
     const reopened = await readRecoverableJson<PersistableWorkflow>(filePath);
     expect(reopened.characterProject?.references[0].source).toBe(httpsSource);
-    const savedRaw = await fs.readFile(filePath, "utf8");
+    const reopenedRequirements = reopened.characterProject?.parts[0].requirements ?? [];
+    const reopenedInference = reopened.characterProject?.candidates[0].inferenceNotes ?? "";
+    const redacted = "[local-path-redacted]";
+    expect(reopenedRequirements).toEqual([
+      `保留来源：${httpsSource}`,
+      `原画路径：${redacted}`,
+      `扩展路径：${redacted}`,
+      `盘符路径：${redacted}`,
+      `文件地址：${redacted}`,
+      `本机路径：${redacted}`,
+    ]);
+    expect(reopenedInference).toBe(
+      `来源：${httpsSource}；原画路径：${redacted}；扩展路径：${redacted}；盘符路径：${redacted}；文件地址：${redacted}；本机路径：${redacted}`,
+    );
 
     const exported = await createReferencePackage(projectDirectory, reopened, { packageName: "路径清理" });
-    const manifestRaw = await fs.readFile(path.join(exported.packagePath, "asset-manifest.json"), "utf8");
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(exported.packagePath, "asset-manifest.json"), "utf8"),
+    ) as {
+      assets: Array<{ inferenceNotes?: string; relativePath: string }>;
+      parts: Array<{ requirements: string[] }>;
+      references: Array<{ source: string }>;
+    };
     const readmeRaw = await fs.readFile(path.join(exported.packagePath, "README.md"), "utf8");
     const overviewRaw = await fs.readFile(path.join(exported.packagePath, "overview.svg"), "utf8");
 
-    for (const contents of [savedRaw, manifestRaw, readmeRaw, overviewRaw]) {
+    const urlValues = [
+      reopened.characterProject?.references[0].source ?? "",
+      reopenedRequirements[0],
+      reopenedInference,
+      manifest.parts[0].requirements[0],
+      manifest.assets[0].inferenceNotes ?? "",
+      manifest.references[0].source,
+      readmeRaw,
+      overviewRaw,
+    ];
+    for (const contents of urlValues) {
       expect(contents).toContain(httpsSource);
+    }
+    const pathValues = [
+      ...reopenedRequirements.slice(1),
+      reopenedInference,
+      ...manifest.parts.flatMap((part) => part.requirements.slice(1)),
+      ...manifest.assets.map((asset) => asset.inferenceNotes ?? ""),
+      readmeRaw,
+      overviewRaw,
+    ];
+    for (const contents of pathValues) {
       expect(contents).toContain("[local-path-redacted]");
       expect(contents).not.toContain(uncPath);
       expect(contents).not.toContain(extendedPath);
@@ -241,6 +287,8 @@ describe("CRB-06 real project files", () => {
       expect(contents).not.toContain(fileUrl);
       expect(contents).not.toContain(posixPath);
     }
+    expect(reopened.assetManifest?.assets[0].relativePath).toBe("generations/blob-front.png");
+    expect(manifest.assets[0].relativePath).toMatch(/^images\//);
   });
 
   it("exports selected originals with hashes, overview, descriptions and explicit review state", async () => {

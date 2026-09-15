@@ -188,14 +188,14 @@ export async function buildProjectAssetManifest(
 
 function scrubLocalPaths(value: string): string {
   return value
-    .replace(/\bfile:(?:\/\/)?[^\r\n\t"'<>]*/gi, "[local-path-redacted]")
-    .replace(/(^|[\s("'=:\[{},])(?:\\\\|\/\/)[^\r\n\t"'<>]*/g, "$1[local-path-redacted]")
-    .replace(/(^|[\s("'=:\[{},])[A-Za-z]:[\\/][^\r\n\t"'<>]*/g, "$1[local-path-redacted]")
-    .replace(/(^|[\s("'=:\[{},])\/(?!\/)[^\r\n\t"'<>]*/g, "$1[local-path-redacted]");
+    .replace(/\bfile:(?:\/\/)?[^\r\n\t"'<>，。；！？、（）【】《》“”‘’]*/gi, "[local-path-redacted]")
+    .replace(/(?:\\\\|\/\/)[^\r\n\t"'<>，。；！？、（）【】《》“”‘’]*/g, "[local-path-redacted]")
+    .replace(/[A-Za-z]:[\\/][^\r\n\t"'<>，。；！？、（）【】《》“”‘’]*/g, "[local-path-redacted]")
+    .replace(/(?<![A-Za-z0-9._~-])\/(?!\/)[^\r\n\t"'<>，。；！？、（）【】《》“”‘’]*/g, "[local-path-redacted]");
 }
 
 function sanitizePortableString(value: string): string {
-  const httpUrl = /https?:\/\/[^\s\r\n\t"'<>]+/gi;
+  const httpUrl = /https?:\/\/[^\s\r\n\t"'<>，。；！？、（）【】《》“”‘’]+/gi;
   let result = "";
   let cursor = 0;
   for (const match of value.matchAll(httpUrl)) {
