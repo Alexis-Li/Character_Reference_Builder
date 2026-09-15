@@ -40,6 +40,9 @@ export function PartReferenceWorkspace() {
   const [instruction, setInstruction] = useState("");
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [includeUnreviewed, setIncludeUnreviewed] = useState(false);
+  const [exportStatus, setExportStatus] = useState("");
   const [images, setImages] = useState<Record<string, string>>({});
   const load = useLoadGenerationById("image", "Image");
   const part = project?.parts.find((p) => p.id === partId);
@@ -224,6 +227,39 @@ export function PartReferenceWorkspace() {
     }
   }
 
+  async function exportReferencePackage() {
+    setError("");
+    setExportStatus("");
+    setExporting(true);
+    try {
+      const state = useWorkflowStore.getState();
+      if (!state.workflowName || !state.saveDirectoryPath) {
+        throw new Error("请先在顶部设置项目名称与保存目录。");
+      }
+      if (!(await state.saveToFile())) {
+        throw new Error("项目保存未完成，参考包未导出。");
+      }
+      const response = await fetch("/api/reference-package", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          directoryPath: state.saveDirectoryPath,
+          filename: state.workflowName,
+          includeUnreviewed,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || "参考包导出失败。");
+      }
+      setExportStatus(`参考包“${result.packageName}”已写入项目的 exports 目录。`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <>
       <button
@@ -260,6 +296,26 @@ export function PartReferenceWorkspace() {
             默认无需 SAM 或
             Mask。加载预设不会生成图片。请确认部件归属、左右和遮挡；不确定处可更正后再确认。
           </p>
+          <div className="flex flex-wrap gap-3 items-center border border-neutral-700 p-3">
+            <button
+              disabled={working || busy || exporting || !project}
+              onClick={exportReferencePackage}
+            >
+              {exporting ? "保存并导出中…" : "保存并导出参考包"}
+            </button>
+            <label className="!flex-row items-center">
+              <input
+                type="checkbox"
+                checked={includeUnreviewed}
+                onChange={(event) => setIncludeUnreviewed(event.target.checked)}
+              />
+              显式包含人工选定但未批准的候选（在清单中保留状态）
+            </label>
+            <span className="text-sm text-neutral-400">
+              默认只导出人工选定且已批准的原图；未选择的 Mask 或透明提取图不会进入参考包。
+            </span>
+          </div>
+          {exportStatus && <p role="status" className="text-green-400">{exportStatus}</p>}
           <label>
             导入原画资料{" "}
             <input

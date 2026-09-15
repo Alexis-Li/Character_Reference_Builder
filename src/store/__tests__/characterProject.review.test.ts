@@ -651,7 +651,7 @@ describe("fourth review: failed writes never look saved", () => {
     expect(workflowCalls).toBe(0);
   });
 
-  it("external-off embeds every candidate and reopens selectable", async () => {
+  it("character projects force independent assets even when legacy embedding is disabled", async () => {
     seedTwoParts();
     mockFetch.mockResolvedValueOnce(ok(FRONT)).mockResolvedValueOnce(ok(REVISED));
     await run("gen");
@@ -663,10 +663,18 @@ describe("fourth review: failed writes never look saved", () => {
 
     let savedPayload: Record<string, unknown> | null = null;
     let mediaPosts = 0;
+    const files = new Map<string, string>();
     mockFetch.mockImplementation(async (url: string, init?: RequestInit) => {
       if (url === "/api/workflow-images") {
         mediaPosts += 1;
-        return { ok: true, json: async () => ({ success: true }) };
+        const body = JSON.parse(init?.body as string) as { imageId: string; imageData: string };
+        files.set(body.imageId, body.imageData);
+        return { ok: true, json: async () => ({ success: true, imageId: body.imageId }) };
+      }
+      if (typeof url === "string" && url.startsWith("/api/workflow-images?")) {
+        const imageId = new URLSearchParams(url.split("?")[1]).get("imageId")!;
+        const image = files.get(imageId);
+        return { ok: true, json: async () => image ? { success: true, image } : { success: false, notFound: true } };
       }
       if (url === "/api/workflow") {
         savedPayload = JSON.parse(init?.body as string) as Record<string, unknown>;
@@ -682,13 +690,16 @@ describe("fourth review: failed writes never look saved", () => {
     });
     const saved = await useWorkflowStore.getState().saveToFile();
     expect(saved).toBe(true);
-    expect(mediaPosts).toBe(0);
+    expect(mediaPosts).toBeGreaterThanOrEqual(2);
+    expect(files.get(firstId)).toBe(FRONT);
+    expect(files.get(secondId)).toBe(REVISED);
+    expect(useWorkflowStore.getState().useExternalImageStorage).toBe(true);
     const payload = (savedPayload as unknown as { workflow: { nodes: WorkflowNode[]; edges: WorkflowEdge[]; characterProject: CharacterProject } }).workflow;
     const savedGen = payload.nodes.find((n) => n.id === "gen")!;
     const savedHistory = (savedGen.data as unknown as { imageHistory: Array<{ id: string; image?: string }> }).imageHistory;
     expect(savedHistory).toHaveLength(2);
-    expect(savedHistory.find((h) => h.id === firstId)?.image).toBe(FRONT);
-    expect(savedHistory.find((h) => h.id === secondId)?.image).toBe(REVISED);
+    expect(savedHistory.find((h) => h.id === firstId)?.image).toBeUndefined();
+    expect(savedHistory.find((h) => h.id === secondId)?.image).toBeUndefined();
 
     useWorkflowStore.getState().clearWorkflow();
     expect(readSessionMedia(firstId)).toBeNull();
@@ -696,10 +707,8 @@ describe("fourth review: failed writes never look saved", () => {
       { version: 1, name: "crb-02-embed", nodes: payload.nodes, edges: payload.edges, edgeStyle: "angular", characterProject: payload.characterProject },
       "/tmp/crb-02-embed",
     );
-    expect(readSessionMedia(firstId)).toBe(FRONT);
-    expect(readSessionMedia(secondId)).toBe(REVISED);
     expect(useWorkflowStore.getState().characterProject?.selection).toEqual({ "gen@default": firstId });
-    const secondBytes = readSessionMedia(secondId)!;
+    const secondBytes = files.get(secondId)!;
     useWorkflowStore.getState().updateNodeData("gen", {
       outputImage: secondBytes,
       selectedHistoryId: secondId,

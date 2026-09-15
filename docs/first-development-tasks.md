@@ -13,13 +13,13 @@
 | CRB-03 能力化 Provider 及多参考输入契约 | [#4](https://github.com/Alexis-Li/Character_Reference_Builder/issues/4) | P0 | CRB-01 | 已验收关闭（2026-09-11）；真实调用仍由 CRB-07 验证 |
 | CRB-04 请求状态、费用授权及保守备用策略 | [#5](https://github.com/Alexis-Li/Character_Reference_Builder/issues/5) | P0 | CRB-03 | 已验收关闭（2026-09-12） |
 | CRB-05 单部件生成与连续优化的业务界面 | [#6](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6) | P0 | CRB-02、03、04 | 已验收关闭（2026-09-12） |
-| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 | 待实施；前置依赖已满足 |
+| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 | 已实现并通过本地验收；Issue 待审查 |
 | CRB-07 真实资料质量、成本与 Provider 替换验证 | [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8) | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 | 等待真实资料、调用条件、费用授权及人工评审；完整路径仍依赖 CRB-06 |
 | CRB-08 本地 SAM 精确提取专项验证 | [#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues/9) | P1 可选 | 有输入图片；集成依赖 CRB-02 | 待专项验证；不阻塞默认生成 |
 
-CRB-01–CRB-05 已按依赖顺序完成；下一步可直接实施 CRB-06 的可迁移保存与参考包导出。CRB-07 的真实调用在素材、账户和费用授权具备后开始，无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
+CRB-01–CRB-06 已按依赖顺序完成实现与本地验收；CRB-06 的远端 Issue 保持开启等待审查。CRB-07 的真实调用在素材、账户和费用授权具备后开始，无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
 
-[产品需求](product-requirements.md)统一定义功能与交互，本文件维护实施顺序。完整布局、主页、丰富节点库及视觉打磨后置；CRB-01 的启动入口、CRB-04 的状态与费用提示及 CRB-05 的最小业务界面已交付，CRB-06 继续补齐保存、迁移与参考包导出交互。
+[产品需求](product-requirements.md)统一定义功能与交互，本文件维护实施顺序。完整布局、主页、丰富节点库及视觉打磨后置；CRB-01 的启动入口、CRB-04 的状态与费用提示、CRB-05 的最小业务界面及 CRB-06 的可迁移保存与参考包导出均已交付。
 
 音频和视频永久不属于产品范围，不是首批隐藏、后续再启用的能力。上游快照中的相关实现只作为待清理迁移残留处理；后续任务不得为其新增界面、快捷键、工作流或 Provider 入口。LLM 与 ComfyUI 分别按图像理解、推理和可选执行后端的价值评估。
 

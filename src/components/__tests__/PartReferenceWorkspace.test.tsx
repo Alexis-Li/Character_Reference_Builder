@@ -10,7 +10,7 @@ import {
   selectCandidate,
 } from "@/lib/characterProject";
 import { partReferencePrompt } from "@/lib/partReference";
-import { clearSessionMedia } from "@/store/execution/sessionMedia";
+import { clearSessionMedia, rememberSessionMedia } from "@/store/execution/sessionMedia";
 vi.mock("@/utils/logger", () => ({
   logger: {
     info: vi.fn(),
@@ -22,6 +22,7 @@ vi.mock("@/utils/logger", () => ({
   },
 }));
 const image = "data:image/png;base64,aGVsbG8=";
+const realSaveToFile = useWorkflowStore.getState().saveToFile;
 beforeEach(() => {
   clearSessionMedia();
   useWorkflowStore.setState({
@@ -31,6 +32,7 @@ beforeEach(() => {
     isRunning: false,
     generationsPath: null,
     saveDirectoryPath: null,
+    saveToFile: realSaveToFile,
   });
 });
 describe("single part production", () => {
@@ -155,5 +157,59 @@ describe("single part production", () => {
     expect(p.selection["belt@正面"]).toBe(front.id);
     expect(p.runs.at(-1)?.status).toBe("failed");
     expect(p.candidates[0].review).toBe("approved");
+  });
+
+  it("saves before exporting and requires an explicit option for unapproved selections", async () => {
+    let p = definePart(createCharacterProject("project"), {
+      id: "belt",
+      name: "腰带",
+      requirements: ["保留双扣"],
+      correctionHistory: [],
+    });
+    p = {
+      ...p,
+      candidates: [{
+        id: "candidate",
+        assetId: "candidate",
+        partId: "belt",
+        view: "正面",
+        runId: "run",
+        referenceIds: [],
+        review: "selected",
+      }],
+      selection: { "belt@正面": "candidate" },
+    };
+    const saveToFile = vi.fn().mockResolvedValue(true);
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, packageName: "belt-reference-package" }),
+    });
+    vi.stubGlobal("fetch", fetch);
+    rememberSessionMedia("candidate", image);
+    useWorkflowStore.setState({
+      characterProject: p,
+      workflowName: "belt-project",
+      saveDirectoryPath: "C:\\projects\\belt-project",
+      saveToFile,
+    });
+
+    render(<PartReferenceWorkspace />);
+    fireEvent.click(screen.getByText(/单部件参考工作区/));
+    fireEvent.click(screen.getByLabelText(/显式包含人工选定但未批准/));
+    fireEvent.click(screen.getByText("保存并导出参考包"));
+    await act(async () => {});
+
+    expect(saveToFile).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/reference-package",
+      expect.objectContaining({
+        body: JSON.stringify({
+          directoryPath: "C:\\projects\\belt-project",
+          filename: "belt-project",
+          includeUnreviewed: true,
+        }),
+      }),
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("belt-reference-package");
   });
 });

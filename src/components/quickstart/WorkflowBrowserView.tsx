@@ -7,6 +7,8 @@ import {
   getWorkflowsDirectory,
   setWorkflowsDirectory,
 } from "@/store/utils/localStorage";
+import { useToast } from "@/components/Toast";
+import type { ProjectAssetWarning } from "@/lib/projectAssets";
 
 interface WorkflowListEntry {
   name: string;
@@ -36,6 +38,22 @@ function formatRelativeTime(timestamp: number): string {
 
 function dirBasename(dirPath: string): string {
   return dirPath.split("/").filter(Boolean).pop() || dirPath;
+}
+
+function reportAssetWarnings(warnings: ProjectAssetWarning[] | undefined) {
+  if (!warnings?.length) return;
+  const missing = warnings.filter((warning) => warning.code === "missing").length;
+  const changed = warnings.length - missing;
+  const detail = [
+    missing ? `${missing} 个文件缺失` : "",
+    changed ? `${changed} 个文件校验异常` : "",
+  ].filter(Boolean).join("，");
+  useToast.getState().show(
+    `项目已打开，但${detail}；其余资产和人工选择已保留。`,
+    "warning",
+    false,
+    warnings.map((warning) => warning.message).join("\n"),
+  );
 }
 
 export function WorkflowBrowserView({
@@ -125,6 +143,7 @@ export function WorkflowBrowserView({
         return;
       }
 
+      reportAssetWarnings(loadResult.assetWarnings as ProjectAssetWarning[] | undefined);
       onWorkflowLoaded(loadResult.workflow as WorkflowFile, dirPath);
       onClose?.();
     } catch {
@@ -149,6 +168,7 @@ export function WorkflowBrowserView({
           return;
         }
 
+        reportAssetWarnings(result.assetWarnings as ProjectAssetWarning[] | undefined);
         onWorkflowLoaded(
           result.workflow as WorkflowFile,
           entry.directoryPath

@@ -3,6 +3,12 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { logger } from "@/utils/logger";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
+import {
+  auditProjectAssets,
+  readRecoverableJson,
+  savePortableWorkflow,
+  type PersistableWorkflow,
+} from "@/lib/projectFiles.server";
 
 export const maxDuration = 300; // 5 minute timeout for large workflow files
 
@@ -113,9 +119,15 @@ export async function POST(request: NextRequest) {
     const safeName = filename.replace(/[^a-zA-Z0-9-_]/g, "_");
     const filePath = joinWorkflowPath(directoryPath, `${safeName}.json`);
 
-    // Write workflow JSON
-    const json = JSON.stringify(workflow, null, 2);
-    await fs.writeFile(filePath, json, "utf-8");
+    // The workflow file is the commit point. Media has already been written by
+    // the caller; build hashes from those files, strip machine-local paths and
+    // credentials, then atomically replace the previous valid project.
+    const savedWorkflow = await savePortableWorkflow(
+      directoryPath,
+      filePath,
+      workflow as PersistableWorkflow,
+    );
+    const json = JSON.stringify(savedWorkflow, null, 2);
 
     logger.info('file.save', 'Workflow saved successfully', {
       filePath,
@@ -125,6 +137,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       filePath,
+      assetManifest: savedWorkflow.assetManifest,
     });
   } catch (error) {
     logger.error('file.error', 'Failed to save workflow', {
@@ -187,14 +200,23 @@ export async function GET(request: NextRequest) {
     // If load=true, find and return a workflow JSON from the directory
     if (shouldLoad) {
       const entries = await fs.readdir(directoryPath);
-      const jsonFiles = entries.filter(f => f.endsWith(".json"));
+      const jsonFiles = Array.from(new Set(
+        entries
+          .filter((file) => file.endsWith(".json") || file.endsWith(".json.previous"))
+          .map((file) => file.replace(/\.previous$/, "")),
+      ));
 
       // Gather candidates with mtime for deterministic selection (newest first)
       const candidates: { jsonFile: string; filePath: string; mtime: number }[] = [];
       for (const jsonFile of jsonFiles) {
         try {
           const filePath = joinWorkflowPath(directoryPath, jsonFile);
-          const stat = await fs.stat(filePath);
+          let stat;
+          try {
+            stat = await fs.stat(filePath);
+          } catch {
+            stat = await fs.stat(`${filePath}.previous`);
+          }
           candidates.push({ jsonFile, filePath, mtime: stat.mtimeMs });
         } catch {
           continue;
@@ -204,8 +226,7 @@ export async function GET(request: NextRequest) {
 
       for (const { jsonFile, filePath } of candidates) {
         try {
-          const content = await fs.readFile(filePath, "utf-8");
-          const parsed = JSON.parse(content);
+          const parsed = await readRecoverableJson<PersistableWorkflow>(filePath);
 
           if (
             typeof parsed.version === "number" &&
@@ -213,14 +234,17 @@ export async function GET(request: NextRequest) {
             Array.isArray(parsed.edges)
           ) {
             const filename = path.basename(jsonFile, ".json");
+            const assetWarnings = await auditProjectAssets(directoryPath, parsed.assetManifest);
             logger.info('file.load', 'Workflow loaded from directory', {
               directoryPath,
               filename: jsonFile,
+              assetWarningCount: assetWarnings.length,
             });
             return NextResponse.json({
               success: true,
               workflow: parsed,
               filename,
+              assetWarnings,
             });
           }
         } catch {

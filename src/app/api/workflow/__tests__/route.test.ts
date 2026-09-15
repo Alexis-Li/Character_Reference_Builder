@@ -5,11 +5,18 @@ import { NextRequest } from "next/server";
 const mockStat = vi.fn();
 const mockMkdir = vi.fn();
 const mockWriteFile = vi.fn();
+const mockSavePortableWorkflow = vi.fn();
 
 vi.mock("fs/promises", () => ({
   stat: (...args: unknown[]) => mockStat(...args),
   mkdir: (...args: unknown[]) => mockMkdir(...args),
   writeFile: (...args: unknown[]) => mockWriteFile(...args),
+}));
+
+vi.mock("@/lib/projectFiles.server", () => ({
+  savePortableWorkflow: (...args: unknown[]) => mockSavePortableWorkflow(...args),
+  readRecoverableJson: vi.fn(),
+  auditProjectAssets: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock logger to avoid console noise during tests
@@ -42,6 +49,12 @@ function createMockGetRequest(params: Record<string, string>): NextRequest {
 describe("/api/workflow route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSavePortableWorkflow.mockImplementation(
+      async (_directoryPath: string, filePath: string, workflow: unknown) => {
+        await mockWriteFile(filePath, JSON.stringify(workflow, null, 2), "utf-8");
+        return workflow;
+      },
+    );
   });
 
   afterEach(() => {

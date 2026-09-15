@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { logger } from "@/utils/logger";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
+import { atomicReplaceFile } from "@/lib/projectFiles.server";
 
 export const maxDuration = 300; // 5 minute timeout for large image operations
 
@@ -154,8 +155,9 @@ export async function POST(request: NextRequest) {
     const base64Data = imageData.replace(/^data:image\/\w+;base64,/, "");
     const buffer = Buffer.from(base64Data, "base64");
 
-    // Write the image file
-    await fs.writeFile(filePath, buffer);
+    // An interrupted replacement must leave either the old asset or the fully
+    // written new asset available to the project manifest.
+    await atomicReplaceFile(filePath, buffer);
 
     logger.info('file.save', 'Workflow image saved successfully', {
       filePath,

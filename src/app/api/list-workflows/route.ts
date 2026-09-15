@@ -62,12 +62,23 @@ async function probeWorkflow(
 ): Promise<WorkflowListEntry | null> {
   try {
     const files = await fs.readdir(dirPath);
-    const jsonFiles = files.filter((f) => f.endsWith(".json"));
+    const jsonFiles = Array.from(new Set(
+      files
+        .filter((file) => file.endsWith(".json") || file.endsWith(".json.previous"))
+        .map((file) => file.replace(/\.previous$/, "")),
+    ));
 
     for (const jsonFile of jsonFiles) {
-      const filePath = joinWorkflowPath(dirPath, jsonFile);
+      const currentPath = joinWorkflowPath(dirPath, jsonFile);
       try {
-        const handle = await fs.open(filePath, "r");
+        let filePath = currentPath;
+        let handle;
+        try {
+          handle = await fs.open(currentPath, "r");
+        } catch {
+          filePath = `${currentPath}.previous`;
+          handle = await fs.open(filePath, "r");
+        }
         try {
           const buf = Buffer.alloc(HEAD_BYTES);
           const { bytesRead } = await handle.read(buf, 0, HEAD_BYTES, 0);

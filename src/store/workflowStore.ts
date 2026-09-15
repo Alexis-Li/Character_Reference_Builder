@@ -128,6 +128,7 @@ import {
   type DesignConstraint,
 } from "@/lib/characterProject";
 import { clearSessionMedia, readSessionMedia, rememberSessionMedia, setProtectedSessionIds } from "./execution/sessionMedia";
+import type { ProjectAssetManifest } from "@/lib/projectAssets";
 import type { CharacterRunEvent } from "./execution/types";
 
 /**
@@ -353,6 +354,8 @@ export interface WorkflowFile {
   groups?: Record<string, NodeGroup>;  // Optional for backward compatibility
   /** CRB-02 asset/version/selection graph. Absent = legacy file, no history invented. */
   characterProject?: CharacterProject | null;
+  /** CRB-06 portable, content-hashed asset index. */
+  assetManifest?: ProjectAssetManifest;
 }
 
 // Clipboard data structure for copy/paste
@@ -3392,6 +3395,10 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       return false;
     }
 
+    // Character projects require independent, hashable asset files. Keep the
+    // legacy embedded option for ordinary workflows only.
+    const shouldExternalizeMedia = useExternalImageStorage || get().characterProject !== null;
+
     set({ isSaving: true });
 
     try {
@@ -3412,7 +3419,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
 
       // If saving to a different directory than where refs point, clear refs
       // so images will be re-saved to the new location
-      const isNewDirectory = useExternalImageStorage && (
+      const isNewDirectory = shouldExternalizeMedia && (
         // Case 1: Known different directory
         (imageRefBasePath !== null && imageRefBasePath !== saveDirectoryPath) ||
         // Case 2: Has refs but unknown where they came from - treat as new directory to be safe
@@ -3461,7 +3468,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
       // version survives save/reopen. Files are addressed by asset id; the
       // candidate id stays stable even when bytes are deduplicated. Only
       // verified writes count as persisted; anything else aborts the save.
-      if (useExternalImageStorage) {
+      if (shouldExternalizeMedia) {
         const project = get().characterProject;
         if (project) {
           const pending = new Map<string, string>();
@@ -3603,7 +3610,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
 
         // If we externalized media, update store nodes with the refs
         // This prevents duplicate media on subsequent saves
-        if (useExternalImageStorage && workflow.nodes !== currentNodes) {
+        if (shouldExternalizeMedia && workflow.nodes !== currentNodes) {
           // String-valued ref fields and array-valued ref fields carried on the
           // various node types (imageRefs/videoRefs are the outputGallery plurals).
           const STRING_REF_FIELDS = [
@@ -3644,13 +3651,15 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
             hasUnsavedChanges: changedDuringSave,
             // Update imageRefBasePath to reflect new save location
             imageRefBasePath: saveDirectoryPath,
+            useExternalImageStorage: shouldExternalizeMedia,
           });
         } else {
           set({
             lastSavedAt: timestamp,
             hasUnsavedChanges: changedDuringSave,
             // Update imageRefBasePath to reflect save location
-            imageRefBasePath: useExternalImageStorage ? saveDirectoryPath : null,
+            imageRefBasePath: shouldExternalizeMedia ? saveDirectoryPath : null,
+            useExternalImageStorage: shouldExternalizeMedia,
           });
         }
 
@@ -3661,7 +3670,7 @@ const workflowStoreImpl: StateCreator<WorkflowStore> = (set, get) => ({
           directoryPath: saveDirectoryPath,
           generationsPath: get().generationsPath,
           lastSavedAt: timestamp,
-          useExternalImageStorage,
+          useExternalImageStorage: shouldExternalizeMedia,
         });
 
         return true;

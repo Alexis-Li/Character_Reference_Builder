@@ -4,11 +4,16 @@ import { NextRequest } from "next/server";
 const mockStat = vi.fn();
 const mockMkdir = vi.fn();
 const mockWriteFile = vi.fn();
+const mockAtomicReplaceFile = vi.fn();
 
 vi.mock("fs/promises", () => ({
   stat: (...args: unknown[]) => mockStat(...args),
   mkdir: (...args: unknown[]) => mockMkdir(...args),
   writeFile: (...args: unknown[]) => mockWriteFile(...args),
+}));
+
+vi.mock("@/lib/projectFiles.server", () => ({
+  atomicReplaceFile: (...args: unknown[]) => mockAtomicReplaceFile(...args),
 }));
 
 vi.mock("@/utils/logger", () => ({
@@ -30,6 +35,9 @@ function createMockPostRequest(body: unknown): NextRequest {
 describe("/api/workflow-images route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAtomicReplaceFile.mockImplementation(
+      async (filePath: string, bytes: Uint8Array) => mockWriteFile(filePath, bytes),
+    );
   });
 
   afterEach(() => {
