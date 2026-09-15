@@ -201,6 +201,48 @@ describe("CRB-06 real project files", () => {
     expect(await readRecoverableJson(filePath)).toEqual(original);
   });
 
+  it("redacts absolute paths while preserving HTTPS sources through save, reopen and export", async () => {
+    const filePath = path.join(projectDirectory, "project.json");
+    const input = workflow(projectDirectory);
+    const httpsSource = "https://example.com/reference.png";
+    const uncPath = String.raw`\\studio-server\characters\hero\front.png`;
+    const extendedPath = String.raw`\\?\C:\characters\hero\front.png`;
+    const drivePath = String.raw`C:\characters\hero\front.png`;
+    const fileUrl = "file:///C:/characters/hero/front.png";
+    const posixPath = "/home/artist/characters/hero/front.png";
+    input.characterProject!.references[0].source = httpsSource;
+    input.characterProject!.parts[0].requirements = [
+      `Keep source ${httpsSource}`,
+      `Do not persist ${uncPath}`,
+      `Do not persist ${extendedPath}`,
+      `Do not persist ${drivePath}`,
+      `Do not persist ${fileUrl}`,
+      `Do not persist ${posixPath}`,
+    ];
+    input.characterProject!.candidates[0].inferenceNotes =
+      `Source ${httpsSource}; local copies ${uncPath}, ${extendedPath}, ${drivePath}, ${fileUrl}, ${posixPath}`;
+
+    await savePortableWorkflow(projectDirectory, filePath, input);
+    const reopened = await readRecoverableJson<PersistableWorkflow>(filePath);
+    expect(reopened.characterProject?.references[0].source).toBe(httpsSource);
+    const savedRaw = await fs.readFile(filePath, "utf8");
+
+    const exported = await createReferencePackage(projectDirectory, reopened, { packageName: "路径清理" });
+    const manifestRaw = await fs.readFile(path.join(exported.packagePath, "asset-manifest.json"), "utf8");
+    const readmeRaw = await fs.readFile(path.join(exported.packagePath, "README.md"), "utf8");
+    const overviewRaw = await fs.readFile(path.join(exported.packagePath, "overview.svg"), "utf8");
+
+    for (const contents of [savedRaw, manifestRaw, readmeRaw, overviewRaw]) {
+      expect(contents).toContain(httpsSource);
+      expect(contents).toContain("[local-path-redacted]");
+      expect(contents).not.toContain(uncPath);
+      expect(contents).not.toContain(extendedPath);
+      expect(contents).not.toContain(drivePath);
+      expect(contents).not.toContain(fileUrl);
+      expect(contents).not.toContain(posixPath);
+    }
+  });
+
   it("exports selected originals with hashes, overview, descriptions and explicit review state", async () => {
     const filePath = path.join(projectDirectory, "project.json");
     const saved = await savePortableWorkflow(projectDirectory, filePath, workflow(projectDirectory));

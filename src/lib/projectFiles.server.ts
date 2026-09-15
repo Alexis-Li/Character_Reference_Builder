@@ -186,16 +186,34 @@ export async function buildProjectAssetManifest(
   };
 }
 
+function scrubLocalPaths(value: string): string {
+  return value
+    .replace(/\bfile:(?:\/\/)?[^\r\n\t"'<>]*/gi, "[local-path-redacted]")
+    .replace(/(^|[\s("'=:\[{},])(?:\\\\|\/\/)[^\r\n\t"'<>]*/g, "$1[local-path-redacted]")
+    .replace(/(^|[\s("'=:\[{},])[A-Za-z]:[\\/][^\r\n\t"'<>]*/g, "$1[local-path-redacted]")
+    .replace(/(^|[\s("'=:\[{},])\/(?!\/)[^\r\n\t"'<>]*/g, "$1[local-path-redacted]");
+}
+
+function sanitizePortableString(value: string): string {
+  const httpUrl = /https?:\/\/[^\s\r\n\t"'<>]+/gi;
+  let result = "";
+  let cursor = 0;
+  for (const match of value.matchAll(httpUrl)) {
+    const index = match.index ?? cursor;
+    result += scrubLocalPaths(value.slice(cursor, index));
+    result += match[0];
+    cursor = index + match[0].length;
+  }
+  return result + scrubLocalPaths(value.slice(cursor));
+}
+
 /** Remove local-only paths and credential-shaped fields before persistence/export. */
 export function sanitizePortableValue<T>(value: T, root = true): T {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizePortableValue(item, false)) as T;
   }
   if (typeof value === "string") {
-    const scrubbed = value
-      .replace(/[A-Za-z]:[\\/][^\r\n\t"'<>]*/g, "[local-path-redacted]")
-      .replace(/(^|[\s(])\/(?:Users|home|tmp|private|Volumes)\/[^\r\n\t"'<>]*/g, "$1[local-path-redacted]");
-    return scrubbed as T;
+    return sanitizePortableString(value) as T;
   }
   if (!value || typeof value !== "object") return value;
   const output: Record<string, unknown> = {};
@@ -373,8 +391,9 @@ export async function createReferencePackage(
   workflow: PersistableWorkflow,
   options: ReferencePackageOptions = {},
 ): Promise<ReferencePackageResult> {
-  const project = workflow.characterProject;
-  const assetManifest = workflow.assetManifest;
+  const portableWorkflow = sanitizePortableValue(workflow);
+  const project = portableWorkflow.characterProject;
+  const assetManifest = portableWorkflow.assetManifest;
   if (!project || !assetManifest) throw new Error("Save the character project before exporting a reference package.");
 
   const selectedIds = new Set(Object.values(project.selection));
@@ -390,7 +409,10 @@ export async function createReferencePackage(
     );
   }
 
-  const packageBase = safeFileSegment(options.packageName ?? workflow.name ?? "character", "character");
+  const packageBase = safeFileSegment(
+    sanitizePortableValue(options.packageName ?? portableWorkflow.name ?? "character"),
+    "character",
+  );
   const packageName = `${packageBase}-reference-package-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}`;
   const exportsRoot = path.join(directoryPath, "exports");
   const packagePath = path.join(exportsRoot, packageName);
