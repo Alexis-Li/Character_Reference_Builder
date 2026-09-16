@@ -10,6 +10,7 @@
 | [最小闭环验证](validation/minimum-loop-2026-09-10.md) | 验证方法、实际通过项、失败及待验收项 | 工程验证已执行；真实生成质量与成本待验收 |
 | [单部件界面验证](validation/part-reference-issue-6.md) | CRB-05 操作路径与浏览器回归 | 功能路径已验收，Issue #6 已关闭；真实 Provider 效果转由 CRB-07 验证 |
 | [可迁移项目验证](validation/portable-project-issue-7.md) | CRB-06 真实目录保存、迁移、恢复与参考包导出 | 二次审查问题已修复并通过本地回归，Issue #7 待复验 |
+| [安全准入验证](validation/security-gate-issue-10.md) | CRB-09 本机特权请求边界、凭据绑定、媒体隔离、OAuth 协议与合成回归 | 本机边界与合成回归通过；真实 OAuth 账号审查因未选定 Provider 目标而 blocked |
 | [可复用项目](research/reusable-projects.md) | 社区项目清单、来源与复用边界 | 保留已有研究，区分采用、候选、设计参考和排除方案 |
 | [Provider 证据](research/provider-feasibility-2026-09-10.md) | 官方接口与适配器源码核查 | 2026-09-10 核查记录；无真实云端调用 |
 | [验证脚本](../scripts/validation/README.md) | 复跑探针和真实文件检查 | 可运行；候选快照存在 4 项已复现需求缺口 |

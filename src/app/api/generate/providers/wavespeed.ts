@@ -6,7 +6,49 @@
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
-import { validateMediaUrl } from "@/utils/urlValidation";
+import {
+  PROVIDER_RECIPIENTS,
+  bindCredentialToDestination,
+  credentialAllowedFor,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { downloadSafeMedia } from "@/lib/security/safeMedia.server";
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
+
+const WAVESPEED_API_BASE = "https://api.wavespeed.ai/api/v3";
+
+/**
+ * Origins a WaveSpeed result may be downloaded from: the registered recipient
+ * origins for the image role. Every hop is additionally checked for protocol,
+ * resolved address, media type and size by the download seam.
+ */
+const WAVESPEED_MEDIA_ORIGINS: readonly string[] = [
+  ...(PROVIDER_RECIPIENTS.wavespeed?.image ?? []),
+];
+
+/** Media types a WaveSpeed result may declare. */
+const RESULT_MEDIA_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "audio/mpeg",
+  "audio/wav",
+  "application/octet-stream",
+];
+
+/** Path extensions accepted when a CDN answers with an opaque binary. */
+const RESULT_MEDIA_EXTENSIONS: readonly string[] = [
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "mp4", "webm", "mov", "glb", "gltf",
+];
+
+/** Downloaded result media was already capped at 500MB in this transport. */
+const MAX_MEDIA_SIZE = 500 * 1024 * 1024;
 
 type WaveSpeedStatus = "created" | "pending" | "processing" | "completed" | "failed";
 
@@ -76,12 +118,35 @@ export async function generateWithWaveSpeed(
 ): Promise<GenerationOutput> {
   console.log(`[API:${requestId}] WaveSpeed generation - Model: ${input.model.id}, Images: ${input.images?.length || 0}, Prompt: ${input.prompt.length} chars`);
 
-  const WAVESPEED_API_BASE = "https://api.wavespeed.ai/api/v3";
   const modelId = input.model.id;
 
   // Validate modelId to prevent path traversal
   if (/[^a-zA-Z0-9\-_/.]/.test(modelId) || modelId.includes('..')) {
     return { success: false, error: `Invalid model ID: ${modelId}` };
+  }
+
+  // CRB-09: bind the credential to the recipient this call uses before it is
+  // attached anywhere. The adapter receives a key value, not its provenance, so
+  // provenance is resolved here: a value equal to this instance's environment
+  // entry is a server-environment credential.
+  const credentialSource: CredentialSource =
+    process.env.WAVESPEED_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { connection, credential } = bindCredentialToDestination({
+    provider: "wavespeed",
+    role: "image",
+    endpoint: WAVESPEED_API_BASE,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] WaveSpeed credential withheld from ${WAVESPEED_API_BASE}: recipient not authorized`);
+    return {
+      success: false,
+      error: `${input.model.name || "WaveSpeed"}: WaveSpeed credential is not authorized for this destination`,
+    };
   }
 
   const hasDynamicInputs = input.dynamicInputs && Object.keys(input.dynamicInputs).length > 0;
@@ -130,7 +195,7 @@ export async function generateWithWaveSpeed(
   const submitResponse = await fetch(submitUrl, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(payload),
@@ -145,6 +210,8 @@ export async function generateWithWaveSpeed(
     } catch {
       // Keep original text
     }
+    // CRB-09: upstream text can echo the credential or a signed URL.
+    errorDetail = redactSecretsInText(String(errorDetail));
 
     console.error(`[API:${requestId}] WaveSpeed submit failed: ${submitResponse.status} - ${errorDetail}`);
 
@@ -162,15 +229,16 @@ export async function generateWithWaveSpeed(
   }
 
   const submitResult: WaveSpeedSubmitResponse = await submitResponse.json();
-  console.log(`[API:${requestId}] WaveSpeed submit response:`, JSON.stringify(submitResult).substring(0, 500));
+  console.log(`[API:${requestId}] WaveSpeed submit response:`, JSON.stringify(redactSecretsDeep(submitResult, { secretFields: "replace" })).substring(0, 500));
 
   const taskId = submitResult.data?.id || submitResult.id;
-  // Use the polling URL provided by the API if available, with SSRF validation
+  // Use the polling URL provided by the API if available, only when it stays on
+  // the connection's authorized recipient.
   let providedPollUrl: string | undefined = submitResult.data?.urls?.get;
   if (providedPollUrl) {
-    const pollUrlCheck = validateMediaUrl(providedPollUrl);
-    if (!pollUrlCheck.valid || !providedPollUrl.startsWith('https://api.wavespeed.ai')) {
-      console.warn(`[API:${requestId}] WaveSpeed provided invalid poll URL: ${providedPollUrl} — falling back to constructed URL`);
+    // CRB-09: the credential may not follow a Provider-supplied URL to another host.
+    if (!credentialAllowedFor(connection, providedPollUrl)) {
+      console.warn(`[API:${requestId}] WaveSpeed provided a poll URL outside the authorized recipient: ${redactSecretsInText(providedPollUrl)} — falling back to constructed URL`);
       providedPollUrl = undefined;
     }
   }
@@ -185,7 +253,7 @@ export async function generateWithWaveSpeed(
 
   console.log(`[API:${requestId}] WaveSpeed task submitted: ${taskId}`);
   if (providedPollUrl) {
-    console.log(`[API:${requestId}] WaveSpeed provided poll URL: ${providedPollUrl}`);
+    console.log(`[API:${requestId}] WaveSpeed provided poll URL: ${redactSecretsInText(providedPollUrl)}`);
   }
 
   // Poll for completion using the URL from the API response, or construct it
@@ -215,14 +283,14 @@ export async function generateWithWaveSpeed(
         pollUrl,
         {
           headers: {
-            Authorization: `Bearer ${apiKey}`,
+            Authorization: `Bearer ${credential}`,
           },
         }
       );
 
       // Log poll response status for debugging
       const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-      console.log(`[API:${requestId}] WaveSpeed poll (${elapsedSec}s): ${pollResponse.status} from ${pollUrl}`);
+      console.log(`[API:${requestId}] WaveSpeed poll (${elapsedSec}s): ${pollResponse.status} from ${redactSecretsInText(pollUrl)}`);
 
       // 404 means result not ready yet - continue polling
       if (pollResponse.status === 404) {
@@ -239,6 +307,8 @@ export async function generateWithWaveSpeed(
         } catch {
           // Keep original text
         }
+        // CRB-09: upstream text can echo the credential or a signed URL.
+        errorDetail = redactSecretsInText(String(errorDetail));
         console.error(`[API:${requestId}] WaveSpeed poll failed: ${pollResponse.status} - ${errorDetail}`);
         return {
           success: false,
@@ -247,7 +317,7 @@ export async function generateWithWaveSpeed(
       }
 
       const pollData: WaveSpeedPredictionResponse = await pollResponse.json();
-      console.log(`[API:${requestId}] WaveSpeed poll data:`, JSON.stringify(pollData).substring(0, 300));
+      console.log(`[API:${requestId}] WaveSpeed poll data:`, JSON.stringify(redactSecretsDeep(pollData, { secretFields: "replace" })).substring(0, 300));
 
       // Extract status from nested data object (WaveSpeed wraps response in { code, message, data: {...} })
       const currentStatus = pollData.data?.status || pollData.status;
@@ -268,7 +338,7 @@ export async function generateWithWaveSpeed(
 
       // Check if task failed
       if (currentStatus === "failed") {
-        const failureReason = currentError || pollData.message || "Generation failed";
+        const failureReason = redactSecretsInText(String(currentError || pollData.message || "Generation failed"));
         console.error(`[API:${requestId}] WaveSpeed task failed: ${failureReason}`);
         return {
           success: false,
@@ -278,7 +348,7 @@ export async function generateWithWaveSpeed(
 
       // Continue polling for "created" or "processing" status
     } catch (pollError) {
-      const message = pollError instanceof Error ? pollError.message : String(pollError);
+      const message = redactSecretsInText(pollError instanceof Error ? pollError.message : String(pollError));
       console.error(`[API:${requestId}] WaveSpeed poll error: ${message}`);
       return {
         success: false,
@@ -317,7 +387,7 @@ export async function generateWithWaveSpeed(
   }
 
   if (outputUrls.length === 0) {
-    console.error(`[API:${requestId}] No outputs in WaveSpeed result. Response:`, JSON.stringify(resultData).substring(0, 500));
+    console.error(`[API:${requestId}] No outputs in WaveSpeed result. Response:`, JSON.stringify(redactSecretsDeep(resultData, { secretFields: "replace" })).substring(0, 500));
     return {
       success: false,
       error: `${input.model.name}: No outputs in generation result`,
@@ -327,10 +397,17 @@ export async function generateWithWaveSpeed(
   // Fetch the first output and convert to base64
   const outputUrl = outputUrls[0];
 
-  // Validate URL before fetching
-  const outputUrlCheck = validateMediaUrl(outputUrl);
-  if (!outputUrlCheck.valid) {
-    return { success: false, error: `Invalid output URL: ${outputUrlCheck.error}` };
+  // CRB-09: a result URL must stay inside the Provider's registered output
+  // origins before this process downloads it or hands it to the client.
+  let outputOrigin: string | null = null;
+  try {
+    outputOrigin = new URL(outputUrl).origin;
+  } catch {
+    outputOrigin = null;
+  }
+  if (!outputOrigin || !WAVESPEED_MEDIA_ORIGINS.includes(outputOrigin)) {
+    console.error(`[API:${requestId}] Invalid output URL from WaveSpeed: ${redactSecretsInText(outputUrl)}`);
+    return { success: false, error: "Invalid output URL: destination-not-authorized" };
   }
 
   // For 3D models, return URL directly (GLB files are binary — skip downloading/buffering)
@@ -348,34 +425,33 @@ export async function generateWithWaveSpeed(
     };
   }
 
-  console.log(`[API:${requestId}] Fetching WaveSpeed output from: ${outputUrl.substring(0, 80)}...`);
+  console.log(`[API:${requestId}] Fetching WaveSpeed output from: ${redactSecretsInText(outputUrl).substring(0, 80)}...`);
 
-  const outputResponse = await fetch(outputUrl);
+  // Every hop of the download — protocol, resolved address, authorized origin,
+  // media type and size — is validated instead of trusting the Provider's URL.
+  const outputDownload = await downloadSafeMedia(outputUrl, {
+    authorizedOrigins: WAVESPEED_MEDIA_ORIGINS,
+    allowedMediaTypes: RESULT_MEDIA_TYPES,
+    allowOctetStreamForMediaPaths: true,
+    extensionsForOpaqueMedia: RESULT_MEDIA_EXTENSIONS,
+    maxBytes: MAX_MEDIA_SIZE,
+  });
 
-  if (!outputResponse.ok) {
+  if (!outputDownload.ok) {
+    console.error(`[API:${requestId}] Invalid output URL from WaveSpeed: ${redactSecretsInText(outputUrl)} (${outputDownload.reason}${outputDownload.detail ? `: ${outputDownload.detail}` : ""})`);
     return {
       success: false,
-      error: `Failed to fetch output: ${outputResponse.status}`,
+      error: `Invalid output URL: ${outputDownload.reason}${outputDownload.detail ? ` (${outputDownload.detail})` : ""}`,
     };
   }
 
-  // Check file size before downloading body
-  const MAX_MEDIA_SIZE_WS = 500 * 1024 * 1024; // 500MB
-  const wsContentLength = parseInt(outputResponse.headers.get("content-length") || "0", 10);
-  if (!isNaN(wsContentLength) && wsContentLength > MAX_MEDIA_SIZE_WS) {
-    return { success: false, error: `Media too large: ${(wsContentLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-  }
-
-  const outputArrayBuffer = await outputResponse.arrayBuffer();
-  if (outputArrayBuffer.byteLength > MAX_MEDIA_SIZE_WS) {
-    return { success: false, error: `Media too large: ${(outputArrayBuffer.byteLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-  }
+  const outputArrayBuffer = outputDownload.bytes;
   const outputSizeMB = outputArrayBuffer.byteLength / (1024 * 1024);
 
-  const rawContentType = outputResponse.headers.get("content-type");
   const isAudioModel = input.model.capabilities.some(c => c.includes("audio"));
+  const rawContentType = outputDownload.mediaType;
   const contentType =
-    (rawContentType && (rawContentType.startsWith("video/") || rawContentType.startsWith("image/") || rawContentType.startsWith("audio/")))
+    (rawContentType.startsWith("video/") || rawContentType.startsWith("image/") || rawContentType.startsWith("audio/"))
       ? rawContentType
       : (isVideoModel ? "video/mp4" : isAudioModel ? "audio/mpeg" : "image/png");
 

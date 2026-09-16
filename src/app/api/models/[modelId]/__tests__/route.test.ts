@@ -14,19 +14,29 @@ const mockFetch = vi.fn();
 // Counter to generate unique model IDs (avoids cache collisions between tests)
 let testCounter = 0;
 
-// Helper to create mock NextRequest for GET with dynamic params
+// Headers that could carry a provider credential out of the process.
+const CREDENTIAL_HEADERS = ["authorization", "x-api-key", "cookie", "x-replicate-key", "x-fal-key"];
+
+// Helper to create mock NextRequest for GET with dynamic params. The privileged
+// request guard runs for real, so the double is wrapped in an authenticated
+// local envelope (loopback Host, same-origin evidence, session capability,
+// one-time nonce); the case's own headers win on conflict, so a case that means
+// to present a bad Origin still presents it.
 function createMockSchemaRequest(
   modelId: string,
   provider: string,
   headers?: Record<string, string>
 ): NextRequest {
-  const url = new URL(`http://localhost:3000/api/models/${encodeURIComponent(modelId)}`);
+  const url = new URL(`/api/models/${encodeURIComponent(modelId)}`, TEST_LOCAL_ORIGIN);
   url.searchParams.set("provider", provider);
 
-  return {
-    nextUrl: url,
-    headers: new Headers(headers),
-  } as unknown as NextRequest;
+  return localApiRequest(
+    {
+      nextUrl: url,
+      headers: new Headers(headers),
+    } as unknown as NextRequest,
+    { method: "GET", url: url.toString() }
+  );
 }
 
 // Helper to create Replicate model response with OpenAPI schema
@@ -84,6 +94,7 @@ function createFalModelResponse(inputProperties: Record<string, unknown>, requir
 
 // Import the route after mocks are set up
 import { GET } from "../route";
+import { localApiRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
 describe("/api/models/[modelId] schema endpoint", () => {
   beforeEach(() => {
@@ -884,6 +895,34 @@ describe("/api/models/[modelId] schema endpoint", () => {
       expect(byName.first_frame).toBe("image");
       expect(byName.last_frame).toBe("image");
       expect(byName.video).toBe("video");
+    });
+  });
+
+  describe("privileged request guard", () => {
+    it("should reject a hostile Origin before the provider runs, with no credential in any recorded call", async () => {
+      const modelId = `test/hostile-origin-${testCounter}`;
+      const request = createMockSchemaRequest(modelId, "replicate", {
+        origin: "http://evil.example",
+        "X-Replicate-Key": "browser-supplied-replicate-key",
+      });
+      const response = await GET(request, { params: Promise.resolve({ modelId }) });
+      const data = await response.json();
+
+      expect(response.status).toBe(403);
+      expect(data.success).toBe(false);
+      expect(data.reason).toBe("unexpected-origin");
+
+      // The guard runs first: no outbound provider call was attempted.
+      expect(mockFetch).not.toHaveBeenCalled();
+
+      // Nothing that was recorded carries a provider credential.
+      const leakedHeaders = mockFetch.mock.calls.flatMap((call) => {
+        const init = call[1] as RequestInit | undefined;
+        return [...new Headers(init?.headers ?? {}).keys()].filter((name) =>
+          CREDENTIAL_HEADERS.includes(name)
+        );
+      });
+      expect(leakedHeaders).toEqual([]);
     });
   });
 });

@@ -9,6 +9,8 @@ import {
   parseJSONFromResponse,
 } from "@/lib/quickstart/validation";
 import { ImageInputNodeData } from "@/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
 import fs from "fs/promises";
 import path from "path";
 
@@ -46,7 +48,14 @@ async function convertLocalImagesToBase64(workflow: WorkflowFile): Promise<Workf
               },
             };
           } catch (error) {
-            console.error(`Failed to convert image to base64: ${data.image}`, error);
+            console.error(
+              `Failed to convert image to base64: ${data.image}`,
+              redactSecretsDeep(
+                error instanceof Error
+                  ? { ...error, name: error.name, message: error.message, stack: error.stack }
+                  : error
+              )
+            );
             // Return node unchanged if conversion fails
             return node;
           }
@@ -74,7 +83,13 @@ interface QuickstartResponse {
   error?: string;
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Bills a server-held Gemini credential, reads bundled sample images from the
+ * public folder, and sends their bytes to that Provider.
+ */
+export const POST = withPrivilegedApi(
+  ["cloud-request", "design-reference-upload", "local-file-read"],
+  async (request: NextRequest) => {
   const requestId = `qs-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   console.log(`[Quickstart:${requestId}] New request received`);
 
@@ -102,11 +117,18 @@ export async function POST(request: NextRequest) {
           workflow: workflowWithBase64,
         });
       } catch (error) {
-        console.error(`[Quickstart:${requestId}] Preset template error:`, error);
+        console.error(
+          `[Quickstart:${requestId}] Preset template error:`,
+          redactSecretsDeep(
+            error instanceof Error
+              ? { ...error, name: error.name, message: error.message, stack: error.stack }
+              : error
+          )
+        );
         return NextResponse.json<QuickstartResponse>(
           {
             success: false,
-            error: error instanceof Error ? error.message : "Failed to load template",
+            error: error instanceof Error ? redactSecretsInText(error.message) : "Failed to load template",
           },
           { status: 400 }
         );
@@ -180,8 +202,15 @@ export async function POST(request: NextRequest) {
       parsedWorkflow = parseJSONFromResponse(responseText);
       console.log(`[Quickstart:${requestId}] JSON parsed successfully`);
     } catch (error) {
-      console.error(`[Quickstart:${requestId}] JSON parse error:`, error);
-      console.error(`[Quickstart:${requestId}] Response text:`, responseText.substring(0, 500));
+      console.error(
+        `[Quickstart:${requestId}] JSON parse error:`,
+        redactSecretsDeep(
+          error instanceof Error
+            ? { ...error, name: error.name, message: error.message, stack: error.stack }
+            : error
+        )
+      );
+      console.error(`[Quickstart:${requestId}] Response text:`, redactSecretsInText(responseText.substring(0, 500)));
       return NextResponse.json<QuickstartResponse>(
         {
           success: false,
@@ -223,7 +252,14 @@ export async function POST(request: NextRequest) {
       workflow,
     });
   } catch (error) {
-    console.error(`[Quickstart:${requestId}] Unexpected error:`, error);
+    console.error(
+      `[Quickstart:${requestId}] Unexpected error:`,
+      redactSecretsDeep(
+        error instanceof Error
+          ? { ...error, name: error.name, message: error.message, stack: error.stack }
+          : error
+      )
+    );
 
     // Handle rate limiting
     if (error instanceof Error && error.message.includes("429")) {
@@ -239,9 +275,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<QuickstartResponse>(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Failed to generate workflow",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "Failed to generate workflow",
       },
       { status: 500 }
     );
   }
-}
+});

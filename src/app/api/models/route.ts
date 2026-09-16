@@ -28,6 +28,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ProviderType } from "@/types";
 import { ProviderModel, ModelCapability } from "@/lib/providers";
+import { bindCredentialToDestination, credentialAllowedFor, type DestinationBinding } from "@/lib/security/providerConnection";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
 import {
   getCachedModels,
   setCachedModels,
@@ -805,8 +808,10 @@ function mapReplicateModel(model: ReplicateModel): ProviderModel {
   };
 }
 
-async function fetchReplicateModels(apiKey: string): Promise<ProviderModel[]> {
+async function fetchReplicateModels(binding: DestinationBinding): Promise<ProviderModel[]> {
   const allModels: ProviderModel[] = [];
+  const credential = binding.credential;
+  if (!credential) return allModels;
 
   // Always fetch from the models endpoint - search endpoint is unreliable
   let url: string | null = `${REPLICATE_API_BASE}/models`;
@@ -816,9 +821,17 @@ async function fetchReplicateModels(apiKey: string): Promise<ProviderModel[]> {
   const maxPages = 15;
 
   while (url && pageCount < maxPages) {
+    // CRB-09: each page URL is what the previous response named. The credential
+    // may only ride to a hop the connection authorizes, so an unauthorized
+    // `next` ends the walk instead of being followed credential-free.
+    if (!credentialAllowedFor(binding.connection, url)) {
+      console.warn(`[Models] replicate: refusing to follow an unauthorized next page (${redactSecretsInText(url)})`);
+      break;
+    }
+
     const response = await fetch(url, {
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
       },
     });
 
@@ -847,7 +860,7 @@ async function fetchReplicateModels(apiKey: string): Promise<ProviderModel[]> {
  * (including 404) so a typo never fails the whole /api/models request.
  */
 async function fetchReplicateModelById(
-  apiKey: string,
+  credential: string,
   modelId: string
 ): Promise<ProviderModel | null> {
   const parts = modelId.split("/");
@@ -859,7 +872,7 @@ async function fetchReplicateModelById(
   try {
     const response = await fetch(`${REPLICATE_API_BASE}/models/${owner}/${name}`, {
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
       },
     });
 
@@ -906,12 +919,12 @@ function extractReplicateSearchModels(data: unknown): ProviderModel[] {
  * (never throws) so a flaky/again-unreliable search can only ADD results, never
  * break the request — list results and the by-id fallback still apply.
  */
-async function searchReplicateModels(apiKey: string, query: string): Promise<ProviderModel[]> {
+async function searchReplicateModels(credential: string, query: string): Promise<ProviderModel[]> {
   // 1) GET /v1/search?query=... (searches models, collections, docs)
   try {
     const response = await fetch(
       `${REPLICATE_API_BASE}/search?query=${encodeURIComponent(query)}`,
-      { headers: { Authorization: `Bearer ${apiKey}` } }
+      { headers: { Authorization: `Bearer ${credential}` } }
     );
     if (response.ok) {
       const models = extractReplicateSearchModels(await response.json());
@@ -926,7 +939,7 @@ async function searchReplicateModels(apiKey: string, query: string): Promise<Pro
     const response = await fetch(`${REPLICATE_API_BASE}/models`, {
       method: "QUERY",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
         "Content-Type": "text/plain",
       },
       body: query,
@@ -1102,10 +1115,10 @@ function mapWaveSpeedModel(model: WaveSpeedModel): ProviderModel {
   };
 }
 
-async function fetchWaveSpeedModels(apiKey: string): Promise<ProviderModel[]> {
+async function fetchWaveSpeedModels(credential: string): Promise<ProviderModel[]> {
   const response = await fetch(`${WAVESPEED_API_BASE}/models`, {
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
   });
@@ -1127,7 +1140,7 @@ async function fetchWaveSpeedModels(apiKey: string): Promise<ProviderModel[]> {
   // Log first model structure for debugging (including api_schema if present)
   if (models.length > 0) {
     const firstModel = models[0];
-    console.log("[WaveSpeed] First model sample:", JSON.stringify(firstModel, null, 2).substring(0, 1000));
+    console.log("[WaveSpeed] First model sample:", JSON.stringify(redactSecretsDeep(firstModel, { secretFields: "replace" }), null, 2).substring(0, 1000));
     console.log(`[WaveSpeed] Total models: ${models.length}`);
     console.log(`[WaveSpeed] First model has api_schema: ${!!firstModel.api_schema}`);
   }
@@ -1185,8 +1198,12 @@ function mapFalModel(model: FalModel): ProviderModel {
   };
 }
 
+/**
+ * Fetch the fal.ai catalogue. The caller passes the credential already bound to
+ * the catalog recipient (or null for a keyless, rate-limited read).
+ */
 async function fetchFalModels(
-  apiKey: string | null,
+  credential: string | null,
   searchQuery?: string
 ): Promise<ProviderModel[]> {
   const allModels: ProviderModel[] = [];
@@ -1194,8 +1211,8 @@ async function fetchFalModels(
   let hasMore = true;
 
   const headers: HeadersInit = {};
-  if (apiKey) {
-    headers["Authorization"] = `Key ${apiKey}`;
+  if (credential) {
+    headers["Authorization"] = `Key ${credential}`;
   }
 
   // Paginate through results (limit to 15 pages to avoid timeout)
@@ -1233,9 +1250,9 @@ async function fetchFalModels(
 
 // ============ Main Handler ============
 
-export async function GET(
-  request: NextRequest
-): Promise<NextResponse<ModelsResponse>> {
+export const GET = withPrivilegedApi(
+  ["cloud-request"],
+  async (request: NextRequest): Promise<NextResponse<ModelsResponse>> => {
   // Parse query params
   const providerFilter = request.nextUrl.searchParams.get("provider") as
     | ProviderType
@@ -1257,10 +1274,43 @@ export async function GET(
   const capabilitiesFilter: ModelCapability[] | null = capabilitiesParam
     ? (capabilitiesParam.split(",") as ModelCapability[])
     : null;
-  const replicateKey = request.headers.get("X-Replicate-Key") || process.env.REPLICATE_API_KEY || null;
-  const falKey = request.headers.get("X-Fal-Key") || process.env.FAL_API_KEY || null;
+  // CRB-09: each credential is bound to the catalog recipient it will be sent
+  // to, and only the bound value is attached. A credential policy withholds
+  // simply leaves that Provider unavailable, exactly like an absent key.
+  const replicateKeyValue = request.headers.get("X-Replicate-Key") || process.env.REPLICATE_API_KEY || null;
+  const replicateBinding = bindCredentialToDestination({
+    provider: "replicate",
+    role: "catalog",
+    endpoint: `${REPLICATE_API_BASE}/models`,
+    credential: replicateKeyValue,
+    credentialKind: "api-key",
+    credentialSource: process.env.REPLICATE_API_KEY === replicateKeyValue ? "server-environment" : "browser-supplied",
+    userAuthorizedDestination: false,
+  });
+  const replicateKey = replicateBinding.credential;
+  const falKeyValue = request.headers.get("X-Fal-Key") || process.env.FAL_API_KEY || null;
+  const falKey = bindCredentialToDestination({
+    provider: "fal",
+    role: "catalog",
+    endpoint: `${FAL_API_BASE}/models`,
+    credential: falKeyValue,
+    credentialKind: "api-key",
+    credentialSource: process.env.FAL_API_KEY === falKeyValue ? "server-environment" : "browser-supplied",
+    userAuthorizedDestination: false,
+  }).credential;
+  const wavespeedKeyValue = request.headers.get("X-WaveSpeed-Key") || process.env.WAVESPEED_API_KEY || null;
+  const wavespeedKey = bindCredentialToDestination({
+    provider: "wavespeed",
+    role: "catalog",
+    endpoint: `${WAVESPEED_API_BASE}/models`,
+    credential: wavespeedKeyValue,
+    credentialKind: "api-key",
+    credentialSource: process.env.WAVESPEED_API_KEY === wavespeedKeyValue ? "server-environment" : "browser-supplied",
+    userAuthorizedDestination: false,
+  }).credential;
+  // Kie and OpenAI entries below are hardcoded and reach no Provider, so their
+  // keys only decide availability and are never attached to a request.
   const kieKey = request.headers.get("X-Kie-Key") || process.env.KIE_API_KEY || null;
-  const wavespeedKey = request.headers.get("X-WaveSpeed-Key") || process.env.WAVESPEED_API_KEY || null;
   const openaiKey = request.headers.get("X-OpenAI-API-Key") || process.env.OPENAI_API_KEY || null;
 
   // Build list of all available providers (have keys from env or client headers)
@@ -1452,7 +1502,7 @@ export async function GET(
       try {
         if (provider === "replicate") {
           // Fetch all models (no search param - we filter client-side)
-          const allReplicateModels = await fetchReplicateModels(replicateKey!);
+          const allReplicateModels = await fetchReplicateModels(replicateBinding);
           // Cache the full list
           setCachedModels(cacheKey, allReplicateModels);
           // Apply search filter if needed
@@ -1476,8 +1526,9 @@ export async function GET(
           models = [];
         }
       } catch (error) {
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error";
+        const errorMessage = redactSecretsInText(
+          error instanceof Error ? error.message : "Unknown error"
+        );
         console.error(`[Models] ${provider}: ${errorMessage}`);
         errors.push(`${provider}: ${errorMessage}`);
         providerResults[provider] = {
@@ -1592,3 +1643,4 @@ export async function GET(
 
   return NextResponse.json<ModelsSuccessResponse>(response);
 }
+);

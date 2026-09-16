@@ -5,8 +5,11 @@
  * - Session-based logging (one log file per workflow execution)
  * - Automatic rotation (keeps last 10 sessions)
  * - Privacy-aware (truncates prompts, logs image metadata not full data)
+ * - Credential-aware (redacts secret-shaped fields and values before any output)
  * - Structured JSON format
  */
+
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -117,7 +120,7 @@ class Logger {
       timestamp: new Date().toISOString(),
       level,
       category,
-      message,
+      message: redactSecretsInText(message),
     };
 
     if (context) {
@@ -126,8 +129,8 @@ class Logger {
 
     if (error) {
       entry.error = {
-        message: error.message,
-        stack: error.stack,
+        message: redactSecretsInText(error.message),
+        stack: error.stack ? redactSecretsInText(error.stack) : error.stack,
         name: error.name,
       };
     }
@@ -137,9 +140,15 @@ class Logger {
       this.currentSession.entries.push(entry);
     }
 
-    // Also log to console for development
+    // Also log to console for development. The console line is redacted too:
+    // a credential pasted into a prompt or an upstream URL must not survive in
+    // process output or a terminal scrollback.
     const consoleMethod = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'log';
-    console[consoleMethod](`[${category}] ${message}`, context || '', error || '');
+    console[consoleMethod](
+      `[${category}] ${entry.message}`,
+      entry.context ? redactSecretsDeep(entry.context) : '',
+      entry.error ? redactSecretsDeep(entry.error) : ''
+    );
   }
 
   /**
@@ -174,9 +183,18 @@ class Logger {
   }
 
   /**
-   * Sanitize context to protect privacy and reduce log size
+   * Sanitize context to protect privacy and reduce log size.
+   *
+   * Privacy shaping (prompt truncation, image metadata) runs first, then the
+   * shared redaction seam removes credential-shaped fields and values, so a key
+   * cannot reach a session file, the console or a shareable diagnostic even
+   * when it was passed under an ordinary field name.
    */
   private sanitizeContext(context: Record<string, any>): Record<string, any> {
+    return redactSecretsDeep(this.shapeContext(context), { secretFields: "replace" });
+  }
+
+  private shapeContext(context: Record<string, any>): Record<string, any> {
     const sanitized: Record<string, any> = {};
 
     for (const [key, value] of Object.entries(context)) {

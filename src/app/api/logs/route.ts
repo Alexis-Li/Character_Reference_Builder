@@ -10,16 +10,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { saveSession, rotateLogFiles } from '@/utils/logger-server';
 import type { LogSession } from '@/utils/logger';
+import { withPrivilegedApi } from '@/lib/security/requestGuard.server';
+import { redactSecretsDeep, redactSecretsInText } from '@/lib/security/secretRedaction';
 
 /**
  * POST /api/logs - Save a logging session to disk
  */
-export async function POST(req: NextRequest) {
+export const POST = withPrivilegedApi(
+  ["log-write", "local-file-write"],
+  async (req: NextRequest) => {
   try {
     const body = await req.json();
-    const session = body.session as LogSession;
+    const incomingSession = body.session as LogSession | undefined;
 
-    if (!session || !session.sessionId) {
+    if (!incomingSession || !incomingSession.sessionId) {
       return NextResponse.json(
         {
           success: false,
@@ -28,6 +32,11 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Redact before persisting: a console session uploaded from the browser
+    // must not store a token, cookie, authorization header or key material,
+    // even under an ordinary field name.
+    const session = redactSecretsDeep(incomingSession, { secretFields: 'drop' });
 
     // Rotate old log files
     await rotateLogFiles();
@@ -45,9 +54,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? redactSecretsInText(error.message) : 'Unknown error',
       },
       { status: 500 }
     );
   }
-}
+});

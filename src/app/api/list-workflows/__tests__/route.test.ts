@@ -22,12 +22,19 @@ vi.mock("@/utils/pathValidation", () => ({
 }));
 
 import { GET } from "../route";
+import { localApiRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
+// The privileged request guard runs for real, so the double is wrapped in an
+// authenticated local-API envelope. The query string stays on the double's
+// `nextUrl`, which is what the handler reads.
 function createRequest(path?: string): NextRequest {
-  const url = path
-    ? `http://localhost/api/list-workflows?path=${encodeURIComponent(path)}`
-    : "http://localhost/api/list-workflows";
-  return new NextRequest(url);
+  const params = new URLSearchParams();
+  if (path) params.set("path", path);
+  const query = params.toString();
+  return localApiRequest(
+    { nextUrl: { searchParams: params } } as unknown as NextRequest,
+    { method: "GET", url: `${TEST_LOCAL_ORIGIN}/api/list-workflows${query ? `?${query}` : ""}` },
+  );
 }
 
 function makeWorkflowHeader(name?: string): string {

@@ -10,9 +10,15 @@ import {
   type ProjectAssetRecord,
   type ProjectAssetWarning,
 } from "./projectAssets";
+import { SECRET_FIELD_PATTERN, redactSecretsInText } from "./security/secretRedaction";
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
-const SECRET_KEY = /^(?:api[-_]?key|access[-_]?token|refresh[-_]?token|authorization|password|secret|credential)s?$/i;
+/**
+ * Credential-shaped fields are dropped from anything persisted or exported.
+ * The pattern lives in the shared redaction seam so the project file, exports,
+ * logs and error responses all agree on what a secret is.
+ */
+const SECRET_KEY = SECRET_FIELD_PATTERN;
 
 interface PersistableNode {
   id: string;
@@ -204,7 +210,10 @@ function sanitizePortableString(value: string): string {
     result += match[0];
     cursor = index + match[0].length;
   }
-  return result + scrubLocalPaths(value.slice(cursor));
+  // A credential pasted into a prompt, note or template has to leave before the
+  // value is written to a project file or shipped in an export, whatever field
+  // it was smuggled through.
+  return redactSecretsInText(result + scrubLocalPaths(value.slice(cursor)));
 }
 
 /** Remove local-only paths and credential-shaped fields before persistence/export. */

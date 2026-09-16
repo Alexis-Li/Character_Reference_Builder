@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 const MAX_DEPTH = 3;
 const SKIP_DIRS = new Set([".git", "node_modules", "__pycache__", ".next"]);
@@ -113,7 +115,7 @@ async function probeWorkflow(
   return null;
 }
 
-export async function GET(request: NextRequest) {
+export const GET = withPrivilegedApi(["local-file-read"], async (request: NextRequest) => {
   const parentPath = request.nextUrl.searchParams.get("path");
 
   if (!parentPath) {
@@ -154,9 +156,11 @@ export async function GET(request: NextRequest) {
       {
         success: false,
         error:
-          error instanceof Error ? error.message : "Failed to list workflows",
+          error instanceof Error
+            ? redactSecretsInText(error.message)
+            : "Failed to list workflows",
       },
       { status: 500 }
     );
   }
-}
+});

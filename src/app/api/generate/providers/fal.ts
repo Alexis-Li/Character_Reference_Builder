@@ -6,13 +6,76 @@
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
-import { validateMediaUrl } from "@/utils/urlValidation";
+import {
+  PROVIDER_RECIPIENTS,
+  bindCredentialToDestination,
+  credentialAllowedFor,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { downloadSafeMedia } from "@/lib/security/safeMedia.server";
+import {
+  activeAddressResolver,
+  checkNetworkTarget,
+  originInList,
+} from "@/lib/security/networkTargets.server";
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
 import {
   INPUT_PATTERNS,
   InputMapping,
   ParameterTypeInfo,
   coerceParameterTypes,
 } from "../schemaUtils";
+
+const FAL_CATALOG_API_BASE = "https://api.fal.ai/v1";
+const FAL_QUEUE_BASE = "https://queue.fal.run";
+const FAL_UPLOAD_INITIATE_URL = "https://rest.alpha.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3";
+
+/**
+ * Origins a fal.ai result may be downloaded from: the registered recipient
+ * origins for the image role plus the CDNs fal.ai serves generated media from.
+ * Every hop is additionally checked for protocol, resolved address, media type
+ * and size by the download seam.
+ */
+const FAL_MEDIA_ORIGINS: readonly string[] = [
+  ...(PROVIDER_RECIPIENTS.fal?.image ?? []),
+  "https://fal.media",
+  "https://cdn.fal.media",
+  "https://cdn.fal.ai",
+];
+
+/** Media types a fal.ai result may declare. */
+const RESULT_MEDIA_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "audio/mpeg",
+  "audio/wav",
+  "application/octet-stream",
+];
+
+/** Path extensions accepted when a CDN answers with an opaque binary. */
+const RESULT_MEDIA_EXTENSIONS: readonly string[] = [
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "mp4", "webm", "mov", "glb", "gltf",
+];
+
+/**
+ * Storage origins fal.ai may name for a signed upload and for the uploaded file
+ * URL. The caller's image bytes are PUT only to one of these hosts, and the
+ * resolved address of that host still has to be public.
+ */
+const FAL_CDN_UPLOAD_ORIGINS: readonly string[] = [
+  "https://fal.ai",
+  "https://cdn.fal.ai",
+  "https://fal.media",
+  "https://cdn.fal.media",
+  "https://rest.alpha.fal.ai",
+];
 
 /**
  * Extended input mapping with parameter types for fal.ai
@@ -50,12 +113,26 @@ async function getFalInputMapping(modelId: string, apiKey: string | null): Promi
 
   try {
     // Use fal.ai Model Search API with OpenAPI expansion
+    // CRB-09: the credential is bound to the catalog recipient before it is
+    // attached; only the bound value is sent.
+    const credentialSource: CredentialSource =
+      process.env.FAL_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+    const { credential } = bindCredentialToDestination({
+      provider: "fal",
+      role: "image",
+      endpoint: FAL_CATALOG_API_BASE,
+      credential: apiKey,
+      credentialKind: "api-key",
+      credentialSource,
+      userAuthorizedDestination: false,
+    });
+
     const headers: Record<string, string> = {};
-    if (apiKey) {
-      headers["Authorization"] = `Key ${apiKey}`;
+    if (credential) {
+      headers["Authorization"] = `Key ${credential}`;
     }
 
-    const url = `https://api.fal.ai/v1/models?endpoint_id=${encodeURIComponent(modelId)}&expand=openapi-3.0`;
+    const url = `${FAL_CATALOG_API_BASE}/models?endpoint_id=${encodeURIComponent(modelId)}&expand=openapi-3.0`;
     const response = await fetch(url, { headers });
 
     if (!response.ok) {
@@ -178,13 +255,26 @@ export async function uploadImageToFal(base64DataUrl: string, apiKey: string | n
   const contentType = match[1];
   const binaryData = Buffer.from(match[2], "base64");
 
+  // CRB-09: bind the credential to the CDN upload recipient before attaching it.
+  const credentialSource: CredentialSource =
+    process.env.FAL_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "fal",
+    role: "image",
+    endpoint: FAL_UPLOAD_INITIATE_URL,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
   const authHeaders: Record<string, string> = {};
-  if (apiKey) authHeaders["Authorization"] = `Key ${apiKey}`;
+  if (credential) authHeaders["Authorization"] = `Key ${credential}`;
 
   // Step 1: Initiate upload to get a signed PUT URL
   const ext = contentType.split("/")[1] || "png";
   const initiateResponse = await fetch(
-    "https://rest.alpha.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3",
+    FAL_UPLOAD_INITIATE_URL,
     {
       method: "POST",
       headers: {
@@ -209,22 +299,36 @@ export async function uploadImageToFal(base64DataUrl: string, apiKey: string | n
     throw new Error("fal CDN initiate response missing upload_url or file_url");
   }
 
-  const uploadUrlCheck = validateMediaUrl(uploadUrl);
-  if (!uploadUrlCheck.valid || !uploadUrl.startsWith('https://')) {
-    throw new Error(`fal CDN upload_url failed validation: ${uploadUrlCheck.error || 'not HTTPS'}`);
+  // CRB-09: the signed URLs are named by the Provider response. They are
+  // accepted only when they point at a fal-controlled storage origin, and the
+  // PUT target additionally has to resolve to public addresses only — a DNS
+  // name or an IPv4-mapped literal aimed at loopback, private, link-local or
+  // metadata space is refused. The PUT carries no credential.
+  if (!originInList(uploadUrl, FAL_CDN_UPLOAD_ORIGINS)) {
+    throw new Error(`fal CDN upload_url failed validation: not an authorized fal storage origin`);
+  }
+  if (!originInList(fileUrl, FAL_CDN_UPLOAD_ORIGINS)) {
+    throw new Error(`fal CDN file_url failed validation: not an authorized fal storage origin`);
   }
 
-  const fileUrlCheck = validateMediaUrl(fileUrl);
-  if (!fileUrlCheck.valid || !fileUrl.startsWith('https://')) {
-    throw new Error(`fal CDN file_url failed validation: ${fileUrlCheck.error || 'not HTTPS'}`);
+  const uploadTargetCheck = await checkNetworkTarget(uploadUrl, { resolve: activeAddressResolver() });
+  if (!uploadTargetCheck.ok) {
+    throw new Error(`fal CDN upload_url failed validation: ${uploadTargetCheck.reason ?? "blocked-address"}`);
   }
 
-  // Step 2: PUT the binary data to the validated signed URL
+  // Step 2: PUT the binary data to the validated signed URL. A signed storage
+  // PUT is a single hop: a redirect would move the caller's bytes to a host
+  // that was never address-checked, so it is refused instead of followed.
   const putResponse = await fetch(uploadUrl, {
     method: "PUT",
     headers: { "Content-Type": contentType },
     body: binaryData,
+    redirect: "manual",
   });
+
+  if (putResponse.status >= 300 && putResponse.status < 400) {
+    throw new Error(`Failed to upload to fal CDN: unexpected redirect ${putResponse.status}`);
+  }
 
   if (!putResponse.ok) {
     throw new Error(`Failed to upload to fal CDN: ${putResponse.status}`);
@@ -326,17 +430,33 @@ export async function generateWithFalQueue(
     }
   }
 
+  // CRB-09: bind the credential to the queue recipient (the submit URL) before
+  // it is attached anywhere. The adapter receives a key value, not its
+  // provenance, so provenance is resolved here: a value equal to this
+  // instance's environment entry is a server-environment credential.
+  const credentialSource: CredentialSource =
+    process.env.FAL_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { connection, credential } = bindCredentialToDestination({
+    provider: "fal",
+    role: "image",
+    endpoint: `${FAL_QUEUE_BASE}/${modelId}`,
+    credential: apiKey,
+    credentialKind: apiKey ? "api-key" : "none",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
   // Build headers
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (apiKey) {
-    headers["Authorization"] = `Key ${apiKey}`;
+  if (credential) {
+    headers["Authorization"] = `Key ${credential}`;
   }
 
   // Submit to queue
   console.log(`[API:${requestId}] Submitting to fal.ai queue with inputs: ${Object.keys(requestBody).join(", ")}`);
-  const submitResponse = await fetch(`https://queue.fal.run/${modelId}`, {
+  const submitResponse = await fetch(`${FAL_QUEUE_BASE}/${modelId}`, {
     method: "POST",
     headers,
     body: JSON.stringify(requestBody),
@@ -365,6 +485,8 @@ export async function generateWithFalQueue(
     } catch {
       // Keep original text if not JSON
     }
+    // CRB-09: upstream text can echo the credential or a signed URL.
+    errorDetail = redactSecretsInText(String(errorDetail));
 
     if (submitResponse.status === 429) {
       return {
@@ -380,7 +502,7 @@ export async function generateWithFalQueue(
   }
 
   const submitResult = await submitResponse.json();
-  console.log(`[API:${requestId}] Queue submit response:`, JSON.stringify(submitResult).substring(0, 500));
+  console.log(`[API:${requestId}] Queue submit response:`, JSON.stringify(redactSecretsDeep(submitResult, { secretFields: "replace" })).substring(0, 500));
   const falRequestId = submitResult.request_id;
 
   if (!falRequestId) {
@@ -391,30 +513,30 @@ export async function generateWithFalQueue(
     };
   }
 
-  // Use URLs from response if provided, with SSRF validation; fall back to constructed URLs
-  const fallbackStatusUrl = `https://queue.fal.run/${modelId}/requests/${falRequestId}/status`;
-  const fallbackResponseUrl = `https://queue.fal.run/${modelId}/requests/${falRequestId}`;
+  // Use URLs from the response only when the credential is allowed to reach
+  // them; otherwise fall back to URLs constructed on the authorized recipient.
+  // CRB-09: a Provider-supplied URL must not be able to move the key to another host.
+  const fallbackStatusUrl = `${FAL_QUEUE_BASE}/${modelId}/requests/${falRequestId}/status`;
+  const fallbackResponseUrl = `${FAL_QUEUE_BASE}/${modelId}/requests/${falRequestId}`;
   let statusUrl = fallbackStatusUrl;
   let responseUrl = fallbackResponseUrl;
 
   if (submitResult.status_url) {
-    const statusCheck = validateMediaUrl(submitResult.status_url);
-    if (statusCheck.valid && submitResult.status_url.startsWith('https://queue.fal.run/')) {
+    if (credentialAllowedFor(connection, submitResult.status_url)) {
       statusUrl = submitResult.status_url;
     } else {
-      console.warn(`[API:${requestId}] fal.ai provided invalid status URL: ${submitResult.status_url} — falling back to constructed URL`);
+      console.warn(`[API:${requestId}] fal.ai provided an unauthorized status URL: ${redactSecretsInText(submitResult.status_url)} — falling back to constructed URL`);
     }
   }
   if (submitResult.response_url) {
-    const responseCheck = validateMediaUrl(submitResult.response_url);
-    if (responseCheck.valid && submitResult.response_url.startsWith('https://queue.fal.run/')) {
+    if (credentialAllowedFor(connection, submitResult.response_url)) {
       responseUrl = submitResult.response_url;
     } else {
-      console.warn(`[API:${requestId}] fal.ai provided invalid response URL: ${submitResult.response_url} — falling back to constructed URL`);
+      console.warn(`[API:${requestId}] fal.ai provided an unauthorized response URL: ${redactSecretsInText(submitResult.response_url)} — falling back to constructed URL`);
     }
   }
 
-  console.log(`[API:${requestId}] Queue request submitted: ${falRequestId}, status URL: ${statusUrl}`);
+  console.log(`[API:${requestId}] Queue request submitted: ${falRequestId}, status URL: ${redactSecretsInText(statusUrl)}`);
 
   // Poll for completion
   const maxWaitTime = 10 * 60 * 1000; // 10 minutes for video
@@ -435,7 +557,7 @@ export async function generateWithFalQueue(
 
     const statusResponse = await fetch(
       statusUrl,
-      { headers: apiKey ? { "Authorization": `Key ${apiKey}` } : {} }
+      { headers: credential ? { "Authorization": `Key ${credential}` } : {} }
     );
 
     if (!statusResponse.ok) {
@@ -458,7 +580,7 @@ export async function generateWithFalQueue(
       // Fetch the result
       const resultResponse = await fetch(
         responseUrl,
-        { headers: apiKey ? { "Authorization": `Key ${apiKey}` } : {} }
+        { headers: credential ? { "Authorization": `Key ${credential}` } : {} }
       );
 
       if (!resultResponse.ok) {
@@ -524,48 +646,42 @@ export async function generateWithFalQueue(
         };
       }
 
-      // Validate URL before fetching (SSRF protection)
-      const mediaUrlCheck = validateMediaUrl(mediaUrl);
-      if (!mediaUrlCheck.valid) {
-        return { success: false, error: `Invalid media URL: ${mediaUrlCheck.error}` };
-      }
-
       // Fetch the media and convert to base64
-      console.log(`[API:${requestId}] Fetching output from: ${mediaUrl.substring(0, 80)}...`);
-      const mediaResponse = await fetch(mediaUrl);
+      console.log(`[API:${requestId}] Fetching output from: ${redactSecretsInText(mediaUrl).substring(0, 80)}...`);
+      // Every hop of the download — protocol, resolved address, authorized
+      // origin, media type and size — is validated instead of trusting the URL.
+      const mediaDownload = await downloadSafeMedia(mediaUrl, {
+        authorizedOrigins: FAL_MEDIA_ORIGINS,
+        allowedMediaTypes: RESULT_MEDIA_TYPES,
+        allowOctetStreamForMediaPaths: true,
+        extensionsForOpaqueMedia: RESULT_MEDIA_EXTENSIONS,
+        maxBytes: MAX_MEDIA_SIZE,
+      });
 
-      if (!mediaResponse.ok) {
-        return {
-          success: false,
-          error: `Failed to fetch output: ${mediaResponse.status}`,
-        };
-      }
-
-      // Detect actual media type from response content-type, falling back to model hints
-      const rawContentType = mediaResponse.headers.get("content-type") || "";
-      const isAudioResponse = rawContentType.startsWith("audio/") || (!rawContentType.startsWith("video/") && !rawContentType.startsWith("image/") && isAudioModel);
-
-      // Enforce max media size via content-length before buffering the body (mirrors kie.ts)
-      const mediaContentLength = parseInt(mediaResponse.headers.get("content-length") || "0", 10);
-      if (mediaContentLength > MAX_MEDIA_SIZE) {
-        const isVideoResponse = rawContentType.startsWith("video/") || (!isAudioResponse && isVideoModel);
-        if (isVideoResponse) {
-          console.log(`[API:${requestId}] SUCCESS - Returning URL for oversized video (${(mediaContentLength / (1024 * 1024)).toFixed(0)}MB)`);
+      if (!mediaDownload.ok) {
+        // A video above the cap was never buffered: this transport has always
+        // handed the client the URL for that case, so it keeps doing so.
+        if (mediaDownload.reason === "oversized" && isVideoModel && !isAudioModel) {
+          console.log(`[API:${requestId}] SUCCESS - Returning URL for oversized video (${mediaDownload.detail ?? ""})`);
           return {
             success: true,
             outputs: [{ type: "video", data: "", url: mediaUrl }],
           };
         }
-        return { success: false, error: `Media too large: ${(mediaContentLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
+        console.error(`[API:${requestId}] Invalid media URL from fal.ai: ${redactSecretsInText(mediaUrl)} (${mediaDownload.reason}${mediaDownload.detail ? `: ${mediaDownload.detail}` : ""})`);
+        return {
+          success: false,
+          error: `Invalid media URL: ${mediaDownload.reason}${mediaDownload.detail ? ` (${mediaDownload.detail})` : ""}`,
+        };
       }
+
+      // Detect actual media type from response content-type, falling back to model hints
+      const rawContentType = mediaDownload.mediaType;
+      const isAudioResponse = rawContentType.startsWith("audio/") || (!rawContentType.startsWith("video/") && !rawContentType.startsWith("image/") && isAudioModel);
 
       if (isAudioResponse) {
         const audioContentType = rawContentType.startsWith("audio/") ? rawContentType : "audio/mpeg";
-        const audioBuffer = await mediaResponse.arrayBuffer();
-        if (audioBuffer.byteLength > MAX_MEDIA_SIZE) {
-          return { success: false, error: `Media too large: ${(audioBuffer.byteLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-        }
-        const audioBase64 = Buffer.from(audioBuffer).toString("base64");
+        const audioBase64 = Buffer.from(mediaDownload.bytes).toString("base64");
         console.log(`[API:${requestId}] SUCCESS - Returning audio`);
         return {
           success: true,
@@ -577,24 +693,9 @@ export async function generateWithFalQueue(
         };
       }
 
-      const contentType = rawContentType || (isVideoModel ? "video/mp4" : "image/png");
+      const contentType = rawContentType;
       const isVideo = contentType.startsWith("video/");
-
-      const mediaArrayBuffer = await mediaResponse.arrayBuffer();
-      const mediaSizeBytes = mediaArrayBuffer.byteLength;
-      const mediaSizeMB = mediaSizeBytes / (1024 * 1024);
-
-      // Post-download size guard in case content-length was missing/inaccurate (mirrors kie.ts)
-      if (mediaSizeBytes > MAX_MEDIA_SIZE) {
-        if (isVideo) {
-          console.log(`[API:${requestId}] SUCCESS - Returning URL for oversized video (${mediaSizeMB.toFixed(0)}MB)`);
-          return {
-            success: true,
-            outputs: [{ type: "video", data: "", url: mediaUrl }],
-          };
-        }
-        return { success: false, error: `Media too large: ${mediaSizeMB.toFixed(0)}MB > 500MB limit` };
-      }
+      const mediaSizeMB = mediaDownload.bytes.byteLength / (1024 * 1024);
 
       console.log(`[API:${requestId}] Output: ${contentType}, ${mediaSizeMB.toFixed(2)}MB`);
 
@@ -613,7 +714,7 @@ export async function generateWithFalQueue(
         };
       }
 
-      const mediaBase64 = Buffer.from(mediaArrayBuffer).toString("base64");
+      const mediaBase64 = Buffer.from(mediaDownload.bytes).toString("base64");
       console.log(`[API:${requestId}] SUCCESS - Returning ${isVideo ? "video" : "image"}`);
 
       return {
@@ -629,7 +730,7 @@ export async function generateWithFalQueue(
     }
 
     if (status === "FAILED") {
-      const errorMessage = statusResult.error || "Video generation failed";
+      const errorMessage = redactSecretsInText(String(statusResult.error || "Video generation failed"));
       console.error(`[API:${requestId}] Queue request failed: ${errorMessage}`);
       return {
         success: false,

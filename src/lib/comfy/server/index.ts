@@ -4,12 +4,23 @@
  */
 
 import type { ComfyConnection, ComfyObjectInfo } from "../types";
-import { connectionFromRequest, ComfyConfigError, orgKeyFromRequest } from "./connection";
+import {
+  connectionFromRequest,
+  ComfyConfigError,
+  orgKeyFromRequest,
+  sdkTransportAllowed,
+} from "./connection";
 import type { ComfyEngine } from "./engine";
 import { LegacyComfyEngine } from "./legacyEngine";
 import { SdkComfyEngine } from "./sdkEngine";
 
-export { ComfyConfigError, connectionFromRequest, orgKeyFromRequest } from "./connection";
+export {
+  ComfyConfigError,
+  connectionFromRequest,
+  createMediaFetch,
+  engineRequest,
+  orgKeyFromRequest,
+} from "./connection";
 export { ComfyEngineError } from "./engine";
 export type {
   ComfyEngine,
@@ -21,13 +32,17 @@ export type {
 /**
  * The engine for a connection.
  *
- * `useSdk` is the whole decision: a Comfy API v2 endpoint (Comfy Cloud, or a
- * self-hosted install behind `comfy-api-proxy`) gets the SDK with its asset
- * dedup and idempotent submits; anything else gets the legacy HTTP surface,
- * which every stock ComfyUI serves.
+ * `useSdk` decides which surface the endpoint speaks, but not on its own which
+ * transport may carry the credential: `@comfyorg/sdk` owns its HTTP and follows
+ * redirects outside the outbound policy seam, so it is reserved for destinations
+ * the product already trusts (Comfy Cloud, or an HTTPS destination this session
+ * authorized with its own key). Anything else goes through the legacy engine,
+ * whose redirects the seam does control.
  */
 export function createEngine(connection: ComfyConnection): ComfyEngine {
-  return connection.useSdk ? new SdkComfyEngine(connection) : new LegacyComfyEngine(connection);
+  return connection.useSdk && sdkTransportAllowed(connection)
+    ? new SdkComfyEngine(connection)
+    : new LegacyComfyEngine(connection);
 }
 
 /** The engine this request targets, plus the partner-node key to run it with. */

@@ -7,11 +7,23 @@
  * Comfy Cloud serves it too — authenticated with `X-API-Key` — and adds a
  * cheaper `/api/job/{id}/status` poll plus a job record at `/api/jobs/{id}`,
  * both of which this engine prefers when talking to the cloud.
+ *
+ * Every request goes through {@link engineRequest}, so the connection's
+ * credential rides only to its bound destination, every hop is checked against
+ * the connection's address policy, and a redirect to any other host fails the
+ * call rather than forwarding the key. The one exception is an output download
+ * from an HTTPS engine, where the engine's own 302 to a signed storage URL is
+ * how the bytes arrive; there the media seam follows the chain with the
+ * credential scoped to the engine's origin — see
+ * {@link LegacyComfyEngine.downloadOutput}.
  */
+
+import { ACCEPTED_ASSET_MEDIA_TYPES } from "@/lib/security/activeContent";
+import { downloadSafeMedia } from "@/lib/security/safeMedia.server";
 
 import { mediaTypeForFilename, mimeForFilename } from "../graph";
 import type { ComfyConnection, ComfyGraph, ComfyObjectInfo, ComfyRawOutputs } from "../types";
-import { engineAuthHeaders } from "./connection";
+import { createMediaFetch, engineRequest, providerConnectionFor } from "./connection";
 import {
   ComfyEngineError,
   type ComfyEngine,
@@ -20,7 +32,56 @@ import {
   type ComfySubmitOptions,
   type ComfyUploadInput,
 } from "./engine";
-import { CATALOG_RETRIES, CATALOG_TIMEOUT_MS, resilientFetch } from "./fetch";
+import { CATALOG_RETRIES, CATALOG_TIMEOUT_MS } from "./fetch";
+
+/**
+ * Media types an engine output may declare. Wider than
+ * {@link ACCEPTED_ASSET_MEDIA_TYPES} by the 3D and audio containers the engine
+ * writes (`usdz`, `obj`, `stl`, `ply`, `m4a`, `opus`), so a file the engine
+ * really produced is not refused by a download guard that never saw it.
+ */
+const OUTPUT_MEDIA_TYPES: readonly string[] = [
+  ...ACCEPTED_ASSET_MEDIA_TYPES,
+  "model/vnd.usdz+zip",
+  "model/obj",
+  "model/stl",
+  "model/ply",
+  "audio/mp4",
+  "audio/opus",
+];
+
+/** Extensions accepted for outputs a CDN serves as an opaque binary. */
+const OUTPUT_OPAQUE_EXTENSIONS: readonly string[] = [
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "avif",
+  "mp4",
+  "webm",
+  "mov",
+  "m4v",
+  "mkv",
+  "avi",
+  "mp3",
+  "wav",
+  "flac",
+  "ogg",
+  "opus",
+  "m4a",
+  "glb",
+  "gltf",
+  "usdz",
+  "obj",
+  "stl",
+  "ply",
+  "splat",
+  "spz",
+];
+
+/** Hard cap on one downloaded output (500 MB), as `/api/save-generation` uses. */
+const MAX_OUTPUT_BYTES = 500 * 1024 * 1024;
 
 /** A file reference in a `/history` or `/api/jobs` outputs object. */
 interface RawFileRef {
@@ -94,10 +155,6 @@ export class LegacyComfyEngine implements ComfyEngine {
     return this.connection.baseUrl;
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return { ...engineAuthHeaders(this.connection), ...extra };
-  }
-
   /** Cloud exposes richer job endpoints the OSS server does not have. */
   private get isCloud(): boolean {
     return this.connection.mode === "cloud";
@@ -108,8 +165,7 @@ export class LegacyComfyEngine implements ComfyEngine {
     // a reachability problem — worth distinguishing in the message.
     const path = this.isCloud ? "/api/queue" : "/api/system_stats";
     try {
-      const res = await resilientFetch(`${this.base}${path}`, {
-        headers: this.headers(),
+      const res = await engineRequest(this.connection, `${this.base}${path}`, {
         timeoutMs: 8_000,
         signal,
       });
@@ -127,8 +183,7 @@ export class LegacyComfyEngine implements ComfyEngine {
   }
 
   async objectInfo(signal?: AbortSignal): Promise<ComfyObjectInfo> {
-    const res = await resilientFetch(`${this.base}/api/object_info`, {
-      headers: this.headers(),
+    const res = await engineRequest(this.connection, `${this.base}/api/object_info`, {
       timeoutMs: CATALOG_TIMEOUT_MS,
       retries: CATALOG_RETRIES,
       signal,
@@ -151,9 +206,8 @@ export class LegacyComfyEngine implements ComfyEngine {
     );
     form.append("type", "input");
     form.append("overwrite", "true");
-    const res = await resilientFetch(`${this.base}/api/upload/image`, {
+    const res = await engineRequest(this.connection, `${this.base}/api/upload/image`, {
       method: "POST",
-      headers: this.headers(),
       body: form,
       timeoutMs: 120_000,
       retries: 2, // safe to retry — the upload sets overwrite
@@ -171,9 +225,9 @@ export class LegacyComfyEngine implements ComfyEngine {
   }
 
   async submit(graph: ComfyGraph, options: ComfySubmitOptions = {}): Promise<string> {
-    const res = await resilientFetch(`${this.base}/api/prompt`, {
+    const res = await engineRequest(this.connection, `${this.base}/api/prompt`, {
       method: "POST",
-      headers: this.headers({ "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prompt: graph,
         client_id: `node-banana-${crypto.randomUUID()}`,
@@ -207,12 +261,15 @@ export class LegacyComfyEngine implements ComfyEngine {
 
   /** Cloud: a cheap status endpoint, then the job record once it is done. */
   private async pollCloud(jobId: string, signal?: AbortSignal): Promise<ComfyJobState> {
-    const statusRes = await resilientFetch(`${this.base}/api/job/${jobId}/status`, {
-      headers: this.headers(),
-      timeoutMs: 20_000,
-      retries: 2,
-      signal,
-    });
+    const statusRes = await engineRequest(
+      this.connection,
+      `${this.base}/api/job/${jobId}/status`,
+      {
+        timeoutMs: 20_000,
+        retries: 2,
+        signal,
+      }
+    );
     if (!statusRes.ok) {
       return { status: "pending", terminal: false, error: null, raw: null };
     }
@@ -229,8 +286,7 @@ export class LegacyComfyEngine implements ComfyEngine {
       return { status, terminal: false, error: null, raw: null };
     }
 
-    const jobRes = await resilientFetch(`${this.base}/api/jobs/${jobId}`, {
-      headers: this.headers(),
+    const jobRes = await engineRequest(this.connection, `${this.base}/api/jobs/${jobId}`, {
       timeoutMs: 30_000,
       retries: 3,
       signal,
@@ -249,8 +305,7 @@ export class LegacyComfyEngine implements ComfyEngine {
 
   /** OSS: `/history/{id}` is empty until the run finishes, then holds outputs. */
   private async pollHistory(jobId: string, signal?: AbortSignal): Promise<ComfyJobState> {
-    const res = await resilientFetch(`${this.base}/api/history/${jobId}`, {
-      headers: this.headers(),
+    const res = await engineRequest(this.connection, `${this.base}/api/history/${jobId}`, {
       timeoutMs: 20_000,
       retries: 2,
       signal,
@@ -298,8 +353,7 @@ export class LegacyComfyEngine implements ComfyEngine {
 
   private async isQueued(jobId: string, signal?: AbortSignal): Promise<boolean> {
     try {
-      const res = await resilientFetch(`${this.base}/api/queue`, {
-        headers: this.headers(),
+      const res = await engineRequest(this.connection, `${this.base}/api/queue`, {
         timeoutMs: 8_000,
         signal,
       });
@@ -331,25 +385,72 @@ export class LegacyComfyEngine implements ComfyEngine {
       // server needs it. Sending it is correct for both.
       view.searchParams.set("subfolder", file.subfolder ?? "");
       view.searchParams.set("type", file.type ?? "output");
-      const res = await resilientFetch(view, {
-        headers: this.headers(),
-        redirect: "follow", // Cloud answers with a 302 to a signed storage URL
-        timeoutMs: 180_000, // generous — one video output can be large
-        retries: 3,
-        signal,
-      });
-      if (!res.ok) {
-        throw new ComfyEngineError(`Could not download output ${file.filename} (${res.status})`);
-      }
       assets.push({
         nodeId: file.nodeId,
         type: mediaTypeForFilename(file.filename),
-        bytes: new Uint8Array(await res.arrayBuffer()),
+        bytes: await this.downloadOutput(view, file.filename, signal),
         contentType: mimeForFilename(file.filename),
         filename: file.filename,
       });
     }
     return assets;
+  }
+
+  /**
+   * One output's bytes.
+   *
+   * Two paths, because the two engines answer a view request differently:
+   *
+   * - An HTTP engine (local mode, a LAN install) serves the file itself, so the
+   *   request goes through the policy seam like every other engine call: the
+   *   credential rides to the bound destination only, and a redirect anywhere
+   *   else fails the download instead of being followed.
+   * - An HTTPS engine may answer with a 302 to a signed storage URL — Comfy
+   *   Cloud does exactly that — which the policy seam would refuse as an
+   *   unapproved redirect. There the download goes through the media seam
+   *   instead, whose per-hop checks (scheme, resolved address, size, media
+   *   type) are what a redirect chain needs, and whose fetch
+   *   ({@link createMediaFetch}) attaches the API key to the engine's own
+   *   origin only — the signed-storage hop is followed *without* the key.
+   */
+  private async downloadOutput(
+    view: URL,
+    filename: string,
+    signal?: AbortSignal
+  ): Promise<Uint8Array> {
+    if (view.protocol === "http:") {
+      const res = await engineRequest(this.connection, view.toString(), {
+        timeoutMs: 180_000, // generous — one video output can be large
+        retries: 3,
+        signal,
+      });
+      if (!res.ok) {
+        throw new ComfyEngineError(`Could not download output ${filename} (${res.status})`);
+      }
+      return new Uint8Array(await res.arrayBuffer());
+    }
+
+    const allowNonPublic = providerConnectionFor(this.connection).allowNonPublicDestination;
+    const download = await downloadSafeMedia(view.toString(), {
+      authorizedOrigins: "provider-output",
+      allowedMediaTypes: OUTPUT_MEDIA_TYPES,
+      allowOctetStreamForMediaPaths: true,
+      extensionsForOpaqueMedia: OUTPUT_OPAQUE_EXTENSIONS,
+      maxBytes: MAX_OUTPUT_BYTES,
+      // The engine is user-named: a loopback or LAN engine is the point, and
+      // this is the same decision the policy seam applies on the other path.
+      allowLoopback: allowNonPublic,
+      allowPrivate: allowNonPublic,
+      fetchImpl: createMediaFetch(this.connection),
+      signal,
+    });
+    if (!download.ok) {
+      throw new ComfyEngineError(
+        `Could not download output ${filename} (${download.status ?? download.reason})`,
+        502
+      );
+    }
+    return download.bytes;
   }
 
   async cancel(jobId: string, signal?: AbortSignal): Promise<void> {
@@ -360,9 +461,8 @@ export class LegacyComfyEngine implements ComfyEngine {
     // would stop someone else's render on a shared engine (or their own, in
     // another ComfyUI tab).
     try {
-      await resilientFetch(`${this.base}/api/jobs/${jobId}/cancel`, {
+      await engineRequest(this.connection, `${this.base}/api/jobs/${jobId}/cancel`, {
         method: "POST",
-        headers: this.headers(),
         timeoutMs: 8_000,
         signal,
       });
@@ -372,8 +472,7 @@ export class LegacyComfyEngine implements ComfyEngine {
 
     let running = false;
     try {
-      const res = await resilientFetch(`${this.base}/api/queue`, {
-        headers: this.headers(),
+      const res = await engineRequest(this.connection, `${this.base}/api/queue`, {
         timeoutMs: 8_000,
         signal,
       });
@@ -385,9 +484,9 @@ export class LegacyComfyEngine implements ComfyEngine {
         running = (queue.queue_running ?? []).some(([, id]) => id === jobId);
         // A job still queued is simply deleted — nothing has started yet.
         if ((queue.queue_pending ?? []).some(([, id]) => id === jobId)) {
-          await resilientFetch(`${this.base}/api/queue`, {
+          await engineRequest(this.connection, `${this.base}/api/queue`, {
             method: "POST",
-            headers: this.headers({ "Content-Type": "application/json" }),
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ delete: [jobId] }),
             timeoutMs: 8_000,
             signal,
@@ -400,9 +499,8 @@ export class LegacyComfyEngine implements ComfyEngine {
 
     if (!running) return;
     try {
-      await resilientFetch(`${this.base}/api/interrupt`, {
+      await engineRequest(this.connection, `${this.base}/api/interrupt`, {
         method: "POST",
-        headers: this.headers(),
         timeoutMs: 8_000,
         signal,
       });

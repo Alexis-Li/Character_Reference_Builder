@@ -8,6 +8,12 @@ import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { GenerateResponse, ModelType, MODEL_DISPLAY_NAMES } from "@/types";
 import { GenerationOutput, ReferenceInput } from "@/lib/providers/types";
+import { fetchWithConnectionPolicy } from "@/lib/security/outboundPolicy.server";
+import {
+  bindCredentialToDestination,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 import {
   imageCapabilities,
   summarizePurposes,
@@ -16,6 +22,12 @@ import {
 } from "@/lib/providers/imageCapabilities";
 
 const SUBMITTED = { execution: "submitted" as const, querySupport: "unsupported" as const };
+
+/** Registered recipient of the Gemini API and the origin Veo videos are downloaded from. */
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com";
+
+/** No cap was declared before; bound the downloaded video at 500MB like the other transports. */
+const MAX_MEDIA_SIZE = 500 * 1024 * 1024;
 
 /**
  * Map model types to Gemini model IDs
@@ -163,7 +175,7 @@ export async function generateWithGemini(
       config,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Gemini request failed";
+    const message = redactSecretsInText(error instanceof Error ? error.message : "Gemini request failed");
     console.error(`[API:${requestId}] Gemini transport error: ${message.substring(0, 200)}`);
     if (message.includes("429")) {
       return NextResponse.json<GenerateResponse>(
@@ -255,12 +267,13 @@ export async function generateWithGemini(
   // If no image found, check for text error
   for (const part of parts) {
     if (part.text) {
-      console.error(`[API:${requestId}] Gemini returned text instead of image: ${part.text.substring(0, 100)}`);
+      const text = redactSecretsInText(part.text);
+      console.error(`[API:${requestId}] Gemini returned text instead of image: ${text.substring(0, 100)}`);
       return NextResponse.json<GenerateResponse>(
         {
           success: false,
           ...SUBMITTED,
-          error: `Model returned text instead of image: ${part.text.substring(0, 200)}`,
+          error: `Model returned text instead of image: ${text.substring(0, 200)}`,
           call: { ...callBase, stage: "failed" },
         },
         { status: 500 }
@@ -387,7 +400,7 @@ export async function generateWithGeminiVideo(
       operation = await ai.operations.getVideosOperation({ operation });
     }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    const msg = redactSecretsInText(error instanceof Error ? error.message : String(error));
     console.error(`[API:${requestId}] Veo generation failed: ${msg}`);
     return { success: false, error: `Video generation failed: ${msg}` };
   }
@@ -408,20 +421,67 @@ export async function generateWithGeminiVideo(
     return { success: false, error: "No video URI in response" };
   }
 
-  // Fetch the video (append API key for authentication)
-  const videoUrl = `${videoUri}&key=${apiKey}`;
+  // The API key moves out of the query string into the request header, so it can
+  // no longer ride in a URL that is logged, cached or persisted.
+  let videoUrl: URL;
+  try {
+    videoUrl = new URL(videoUri);
+  } catch {
+    console.error(`[API:${requestId}] Invalid video URI in Veo response`);
+    return { success: false, error: "No video URI in response" };
+  }
+  videoUrl.searchParams.delete("key");
+  videoUrl.searchParams.delete("api_key");
+
+  // CRB-09: the download carries the bound credential, only to the registered
+  // recipient, and never follows a redirect to another host.
+  const credentialSource: CredentialSource =
+    process.env.GEMINI_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { connection, credential } = bindCredentialToDestination({
+    provider: "gemini",
+    role: "image",
+    endpoint: GEMINI_API_BASE,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] Gemini credential withheld from ${GEMINI_API_BASE}: recipient not authorized`);
+    return { success: false, error: "Failed to download generated video: credential not authorized for the download recipient" };
+  }
+
   console.log(`[API:${requestId}] Fetching video from URI...`);
 
   const controller = new AbortController();
   const fetchTimeout = setTimeout(() => controller.abort(), 60_000);
   try {
-    const videoResponse = await fetch(videoUrl, { signal: controller.signal });
+    const download = await fetchWithConnectionPolicy({
+      connection,
+      url: videoUrl.toString(),
+      method: "GET",
+      credential,
+      placement: { header: "x-goog-api-key" },
+      signal: controller.signal,
+    });
+
+    if (!download.ok) {
+      console.error(`[API:${requestId}] Failed to fetch video: ${download.reason}${download.detail ? `: ${download.detail}` : ""}`);
+      return { success: false, error: `Failed to download generated video: ${download.reason}` };
+    }
+
+    const videoResponse = download.response;
     if (!videoResponse.ok) {
       console.error(`[API:${requestId}] Failed to fetch video: ${videoResponse.status}`);
       return { success: false, error: `Failed to download generated video: ${videoResponse.status}` };
     }
 
     const videoBuffer = await videoResponse.arrayBuffer();
+    if (videoBuffer.byteLength > MAX_MEDIA_SIZE) {
+      console.error(`[API:${requestId}] Video exceeds the ${MAX_MEDIA_SIZE} byte download cap`);
+      return { success: false, error: "Failed to download generated video: oversized" };
+    }
     const videoSizeMB = (videoBuffer.byteLength / (1024 * 1024)).toFixed(2);
     console.log(`[API:${requestId}] Video downloaded: ${videoSizeMB}MB`);
 
@@ -435,7 +495,7 @@ export async function generateWithGeminiVideo(
       outputs: [{ type: "video", data: dataUrl }],
     };
   } catch (error) {
-    console.error(`[API:${requestId}] Failed to download video: ${error}`);
+    console.error(`[API:${requestId}] Failed to download video: ${redactSecretsInText(error instanceof Error ? error.message : String(error))}`);
     return { success: false, error: "Failed to download generated video" };
   } finally {
     clearTimeout(fetchTimeout);

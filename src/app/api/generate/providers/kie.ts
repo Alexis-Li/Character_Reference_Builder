@@ -6,10 +6,50 @@
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
-import { validateMediaUrl } from "@/utils/urlValidation";
+import {
+  PROVIDER_RECIPIENTS,
+  bindCredentialToDestination,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { downloadSafeMedia } from "@/lib/security/safeMedia.server";
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
 
 const MAX_MEDIA_SIZE = 500 * 1024 * 1024; // 500MB
 const MAX_UPLOAD_SIZE = 20 * 1024 * 1024; // 20MB
+
+const KIE_API_BASE = "https://api.kie.ai";
+/** File uploads go to the second registered recipient of the image role. */
+const KIE_UPLOAD_URL = "https://kieai.redpandaai.co/api/file-base64-upload";
+
+/**
+ * Origins a Kie result may be downloaded from: the registered recipient
+ * origins for the image role. Every hop is additionally checked for protocol,
+ * resolved address, media type and size by the download seam.
+ */
+const KIE_MEDIA_ORIGINS: readonly string[] = [
+  ...(PROVIDER_RECIPIENTS.kie?.image ?? []),
+];
+
+/** Media types a Kie result may declare. */
+const RESULT_MEDIA_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "audio/mpeg",
+  "audio/wav",
+  "application/octet-stream",
+];
+
+/** Path extensions accepted when a CDN answers with an opaque binary. */
+const RESULT_MEDIA_EXTENSIONS: readonly string[] = [
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "mp4", "webm", "mov", "glb", "gltf",
+];
 
 /**
  * Get default required parameters for a Kie model
@@ -347,10 +387,29 @@ export async function uploadMediaToKie(
   // Format: data:{mime_type};base64,{data}
   const dataUrl = `data:${mimeType};base64,${mediaData}`;
 
-  const response = await fetch("https://kieai.redpandaai.co/api/file-base64-upload", {
+  // CRB-09: the credential is bound to the upload recipient before it is
+  // attached, and only the bound value is sent.
+  const credentialSource: CredentialSource =
+    process.env.KIE_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "kie",
+    role: "image",
+    endpoint: KIE_UPLOAD_URL,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] Kie credential withheld from the file upload recipient: recipient not authorized`);
+    throw new Error("Kie credential is not authorized for the file upload recipient");
+  }
+
+  const response = await fetch(KIE_UPLOAD_URL, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -362,26 +421,26 @@ export async function uploadMediaToKie(
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Failed to upload image: ${response.status} - ${errorText}`);
+    throw new Error(`Failed to upload image: ${response.status} - ${redactSecretsInText(errorText)}`);
   }
 
   const result = await response.json();
-  console.log(`[API:${requestId}] Kie upload response:`, JSON.stringify(result).substring(0, 300));
+  console.log(`[API:${requestId}] Kie upload response:`, JSON.stringify(redactSecretsDeep(result, { secretFields: "replace" })).substring(0, 300));
 
   // Check for error in response
   if (result.code && result.code !== 200 && !result.success) {
-    throw new Error(`Upload failed: ${result.msg || 'Unknown error'}`);
+    throw new Error(`Upload failed: ${redactSecretsInText(String(result.msg || "Unknown error"))}`);
   }
 
   // Response format: { success: true, code: 200, data: { downloadUrl: "...", fileName: "...", fileSize: 123 } }
   const downloadUrl = result.data?.downloadUrl || result.downloadUrl || result.url;
 
   if (!downloadUrl) {
-    console.error(`[API:${requestId}] Upload response has no URL:`, result);
-    throw new Error(`No download URL in upload response. Response: ${JSON.stringify(result).substring(0, 200)}`);
+    console.error(`[API:${requestId}] Upload response has no URL:`, JSON.stringify(redactSecretsDeep(result, { secretFields: "replace" })).substring(0, 300));
+    throw new Error(`No download URL in upload response. Response: ${JSON.stringify(redactSecretsDeep(result, { secretFields: "replace" })).substring(0, 200)}`);
   }
 
-  console.log(`[API:${requestId}] Media uploaded: ${downloadUrl.substring(0, 80)}...`);
+  console.log(`[API:${requestId}] Media uploaded: ${redactSecretsInText(downloadUrl).substring(0, 80)}...`);
   return downloadUrl;
 }
 
@@ -417,6 +476,25 @@ export async function submitKieTask(
   const modelId = input.model.id;
 
   console.log(`[API:${requestId}] Kie.ai generation - Model: ${modelId}, Images: ${input.images?.length || 0}, Prompt: ${input.prompt.length} chars`);
+
+  // CRB-09: every Kie create endpoint lives on this origin; the credential is
+  // bound to it before it is attached anywhere.
+  const credentialSource: CredentialSource =
+    process.env.KIE_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "kie",
+    role: "image",
+    endpoint: KIE_API_BASE,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] Kie credential withheld from ${KIE_API_BASE}: recipient not authorized`);
+    throw new Error(`${input.model.name}: Kie credential is not authorized for this destination`);
+  }
 
   // Build the input object (all parameters go inside "input" for Kie API)
   const modelDefaults = getKieModelDefaults(modelId);
@@ -516,14 +594,14 @@ export async function submitKieTask(
       veoBody.seeds = inputParams.seeds;
     }
 
-    const veoUrl = "https://api.kie.ai/api/v1/veo/generate";
+    const veoUrl = `${KIE_API_BASE}/api/v1/veo/generate`;
     console.log(`[API:${requestId}] Calling Veo API: ${veoUrl}`);
-    console.log(`[API:${requestId}] Veo request body:`, JSON.stringify(veoBody, null, 2));
+    console.log(`[API:${requestId}] Veo request body:`, JSON.stringify(redactSecretsDeep(veoBody, { secretFields: "replace" }), null, 2));
 
     const createResponse = await fetch(veoUrl, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        "Authorization": `Bearer ${credential}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(veoBody),
@@ -538,6 +616,8 @@ export async function submitKieTask(
       } catch {
         // Keep original text
       }
+      // CRB-09: upstream text can echo the credential or a signed URL.
+      errorDetail = redactSecretsInText(String(errorDetail));
       if (createResponse.status === 429) {
         throw new Error(`${input.model.name}: Rate limit exceeded. Try again in a moment.`);
       }
@@ -546,12 +626,12 @@ export async function submitKieTask(
 
     const createResult = await createResponse.json();
     if (createResult.code && createResult.code !== 200) {
-      throw new Error(`${input.model.name}: ${createResult.msg || "API error"}`);
+      throw new Error(`${input.model.name}: ${redactSecretsInText(String(createResult.msg || "API error"))}`);
     }
 
     const taskId = createResult.data?.taskId || createResult.taskId;
     if (!taskId) {
-      console.error(`[API:${requestId}] No taskId in Veo response:`, createResult);
+      console.error(`[API:${requestId}] No taskId in Veo response:`, JSON.stringify(redactSecretsDeep(createResult, { secretFields: "replace" })).substring(0, 300));
       throw new Error("No task ID in Veo response");
     }
 
@@ -574,7 +654,7 @@ export async function submitKieTask(
     input: inputParams,
   };
 
-  const createUrl = "https://api.kie.ai/api/v1/jobs/createTask";
+  const createUrl = `${KIE_API_BASE}/api/v1/jobs/createTask`;
 
   console.log(`[API:${requestId}] Calling Kie.ai API: ${createUrl}`);
   const bodyForLogging = { ...requestBody };
@@ -585,12 +665,12 @@ export async function submitKieTask(
     }
     bodyForLogging.input = inputForLogging;
   }
-  console.log(`[API:${requestId}] Request body:`, JSON.stringify(bodyForLogging, null, 2));
+  console.log(`[API:${requestId}] Request body:`, JSON.stringify(redactSecretsDeep(bodyForLogging, { secretFields: "replace" }), null, 2));
 
   const createResponse = await fetch(createUrl, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(requestBody),
@@ -605,6 +685,8 @@ export async function submitKieTask(
     } catch {
       // Keep original text
     }
+    // CRB-09: upstream text can echo the credential or a signed URL.
+    errorDetail = redactSecretsInText(String(errorDetail));
 
     if (createResponse.status === 429) {
       throw new Error(`${input.model.name}: Rate limit exceeded. Try again in a moment.`);
@@ -616,7 +698,7 @@ export async function submitKieTask(
   const createResult = await createResponse.json();
 
   if (createResult.code && createResult.code !== 200) {
-    const errorMsg = createResult.msg || createResult.message || "API error";
+    const errorMsg = redactSecretsInText(String(createResult.msg || createResult.message || "API error"));
     console.error(`[API:${requestId}] Kie API error (code ${createResult.code}):`, errorMsg);
     throw new Error(`${input.model.name}: ${errorMsg}`);
   }
@@ -624,7 +706,7 @@ export async function submitKieTask(
   const taskId = createResult.taskId || createResult.data?.taskId || createResult.id;
 
   if (!taskId) {
-    console.error(`[API:${requestId}] No taskId in Kie response:`, createResult);
+    console.error(`[API:${requestId}] No taskId in Kie response:`, JSON.stringify(redactSecretsDeep(createResult, { secretFields: "replace" })).substring(0, 300));
     throw new Error("No task ID in response");
   }
 
@@ -642,13 +724,32 @@ export async function checkKieTaskOnce(
   taskId: string,
   isVeo: boolean
 ): Promise<{ status: "processing" | "completed" | "failed"; data?: Record<string, unknown>; error?: string; taskState?: string }> {
+  // CRB-09: both poll endpoints live on this origin; the credential is bound to
+  // it once, before any request is built.
+  const credentialSource: CredentialSource =
+    process.env.KIE_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "kie",
+    role: "image",
+    endpoint: KIE_API_BASE,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] Kie credential withheld from ${KIE_API_BASE}: recipient not authorized`);
+    return { status: "failed", error: "Kie credential is not authorized for this destination" };
+  }
+
   if (isVeo) {
-    const pollUrl = `https://api.kie.ai/api/v1/veo/record-info?taskId=${encodeURIComponent(taskId)}`;
+    const pollUrl = `${KIE_API_BASE}/api/v1/veo/record-info?taskId=${encodeURIComponent(taskId)}`;
 
     let response: Response;
     try {
       response = await fetch(pollUrl, {
-        headers: { "Authorization": `Bearer ${apiKey}` },
+        headers: { "Authorization": `Bearer ${credential}` },
       });
     } catch (err) {
       console.warn(`[API:${requestId}] Veo poll network error:`, err);
@@ -683,12 +784,12 @@ export async function checkKieTaskOnce(
   }
 
   // Standard Kie polling
-  const pollUrl = `https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`;
+  const pollUrl = `${KIE_API_BASE}/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`;
 
   let response: Response;
   try {
     response = await fetch(pollUrl, {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+      headers: { "Authorization": `Bearer ${credential}` },
     });
   } catch (err) {
     console.warn(`[API:${requestId}] Kie poll network error:`, err);
@@ -725,9 +826,9 @@ export async function checkKieTaskOnce(
   }
 
   if (state === "FAIL" || state === "FAILED" || state === "ERROR") {
-    console.error(`[API:${requestId}] Kie task failed. Full response:`, JSON.stringify(result).substring(0, 1000));
+    console.error(`[API:${requestId}] Kie task failed. Full response:`, JSON.stringify(redactSecretsDeep(result, { secretFields: "replace" })).substring(0, 1000));
     const errorMessage = data?.failMsg || data?.errorMessage || result.error || result.message || "Generation failed";
-    return { status: "failed", error: errorMessage as string };
+    return { status: "failed", error: redactSecretsInText(String(errorMessage)) };
   }
 
   return { status: "processing", taskState: state };
@@ -760,31 +861,31 @@ export async function fetchKieMediaResult(
     }
 
     if (!mediaUrl) {
-      console.error(`[API:${requestId}] No media URL found in Veo response:`, data);
+      console.error(`[API:${requestId}] No media URL found in Veo response:`, JSON.stringify(redactSecretsDeep(data, { secretFields: "replace" })).substring(0, 500));
       return { success: false, error: "No output URL in Veo response" };
     }
 
-    const mediaUrlCheck = validateMediaUrl(mediaUrl);
-    if (!mediaUrlCheck.valid) {
-      return { success: false, error: `Invalid media URL: ${mediaUrlCheck.error}` };
+    console.log(`[API:${requestId}] Fetching Veo output from: ${redactSecretsInText(mediaUrl).substring(0, 80)}...`);
+    // CRB-09: every hop of the result download — protocol, resolved address,
+    // authorized origin, media type and size — is validated.
+    const mediaDownload = await downloadSafeMedia(mediaUrl, {
+      authorizedOrigins: KIE_MEDIA_ORIGINS,
+      allowedMediaTypes: RESULT_MEDIA_TYPES,
+      allowOctetStreamForMediaPaths: true,
+      extensionsForOpaqueMedia: RESULT_MEDIA_EXTENSIONS,
+      maxBytes: MAX_MEDIA_SIZE,
+    });
+
+    if (!mediaDownload.ok) {
+      console.error(`[API:${requestId}] Invalid media URL from Kie: ${redactSecretsInText(mediaUrl)} (${mediaDownload.reason}${mediaDownload.detail ? `: ${mediaDownload.detail}` : ""})`);
+      return {
+        success: false,
+        error: `Invalid media URL: ${mediaDownload.reason}${mediaDownload.detail ? ` (${mediaDownload.detail})` : ""}`,
+      };
     }
 
-    console.log(`[API:${requestId}] Fetching Veo output from: ${mediaUrl.substring(0, 80)}...`);
-    const mediaResponse = await fetch(mediaUrl);
-    if (!mediaResponse.ok) {
-      return { success: false, error: `Failed to fetch output: ${mediaResponse.status}` };
-    }
-
-    const mediaContentLength = parseInt(mediaResponse.headers.get("content-length") || "0", 10);
-    if (mediaContentLength > MAX_MEDIA_SIZE) {
-      return { success: false, error: `Media too large: ${(mediaContentLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-    }
-
-    const contentType = mediaResponse.headers.get("content-type") || "video/mp4";
-    const mediaArrayBuffer = await mediaResponse.arrayBuffer();
-    if (mediaArrayBuffer.byteLength > MAX_MEDIA_SIZE) {
-      return { success: false, error: `Media too large: ${(mediaArrayBuffer.byteLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-    }
+    const contentType = mediaDownload.mediaType;
+    const mediaArrayBuffer = mediaDownload.bytes;
     const mediaSizeMB = mediaArrayBuffer.byteLength / (1024 * 1024);
 
     console.log(`[API:${requestId}] Veo output: ${contentType}, ${mediaSizeMB.toFixed(2)}MB`);
@@ -811,7 +912,7 @@ export async function fetchKieMediaResult(
   let isAudio = false;
   const isAudioModel = capabilities.some(c => c.includes("audio"));
 
-  console.log(`[API:${requestId}] Kie poll result data:`, JSON.stringify(data).substring(0, 500));
+  console.log(`[API:${requestId}] Kie poll result data:`, JSON.stringify(redactSecretsDeep(data, { secretFields: "replace" })).substring(0, 500));
 
   if (data) {
     let resultJson = data.resultJson as Record<string, unknown> | string | undefined;
@@ -852,7 +953,7 @@ export async function fetchKieMediaResult(
   }
 
   if (!mediaUrl) {
-    console.error(`[API:${requestId}] No media URL found in Kie response:`, data);
+    console.error(`[API:${requestId}] No media URL found in Kie response:`, JSON.stringify(redactSecretsDeep(data, { secretFields: "replace" })).substring(0, 500));
     return { success: false, error: "No output URL in response" };
   }
 
@@ -863,24 +964,26 @@ export async function fetchKieMediaResult(
     isAudio = true;
   }
 
-  const mediaUrlCheck = validateMediaUrl(mediaUrl);
-  if (!mediaUrlCheck.valid) {
-    return { success: false, error: `Invalid media URL: ${mediaUrlCheck.error}` };
+  console.log(`[API:${requestId}] Fetching output from: ${redactSecretsInText(mediaUrl).substring(0, 80)}...`);
+  // CRB-09: every hop of the result download — protocol, resolved address,
+  // authorized origin, media type and size — is validated.
+  const mediaDownload = await downloadSafeMedia(mediaUrl, {
+    authorizedOrigins: KIE_MEDIA_ORIGINS,
+    allowedMediaTypes: RESULT_MEDIA_TYPES,
+    allowOctetStreamForMediaPaths: true,
+    extensionsForOpaqueMedia: RESULT_MEDIA_EXTENSIONS,
+    maxBytes: MAX_MEDIA_SIZE,
+  });
+
+  if (!mediaDownload.ok) {
+    console.error(`[API:${requestId}] Invalid media URL from Kie: ${redactSecretsInText(mediaUrl)} (${mediaDownload.reason}${mediaDownload.detail ? `: ${mediaDownload.detail}` : ""})`);
+    return {
+      success: false,
+      error: `Invalid media URL: ${mediaDownload.reason}${mediaDownload.detail ? ` (${mediaDownload.detail})` : ""}`,
+    };
   }
 
-  console.log(`[API:${requestId}] Fetching output from: ${mediaUrl.substring(0, 80)}...`);
-  const mediaResponse = await fetch(mediaUrl);
-
-  if (!mediaResponse.ok) {
-    return { success: false, error: `Failed to fetch output: ${mediaResponse.status}` };
-  }
-
-  const mediaContentLength = parseInt(mediaResponse.headers.get("content-length") || "0", 10);
-  if (mediaContentLength > MAX_MEDIA_SIZE) {
-    return { success: false, error: `Media too large: ${(mediaContentLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-  }
-
-  const rawContentType = mediaResponse.headers.get("content-type") || "";
+  const rawContentType = mediaDownload.mediaType;
   const isConcreteMedia = rawContentType.startsWith("audio/") || rawContentType.startsWith("video/") || rawContentType.startsWith("image/");
   if (rawContentType.startsWith("video/")) {
     isVideo = true;
@@ -891,12 +994,9 @@ export async function fetchKieMediaResult(
   } else if (!isConcreteMedia && !isVideo && !isAudio && isAudioModel) {
     isAudio = true;
   }
-  const contentType = rawContentType || (isVideo ? "video/mp4" : isAudio ? "audio/mpeg" : "image/png");
+  const contentType = rawContentType;
 
-  const mediaArrayBuffer = await mediaResponse.arrayBuffer();
-  if (mediaArrayBuffer.byteLength > MAX_MEDIA_SIZE) {
-    return { success: false, error: `Media too large: ${(mediaArrayBuffer.byteLength / (1024 * 1024)).toFixed(0)}MB > 500MB limit` };
-  }
+  const mediaArrayBuffer = mediaDownload.bytes;
   const mediaSizeMB = mediaArrayBuffer.byteLength / (1024 * 1024);
 
   console.log(`[API:${requestId}] Output: ${contentType}, ${mediaSizeMB.toFixed(2)}MB`);

@@ -49,16 +49,23 @@ vi.mock(import("os"), async (importOriginal) => {
 });
 
 import { POST } from "../route";
+import { localApiRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
-// Helper to create mock NextRequest
+// Helper to create mock NextRequest. The privileged request guard runs for
+// real, so the double is wrapped in an authenticated local-API envelope, which
+// supplies the loopback Host the session capability is bound to. A case that
+// names its own Host (e.g. a spoofed non-loopback one) still presents it.
 function createMockRequest(
   body: unknown,
   headers?: Record<string, string>
 ): NextRequest {
-  return {
-    json: vi.fn().mockResolvedValue(body),
-    headers: new Headers({ host: "localhost:3000", ...headers }),
-  } as unknown as NextRequest;
+  return localApiRequest(
+    {
+      json: vi.fn().mockResolvedValue(body),
+      headers: new Headers(headers),
+    } as unknown as NextRequest,
+    { url: `${TEST_LOCAL_ORIGIN}/api/open-file`, headers },
+  );
 }
 
 describe("/api/open-file route", () => {
@@ -72,7 +79,7 @@ describe("/api/open-file route", () => {
     it("should return 403 for non-localhost x-forwarded-for", async () => {
       const request = createMockRequest(
         { filePath: "/Users/testuser/file.glb" },
-        { "x-forwarded-for": "203.0.113.50", host: "localhost:3000" }
+        { "x-forwarded-for": "203.0.113.50" }
       );
 
       const response = await POST(request);
@@ -91,8 +98,12 @@ describe("/api/open-file route", () => {
       const response = await POST(request);
       const data = await response.json();
 
+      // A non-loopback Host is now refused by the shared request guard, before
+      // the route's own localhost gate runs. The route gate still handles the
+      // forwarded-address cases below.
       expect(response.status).toBe(403);
-      expect(data.error).toBe("Forbidden: localhost only");
+      expect(data.reason).toBe("unexpected-host");
+      expect(data.error).toBe("Request host is not this local instance");
     });
 
     it("should allow requests from 127.0.0.1 x-forwarded-for", async () => {
@@ -101,7 +112,7 @@ describe("/api/open-file route", () => {
 
       const request = createMockRequest(
         { filePath: "/Users/testuser/file.glb" },
-        { "x-forwarded-for": "127.0.0.1", host: "localhost:3000" }
+        { "x-forwarded-for": "127.0.0.1" }
       );
 
       const response = await POST(request);
@@ -117,7 +128,7 @@ describe("/api/open-file route", () => {
 
       const request = createMockRequest(
         { filePath: "/Users/testuser/file.glb" },
-        { "x-forwarded-for": "::1", host: "localhost:3000" }
+        { "x-forwarded-for": "::1" }
       );
 
       const response = await POST(request);
@@ -127,14 +138,11 @@ describe("/api/open-file route", () => {
       expect(data.success).toBe(true);
     });
 
-    it("should allow requests with localhost host header", async () => {
+    it("should allow requests with a loopback host header", async () => {
       mockStat.mockResolvedValue({ isFile: () => true });
       mockExecFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
 
-      const request = createMockRequest(
-        { filePath: "/Users/testuser/file.glb" },
-        { host: "localhost:3000" }
-      );
+      const request = createMockRequest({ filePath: "/Users/testuser/file.glb" });
 
       const response = await POST(request);
       const data = await response.json();

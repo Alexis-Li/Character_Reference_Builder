@@ -10,6 +10,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { engineFromRequest } from "@/lib/comfy/server";
 import { collectRun, nameFailedOutput } from "@/lib/comfy/server/run";
 import type { ComfyAppDefinition, ComfyResolvedOutput } from "@/lib/comfy/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 import { comfyErrorResponse } from "../shared";
 
 export const maxDuration = 300;
@@ -49,7 +51,14 @@ export interface ComfyPollResponse {
   ready?: boolean;
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Collecting a finished job downloads every output it produced, so this route
+ * carries the "remote-media-fetch" effect on top of the configurable backend it
+ * talks to — a "cloud-request" when that backend is Comfy Cloud.
+ */
+export const POST = withPrivilegedApi(
+  ["configurable-backend", "remote-media-fetch", "cloud-request"],
+  async (request: NextRequest) => {
   try {
     const body = (await request.json()) as ComfyPollRequest;
     if (!body?.jobId) {
@@ -90,8 +99,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (state.error) {
+      // The engine's own words, so they pass the redaction seam like every
+      // other message this route returns.
       return NextResponse.json(
-        { success: false, error: nameFailedOutput(state, body.app) },
+        { success: false, error: redactSecretsInText(nameFailedOutput(state, body.app)) },
         { status: 502 }
       );
     }
@@ -115,4 +126,5 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return comfyErrorResponse(error);
   }
-}
+  }
+);

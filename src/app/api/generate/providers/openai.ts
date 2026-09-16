@@ -14,6 +14,11 @@
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
 import {
+  bindCredentialToDestination,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
+import {
   imageCapabilities,
   summarizePurposes,
   type ProviderCallRecord,
@@ -67,6 +72,31 @@ export async function generateWithOpenAI(
     hasMask: Boolean(input.mask),
     auth: "api-key",
   };
+
+  // CRB-09: the credential is attached only after it is bound to the recipient
+  // this call actually uses. The adapter receives a key value, not its
+  // provenance, so provenance is resolved here: a value equal to this
+  // instance's environment entry is a server-environment credential.
+  const credentialSource: CredentialSource =
+    process.env.OPENAI_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "openai",
+    role: "image",
+    endpoint: OPENAI_API_BASE,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] OpenAI credential withheld from ${OPENAI_API_BASE}: recipient not authorized`);
+    return {
+      success: false,
+      error: `${input.model.name}: OpenAI credential is not authorized for this destination`,
+      call: { ...callBase, stage: "failed" },
+    };
+  }
 
   const hasImages = (input.images && input.images.length > 0)
     || Boolean(input.references?.length)
@@ -127,7 +157,7 @@ export async function generateWithOpenAI(
     response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
       },
       body: formData,
       signal: AbortSignal.timeout(120_000),
@@ -150,7 +180,7 @@ export async function generateWithOpenAI(
     response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -169,7 +199,9 @@ export async function generateWithOpenAI(
     } catch {
       // Non-JSON body (HTML error page, etc.) — keep the status-based message.
     }
-    console.error(`[API:${requestId}] OpenAI error ${response.status}: ${errorText.slice(0, 300)}`);
+    // CRB-09: upstream text can echo the credential or a signed URL.
+    errorDetail = redactSecretsInText(errorDetail);
+    console.error(`[API:${requestId}] OpenAI error ${response.status}: ${redactSecretsInText(errorText).slice(0, 300)}`);
 
     // Handle rate limits
     if (response.status === 429) {

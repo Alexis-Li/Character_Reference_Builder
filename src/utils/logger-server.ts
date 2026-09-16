@@ -6,12 +6,23 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { LogSession } from './logger';
+import { resolveRuntimeStateDir } from '@/lib/security/cliAuth.server';
+import { redactSecretsDeep } from '@/lib/security/secretRedaction';
 
 /**
  * Check if running on Vercel (read-only filesystem)
  */
 function isVercelProduction(): boolean {
   return !!process.env.VERCEL;
+}
+
+/**
+ * Disposable runtime logs live under `CRB_TEMP_ROOT/runtime/`, never in the
+ * repository: they are diagnostics, not project assets, and a session file
+ * must not be committed or shipped by accident.
+ */
+function logsDirectory(): string {
+  return path.join(resolveRuntimeStateDir(), 'logs');
 }
 
 /**
@@ -32,7 +43,7 @@ export async function saveSession(session: LogSession): Promise<void> {
     return;
   }
 
-  const logsDir = path.join(process.cwd(), 'logs');
+  const logsDir = logsDirectory();
   const filename = `session-${session.sessionId}.json`;
   const filepath = path.join(logsDir, filename);
 
@@ -44,9 +55,12 @@ export async function saveSession(session: LogSession): Promise<void> {
     return;
   }
 
-  // Write session to file
+  // Write session to file. The session arrives from an API route, so it is
+  // redacted here as well as at the route: a log file is a shareable artifact,
+  // and a credential that reaches one has left the machine's trust boundary.
+  const sanitized = redactSecretsDeep(session, { secretFields: 'drop' });
   try {
-    await fs.writeFile(filepath, JSON.stringify(session, null, 2), 'utf-8');
+    await fs.writeFile(filepath, JSON.stringify(sanitized, null, 2), 'utf-8');
   } catch (error) {
     console.error('Failed to write log file:', error);
   }
@@ -61,7 +75,7 @@ export async function rotateLogFiles(): Promise<void> {
     return;
   }
 
-  const logsDir = path.join(process.cwd(), 'logs');
+  const logsDir = logsDirectory();
 
   // Ensure logs directory exists
   try {

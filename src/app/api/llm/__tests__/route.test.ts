@@ -45,6 +45,7 @@ vi.mock("@/utils/logger", () => ({
 }));
 
 import { POST } from "../route";
+import { localApiRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
 // Store original env and fetch
 const originalEnv = { ...process.env };
@@ -53,15 +54,32 @@ const originalFetch = global.fetch;
 // Mock fetch for OpenAI API
 const mockFetch = vi.fn();
 
-// Helper to create mock NextRequest for POST
+// Headers that could carry a provider credential out of the process.
+const CREDENTIAL_HEADERS = [
+  "authorization",
+  "x-api-key",
+  "cookie",
+  "x-gemini-api-key",
+  "x-openai-api-key",
+  "x-anthropic-api-key",
+];
+
+// Helper to create mock NextRequest for POST. The privileged request guard runs
+// for real, so the double is wrapped in an authenticated local envelope
+// (loopback Host, same-origin evidence, session capability, one-time nonce);
+// the case's own headers (provider keys, a deliberately hostile Origin) win on
+// conflict, so a case that means to present a bad Origin still presents it.
 function createMockPostRequest(
   body: unknown,
   headers?: Record<string, string>
 ): NextRequest {
-  return {
-    json: vi.fn().mockResolvedValue(body),
-    headers: new Headers(headers),
-  } as unknown as NextRequest;
+  return localApiRequest(
+    {
+      json: vi.fn().mockResolvedValue(body),
+      headers: new Headers(headers),
+    } as unknown as NextRequest,
+    { method: "POST", url: `${TEST_LOCAL_ORIGIN}/api/llm` }
+  );
 }
 
 describe("/api/llm route", () => {
@@ -867,6 +885,53 @@ describe("/api/llm route", () => {
           }),
         })
       );
+    });
+  });
+
+  describe("privileged request guard", () => {
+    beforeEach(() => {
+      global.fetch = mockFetch;
+    });
+
+    it("should reject a hostile Origin before the provider runs, with no credential in any recorded call", async () => {
+      process.env.GEMINI_API_KEY = "test-gemini-key";
+      process.env.OPENAI_API_KEY = "test-openai-key";
+
+      const hostileOrigin = { origin: "http://evil.example" };
+      const requests = [
+        createMockPostRequest(
+          { prompt: "Test prompt", provider: "google", model: "gemini-2.5-flash" },
+          hostileOrigin
+        ),
+        createMockPostRequest(
+          { prompt: "Test prompt", provider: "openai", model: "gpt-4.1-mini" },
+          hostileOrigin
+        ),
+      ];
+
+      for (const request of requests) {
+        const response = await POST(request);
+        const data = await response.json();
+
+        expect(response.status).toBe(403);
+        expect(data.success).toBe(false);
+        expect(data.reason).toBe("unexpected-origin");
+      }
+
+      // The guard runs first: neither credential channel was touched — no SDK
+      // client was built from the env key and no outbound provider call fired.
+      expect(MockGoogleGenAI.callCount).toBe(0);
+      expect(MockGoogleGenAI.lastCalledWith).toBeNull();
+      expect(mockFetch).not.toHaveBeenCalled();
+
+      // Nothing that was recorded carries a provider credential.
+      const leakedHeaders = mockFetch.mock.calls.flatMap((call) => {
+        const init = call[1] as RequestInit | undefined;
+        return [...new Headers(init?.headers ?? {}).keys()].filter((name) =>
+          CREDENTIAL_HEADERS.includes(name)
+        );
+      });
+      expect(leakedHeaders).toEqual([]);
     });
   });
 });

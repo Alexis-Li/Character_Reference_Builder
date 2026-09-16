@@ -1,3 +1,4 @@
+import { NextRequest } from 'next/server';
 import { streamText, convertToModelMessages, UIMessage, stepCountIs } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createChatTools, buildEditSystemPrompt } from '@/lib/chat/tools';
@@ -5,10 +6,18 @@ import { buildWorkflowContext } from '@/lib/chat/contextBuilder';
 import { extractSubgraph } from '@/lib/chat/subgraphExtractor';
 import { WorkflowNode } from '@/types';
 import { WorkflowEdge } from '@/types/workflow';
+import { withPrivilegedApi } from '@/lib/security/requestGuard.server';
+import { redactSecretsDeep, redactSecretsInText } from '@/lib/security/secretRedaction';
 
 export const maxDuration = 60; // 1 minute timeout
 
-export async function POST(request: Request) {
+/**
+ * Bills a server-held Gemini credential; caller-supplied message parts are
+ * forwarded to the model, so image bytes can leave the process from here too.
+ */
+export const POST = withPrivilegedApi(
+  ['cloud-request', 'design-reference-upload'],
+  async (request: NextRequest) => {
   try {
     const { messages, workflowState, selectedNodeIds } = await request.json() as {
       messages: UIMessage[];
@@ -63,7 +72,16 @@ export async function POST(request: Request) {
     // Return the UI message stream response for useChat compatibility
     return result.toUIMessageStreamResponse();
   } catch (error) {
-    console.error('[Chat API Error]', error);
+    // Console output can leave the machine (log shippers, scrollback), and AI
+    // SDK errors carry the request URL and body: redact before printing.
+    console.error(
+      '[Chat API Error]',
+      redactSecretsDeep(
+        error instanceof Error
+          ? { ...error, name: error.name, message: error.message, stack: error.stack }
+          : error
+      )
+    );
 
     if (error instanceof Error && error.message.includes('429')) {
       return new Response('Rate limit reached. Please wait and try again.', { status: 429 });
@@ -78,8 +96,8 @@ export async function POST(request: Request) {
     }
 
     return new Response(
-      error instanceof Error ? error.message : 'Chat request failed',
+      error instanceof Error ? redactSecretsInText(error.message) : 'Chat request failed',
       { status: 500 }
     );
   }
-}
+});

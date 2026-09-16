@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ProviderModel, ModelCapability } from "@/lib/providers";
+import {
+  bindCredentialToDestination,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 const REPLICATE_API_BASE = "https://api.replicate.com/v1";
 
@@ -107,25 +113,36 @@ type ModelsResponse = ModelsSuccessResponse | ModelsErrorResponse;
  * GET /api/providers/replicate/models
  *
  * Fetches available models from Replicate API.
- * Requires API key in X-API-Key header or api_key query param.
+ * The credential is accepted only in the X-API-Key header: a key in the query
+ * string would end up in logs, history and referrers.
  *
  * Query params:
  *   - search: Optional search query to filter models
- *   - api_key: Alternative to X-API-Key header
  */
-export async function GET(
-  request: NextRequest
-): Promise<NextResponse<ModelsResponse>> {
-  // Get API key from header or query param
-  const apiKey =
-    request.headers.get("X-API-Key") ||
-    request.nextUrl.searchParams.get("api_key");
+export const GET = withPrivilegedApi(
+  ["cloud-request"],
+  async (request: NextRequest): Promise<NextResponse<ModelsResponse>> => {
+  const headerKey = request.headers.get("X-API-Key");
 
-  if (!apiKey) {
+  // CRB-09: bind the credential to the catalog recipient before it is attached,
+  // and attach only the bound value.
+  const credentialSource: CredentialSource =
+    process.env.REPLICATE_API_KEY === headerKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "replicate",
+    role: "catalog",
+    endpoint: REPLICATE_API_BASE,
+    credential: headerKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
     return NextResponse.json<ModelsErrorResponse>(
       {
         success: false,
-        error: "API key required. Provide X-API-Key header or api_key query param.",
+        error: "API key required. Provide an X-API-Key header.",
       },
       { status: 401 }
     );
@@ -146,7 +163,7 @@ export async function GET(
 
     const response = await fetch(url, {
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
       },
     });
 
@@ -204,10 +221,11 @@ export async function GET(
         success: false,
         error:
           error instanceof Error
-            ? error.message
+            ? redactSecretsInText(error.message)
             : "Failed to fetch models from Replicate",
       },
       { status: 500 }
     );
   }
 }
+);

@@ -1,6 +1,18 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
+import { setAddressResolverForTest } from "@/lib/security/networkTargets.server";
+
+// Security seams resolve destination addresses before connecting. Automated
+// tests never perform DNS: every host resolves to a documentation address
+// (TEST-NET-3) so the destination class checks still run, hermetically.
+beforeAll(() => {
+  setAddressResolverForTest(async () => ["203.0.113.10"]);
+});
+
+afterAll(() => {
+  setAddressResolverForTest(null);
+});
 
 // Mock ResizeObserver for React Flow tests
 class ResizeObserverMock {

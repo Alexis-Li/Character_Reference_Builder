@@ -4,32 +4,27 @@ import * as path from "path";
 import { logger } from "@/utils/logger";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
 import { atomicReplaceFile } from "@/lib/projectFiles.server";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { checkWriteTarget } from "@/lib/security/projectWriteScope.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
+import { classifyMediaContent } from "@/lib/security/activeContent";
 
 export const maxDuration = 300; // 5 minute timeout for large image operations
 
 const IMAGES_FOLDER = "inputs";
 const LEGACY_IMAGES_FOLDER = ".images"; // For backward compatibility
 
-// Helper to extract MIME type and extension from data URL
-function getMimeAndExtension(dataUrl: string): { mime: string; extension: string } {
-  const match = dataUrl.match(/^data:(image\/\w+);base64,/);
-  if (match) {
-    const mime = match[1];
-    const mimeToExt: Record<string, string> = {
-      "image/png": "png",
-      "image/jpeg": "jpg",
-      "image/jpg": "jpg",
-      "image/gif": "gif",
-      "image/webp": "webp",
-    };
-    return { mime, extension: mimeToExt[mime] || "png" };
-  }
-  // Default to PNG if no MIME type found
-  return { mime: "image/png", extension: "png" };
-}
+/** Raster media types this route stores, keyed to their on-disk extension. */
+const RASTER_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+};
 
 // POST: Save an image to the workflow's inputs or generations folder
-export async function POST(request: NextRequest) {
+export const POST = withPrivilegedApi(["local-file-write"], async (request: NextRequest) => {
   let workflowPath: string | undefined;
   let imageId: string | undefined;
   let folder: string | undefined;
@@ -73,6 +68,21 @@ export async function POST(request: NextRequest) {
       });
       return NextResponse.json(
         { success: false, error: pathValidation.error },
+        { status: 400 }
+      );
+    }
+
+    // Confine writes: the workflow directory is the write root, but it must
+    // itself be an authorized root and outside the application's own source and
+    // static subtrees. This runs before anything is created.
+    const workflowScope = checkWriteTarget(workflowPath);
+    if (!workflowScope.ok) {
+      logger.warn('file.error', 'Workflow image save refused: write scope rejected', {
+        workflowPath,
+        reason: workflowScope.reason,
+      });
+      return NextResponse.json(
+        { success: false, error: `Write target not authorized (${workflowScope.reason})` },
         { status: 400 }
       );
     }
@@ -125,6 +135,18 @@ export async function POST(request: NextRequest) {
 
     // Create target folder if it doesn't exist
     const targetFolder = joinWorkflowPath(workflowPath, folder);
+    const folderScope = checkWriteTarget(targetFolder);
+    if (!folderScope.ok) {
+      logger.warn('file.error', 'Workflow image save refused: write scope rejected', {
+        workflowPath,
+        targetFolder,
+        reason: folderScope.reason,
+      });
+      return NextResponse.json(
+        { success: false, error: `Write target not authorized (${folderScope.reason})` },
+        { status: 400 }
+      );
+    }
     try {
       await fs.mkdir(targetFolder, { recursive: true });
     } catch (mkdirError) {
@@ -146,14 +168,56 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Extract MIME type and determine file extension
-    const { extension } = getMimeAndExtension(imageData);
+    // Parse the data URL exactly: matching the prefix (including any
+    // `;charset=…`-style parameters) is what keeps the `data:` header out of the
+    // bytes on disk, and the declared type decides whether the payload may be
+    // stored at all. No data URL prefix means raw base64 PNG.
+    const dataUrlMatch = imageData.match(/^data:([^;,]+)((?:;[^;,]*)*);base64,([\s\S]*)$/);
+    const declaredMime = dataUrlMatch ? dataUrlMatch[1] : "image/png";
+    const base64Data = dataUrlMatch ? dataUrlMatch[3] : imageData;
+    const buffer = Buffer.from(base64Data, "base64");
+
+    // Only raster media is stored: this route feeds assets back into the app,
+    // so an SVG (a document, not an image) or an HTML/text payload must never be
+    // written under an image extension.
+    const contentKind = classifyMediaContent(declaredMime, buffer);
+    if (contentKind !== "raster") {
+      let refusal = `Refused: only raster image data can be stored (${declaredMime || "unknown type"})`;
+      if (contentKind === "active-svg") {
+        refusal = "Refused: SVG payload contains active content (script, event handler or external reference)";
+      } else if (contentKind === "inert-svg") {
+        refusal = "Refused: SVG payloads are not stored as workflow images";
+      }
+      logger.warn('file.error', 'Workflow image save refused: content is not a raster image', {
+        workflowPath,
+        imageId,
+        declaredMime,
+        contentKind,
+      });
+      return NextResponse.json(
+        { success: false, error: redactSecretsInText(refusal) },
+        { status: 400 }
+      );
+    }
+
+    const extension = RASTER_EXTENSIONS[declaredMime] ?? "png";
     const filename = `${safeImageId}.${extension}`;
     const filePath = joinWorkflowPath(targetFolder, filename);
 
-    // Extract base64 data and convert to buffer
-    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, "");
-    const buffer = Buffer.from(base64Data, "base64");
+    // The resolved asset path must stay inside the workflow directory that the
+    // request was allowed to write into.
+    const fileScope = checkWriteTarget(filePath);
+    if (!fileScope.ok) {
+      logger.warn('file.error', 'Workflow image save refused: write scope rejected', {
+        workflowPath,
+        filePath,
+        reason: fileScope.reason,
+      });
+      return NextResponse.json(
+        { success: false, error: `Write target not authorized (${fileScope.reason})` },
+        { status: 400 }
+      );
+    }
 
     // An interrupted replacement must leave either the old asset or the fully
     // written new asset available to the project manifest.
@@ -178,15 +242,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Save failed",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "Save failed",
       },
       { status: 500 }
     );
   }
-}
+});
 
 // GET: Load an image from the workflow's folders (inputs, generations, or legacy .images)
-export async function GET(request: NextRequest) {
+export const GET = withPrivilegedApi(["local-file-read"], async (request: NextRequest) => {
   const workflowPath = request.nextUrl.searchParams.get("workflowPath");
   const imageId = request.nextUrl.searchParams.get("imageId");
   const folder = request.nextUrl.searchParams.get("folder"); // Optional hint for which folder to check first
@@ -324,9 +388,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Load failed",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "Load failed",
       },
       { status: 500 }
     );
   }
-}
+});

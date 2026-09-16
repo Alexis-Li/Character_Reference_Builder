@@ -6,12 +6,15 @@
  * pass the check and absent enough to be skipped by the loop — so the job went
  * to the engine with nothing patched in, and the user got a render from the
  * workflow author's saved value instead of the curated 400.
+ *
+ * Requests carry the real local-session envelope: the privileged guard runs for
+ * real, and only what the engine returns is stubbed.
  */
 
-import { NextRequest } from "next/server";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import type { ComfyAppDefinition } from "@/lib/comfy/types";
+import { localApiNextRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
 const submit = vi.fn();
 const uploadInputs = vi.fn();
@@ -61,10 +64,13 @@ const app = {
 
 const call = (inputs: Record<string, string>) =>
   POST(
-    new NextRequest("http://localhost/api/comfy/run", {
+    localApiNextRequest(`${TEST_LOCAL_ORIGIN}/api/comfy/run`, {
       method: "POST",
       body: JSON.stringify({ app, inputs }),
-    })
+    }),
+    // The guarded handler is typed with its context argument; these routes take
+    // no dynamic segment, so it is empty. The guard itself runs for real.
+    { params: Promise.resolve({}) }
   );
 
 beforeEach(() => {

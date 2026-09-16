@@ -4,10 +4,12 @@ import { promisify } from "util";
 import { stat } from "fs/promises";
 import path from "path";
 import os from "os";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { authorizedWriteRoots, isInsideDirectory } from "@/lib/security/projectWriteScope.server";
 
 const execFileAsync = promisify(execFile);
 
-export async function POST(req: NextRequest) {
+export const POST = withPrivilegedApi(["local-file-read"], async (req: NextRequest) => {
     try {
         const body = await req.json();
         const { path: inputPath } = body;
@@ -21,6 +23,20 @@ export async function POST(req: NextRequest) {
 
         // Normalize and resolve the path to prevent traversal attacks
         const normalizedPath = path.resolve(inputPath);
+
+        // Confine OS-level opens to the user's home directory or an authorized
+        // project root, so a compromised page cannot ask the shell to open
+        // arbitrary system locations.
+        const allowedRoots = [path.resolve(os.homedir()), ...authorizedWriteRoots()];
+        if (!allowedRoots.some((root) => isInsideDirectory(normalizedPath, root))) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    error: "Directory is outside the user's home directory and authorized project roots",
+                },
+                { status: 400 }
+            );
+        }
 
         // Validate that the path exists and is a directory
         try {
@@ -71,4 +87,4 @@ export async function POST(req: NextRequest) {
             { status: 500 }
         );
     }
-}
+});

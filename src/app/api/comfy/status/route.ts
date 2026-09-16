@@ -9,6 +9,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { engineFromRequest, getObjectInfo, invalidateObjectInfo } from "@/lib/comfy/server";
+import type { ComfyConnection } from "@/lib/comfy/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { comfyErrorResponse } from "../shared";
 
 export const maxDuration = 60;
@@ -27,30 +29,50 @@ export interface ComfyStatusResponse {
   nodeCount: number | null;
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const { engine, connection } = engineFromRequest(request);
-
-    // The user is explicitly re-testing, so never answer from a stale catalog.
-    invalidateObjectInfo(connection.baseUrl);
-
-    const ping = await engine.ping(request.signal);
-    let nodeCount: number | null = null;
-    if (ping.ok) {
-      const catalog = await getObjectInfo(engine).catch(() => null);
-      nodeCount = catalog ? Object.keys(catalog).length : null;
-    }
-
-    return NextResponse.json<ComfyStatusResponse>({
-      success: true,
-      connected: ping.ok,
-      mode: connection.mode,
-      baseUrl: connection.baseUrl,
-      detail: ping.detail,
-      apiV2: connection.useSdk,
-      nodeCount,
-    });
-  } catch (error) {
-    return comfyErrorResponse(error);
+/**
+ * Why a configured engine key was not sent.
+ *
+ * Without this, an environment key withheld from a request-named destination
+ * reads as the engine rejecting the key — which blames the credential for a
+ * destination the product never authorized it for.
+ */
+function withheldDetail(connection: ComfyConnection): string {
+  if (connection.credentialWithheld === "source-not-authorized-for-destination") {
+    return " The server's ComfyUI key was not sent: it is only used with the registered Comfy Cloud endpoint, so enter a key for this destination here.";
   }
+  if (connection.credentialWithheld === "recipient-not-authorized") {
+    return " The configured ComfyUI key was not sent: this destination is not authorized for it.";
+  }
+  return "";
 }
+
+export const POST = withPrivilegedApi(
+  ["configurable-backend"],
+  async (request: NextRequest) => {
+    try {
+      const { engine, connection } = engineFromRequest(request);
+
+      // The user is explicitly re-testing, so never answer from a stale catalog.
+      invalidateObjectInfo(connection.baseUrl);
+
+      const ping = await engine.ping(request.signal);
+      let nodeCount: number | null = null;
+      if (ping.ok) {
+        const catalog = await getObjectInfo(engine).catch(() => null);
+        nodeCount = catalog ? Object.keys(catalog).length : null;
+      }
+
+      return NextResponse.json<ComfyStatusResponse>({
+        success: true,
+        connected: ping.ok,
+        mode: connection.mode,
+        baseUrl: connection.baseUrl,
+        detail: ping.ok ? ping.detail : `${ping.detail}${withheldDetail(connection)}`.trim(),
+        apiV2: connection.useSdk,
+        nodeCount,
+      });
+    } catch (error) {
+      return comfyErrorResponse(error);
+    }
+  }
+);

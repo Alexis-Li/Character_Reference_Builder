@@ -4,6 +4,9 @@ import { promisify } from "util";
 import { writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { registerProjectRoot } from "@/lib/security/projectRoots.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 const execAsync = promisify(exec);
 
@@ -35,7 +38,7 @@ export function normalizeSelectedPath(selectedPath: string, platform: string): s
 }
 
 // GET: Open native directory picker and return the selected path
-export async function GET() {
+export const GET = withPrivilegedApi(["local-file-read"], async () => {
   const platform = process.platform;
 
   try {
@@ -150,6 +153,12 @@ if ($result) { Write-Output $result }
 
     selectedPath = normalizeSelectedPath(selectedPath, platform);
 
+    // The native picker is the user's own selection, so it is the strongest
+    // signal that this directory is an authorized project root (CRB-09). It is
+    // recorded before the client can act on it, so a later save or media write
+    // into the picked folder is authorized and everything else is not.
+    registerProjectRoot(selectedPath);
+
     return NextResponse.json({
       success: true,
       cancelled: false,
@@ -172,10 +181,11 @@ if ($result) { Write-Output $result }
     return NextResponse.json(
       {
         success: false,
-        error:
+        error: redactSecretsInText(
           error instanceof Error ? error.message : "Failed to open dialog",
+        ),
       },
       { status: 500 }
     );
   }
-}
+});

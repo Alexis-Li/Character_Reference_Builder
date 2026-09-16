@@ -25,6 +25,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ProviderType } from "@/types";
 import { ModelParameter, ModelInput } from "@/lib/providers/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 import {
   getCachedWaveSpeedSchema,
   setCachedWaveSpeedSchemas,
@@ -1561,10 +1563,12 @@ function extractWaveSpeedSchema(
   return extractParametersFromSchema(requestSchema as Record<string, unknown>);
 }
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ modelId: string }> }
-): Promise<NextResponse<SchemaResponse>> {
+export const GET = withPrivilegedApi(
+  ["cloud-request"],
+  async (
+    request: NextRequest,
+    { params }: { params: Promise<{ modelId: string }> }
+  ): Promise<NextResponse<SchemaResponse>> => {
   // Await params before accessing properties
   const { modelId } = await params;
   const decodedModelId = decodeURIComponent(modelId);
@@ -1659,9 +1663,9 @@ export async function GET(
     return NextResponse.json<SchemaErrorResponse>(
       {
         success: false,
-        error: errorMessage,
+        error: redactSecretsInText(errorMessage),
       },
       { status: 500 }
     );
   }
-}
+});

@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { engineFromRequest } from "@/lib/comfy/server";
 import type { ComfyPreviewFrame } from "@/lib/comfy/server/engine";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { comfyErrorResponse } from "../shared";
 
 export const maxDuration = 300;
@@ -34,7 +35,15 @@ interface ComfyPreviewRequest {
  */
 export type ComfyPreviewMessage = ComfyPreviewFrame;
 
-export async function POST(request: NextRequest) {
+/**
+ * The event stream only exists on the API v2 surface, which is Comfy Cloud or a
+ * user-declared proxy in front of their own engine — so this is a
+ * "cloud-request" when it is Cloud, against the "configurable-backend" the
+ * connection names.
+ */
+export const POST = withPrivilegedApi(
+  ["configurable-backend", "cloud-request"],
+  async (request: NextRequest) => {
   // Outside the try: a body that is not JSON, or a job id that is not a string,
   // is the caller's mistake. Left to `comfyErrorResponse` the `SyntaxError`
   // becomes a 500, which reads as "the engine broke".
@@ -110,4 +119,5 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return comfyErrorResponse(error);
   }
-}
+  }
+);

@@ -21,6 +21,8 @@ import { generateWithWaveSpeed } from "./providers/wavespeed";
 import { generateWithOpenAI } from "./providers/openai";
 import { generateWithOpenAIOAuth } from "./providers/openaiOAuth";
 import { buildMediaResponse } from "./shared";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 export const maxDuration = 600; // 10 minute timeout for video generation polling
 export const dynamic = 'force-dynamic'; // Ensure this route is always dynamic
 
@@ -59,7 +61,13 @@ function capabilitiesForMediaType(mediaType?: string): ModelCapability[] {
   return map[mediaType ?? ""] ?? ["text-to-image"];
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Every branch below spends a server-held Provider credential, and the image
+ * branches hand the caller's reference bytes to that Provider.
+ */
+export const POST = withPrivilegedApi(
+  ["cloud-request", "design-reference-upload"],
+  async (request: NextRequest, { session }) => {
   const requestId = Math.random().toString(36).substring(7);
   let providerInvocationStarted = false;
   console.log(`\n[API:${requestId}] ========== NEW GENERATE REQUEST ==========`);
@@ -132,7 +140,7 @@ export async function POST(request: NextRequest) {
       references = normalizeReferences(rawReferences);
     } catch (error) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, ...NOT_EXECUTED, error: error instanceof Error ? error.message : "Invalid references" },
+        { success: false, ...NOT_EXECUTED, error: error instanceof Error ? redactSecretsInText(error.message) : "Invalid references" },
         { status: 400 }
       );
     }
@@ -238,7 +246,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             ...UNKNOWN_EXECUTION,
-            error: result.error || "Generation failed",
+            error: redactSecretsInText(result.error || "Generation failed"),
           },
           { status: 500 }
         );
@@ -317,7 +325,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             ...UNKNOWN_EXECUTION,
-            error: result.error || "Generation failed",
+            error: redactSecretsInText(result.error || "Generation failed"),
           },
           { status: 500 }
         );
@@ -414,7 +422,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             ...UNKNOWN_EXECUTION,
-            error: error instanceof Error ? error.message : "Task submission failed",
+            error: error instanceof Error ? redactSecretsInText(error.message) : "Task submission failed",
           },
           { status: 500 }
         );
@@ -487,7 +495,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             ...UNKNOWN_EXECUTION,
-            error: result.error || "Generation failed",
+            error: redactSecretsInText(result.error || "Generation failed"),
           },
           { status: 500 }
         );
@@ -520,6 +528,24 @@ export async function POST(request: NextRequest) {
       const oauthToken = request.headers.get("X-OpenAI-OAuth-Token");
       const openaiApiKey = request.headers.get("X-OpenAI-API-Key") || process.env.OPENAI_API_KEY;
       if (oauthToken) {
+        // CRB-09: the experimental transport is deactivated until a versioned
+        // Provider target is selected. CLI-only so a browser page can never
+        // hold a reusable bearer; the adapter re-checks the flag itself.
+        if (
+          process.env.CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT !== "1" ||
+          session.requestClass !== "cli"
+        ) {
+          console.warn(`[API:${requestId}] OpenAI OAuth-experimental transport refused`);
+          return NextResponse.json<GenerateResponse>(
+            {
+              success: false,
+              ...NOT_EXECUTED,
+              error:
+                "The OpenAI OAuth-experimental transport is disabled. It requires CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT=1 and is limited to CLI callers until a versioned Provider target is selected; use the API-key channel (X-OpenAI-API-Key or OPENAI_API_KEY) instead.",
+            },
+            { status: 403 }
+          );
+        }
         console.log(`[API:${requestId}] OpenAI auth channel: oauth-experimental`);
       } else if (!openaiApiKey) {
         return NextResponse.json<GenerateResponse>(
@@ -582,7 +608,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             ...(result.call ? SUBMITTED : UNKNOWN_EXECUTION),
-            error: result.error || "Generation failed",
+            error: redactSecretsInText(result.error || "Generation failed"),
             ...(result.call ? { call: result.call } : {}),
           },
           { status: 500 }
@@ -658,7 +684,7 @@ export async function POST(request: NextRequest) {
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(
-          { success: false, ...UNKNOWN_EXECUTION, error: result.error || "Video generation failed" },
+          { success: false, ...UNKNOWN_EXECUTION, error: redactSecretsInText(result.error || "Video generation failed") },
           { status: 500 }
         );
       }
@@ -723,14 +749,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.error(`[API:${requestId}] Generation error: ${errorMessage}${errorDetails ? ` (${errorDetails.substring(0, 200)})` : ""}`);
+    console.error(
+      `[API:${requestId}] Generation error: ${redactSecretsInText(errorMessage)}${errorDetails ? ` (${redactSecretsInText(errorDetails).substring(0, 200)})` : ""}`
+    );
     return NextResponse.json<GenerateResponse>(
       {
         success: false,
         ...(providerInvocationStarted ? UNKNOWN_EXECUTION : NOT_EXECUTED),
-        error: errorMessage,
+        error: redactSecretsInText(errorMessage),
       },
       { status: 500 }
     );
   }
-}
+});

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { LLMGenerateRequest, LLMGenerateResponse, LLMModelType } from "@/types";
 import { logger } from "@/utils/logger";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 export const maxDuration = 60; // 1 minute timeout
 
@@ -289,7 +291,14 @@ async function generateWithAnthropic(
   return text;
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Bills a server-held Provider credential for every branch; the vision
+ * branches additionally hand the caller's image bytes to that Provider.
+ * Logging is already redacted by `logger` itself.
+ */
+export const POST = withPrivilegedApi(
+  ["cloud-request", "design-reference-upload"],
+  async (request: NextRequest) => {
   const requestId = generateRequestId();
 
   try {
@@ -366,9 +375,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json<LLMGenerateResponse>(
       {
         success: false,
-        error: error instanceof Error ? error.message : "LLM generation failed",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "LLM generation failed",
       },
       { status: 500 }
     );
   }
-}
+});

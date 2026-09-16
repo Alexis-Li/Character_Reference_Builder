@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import * as fs from "fs/promises";
 import { logger } from "@/utils/logger";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 // Supported file extensions
 const SUPPORTED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm', 'mov', 'mp3', 'wav', 'ogg', 'flac', 'aac'];
@@ -30,7 +32,7 @@ const EXT_TO_MIME: Record<string, string> = {
 };
 
 // POST: Load a generated image or video from the generations folder by ID
-export async function POST(request: NextRequest) {
+export const POST = withPrivilegedApi(["local-file-read"], async (request: NextRequest) => {
   let directoryPath: string | undefined;
   let imageId: string | undefined;
   try {
@@ -161,9 +163,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Load failed",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "Load failed",
       },
       { status: 500 }
     );
   }
-}
+});

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
+import { localApiRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
 // Use vi.hoisted to define mocks that work with hoisted vi.mock
 const { mockGetCachedModels, mockSetCachedModels, mockGetCacheKey } = vi.hoisted(() => ({
@@ -25,20 +26,23 @@ const originalFetch = global.fetch;
 // Mock fetch for provider API calls
 const mockFetch = vi.fn();
 
-// Helper to create mock NextRequest for GET
+// Helper to create mock NextRequest for GET. The privileged request guard still
+// runs for real, so the double is wrapped in an authenticated local envelope
+// (loopback Host, same-origin evidence, session capability, nonce).
 function createMockGetRequest(
   params: Record<string, string> = {},
   headers?: Record<string, string>
 ): NextRequest {
-  const url = new URL("http://localhost:3000/api/models");
+  const url = new URL("/api/models", TEST_LOCAL_ORIGIN);
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.set(key, value);
   });
 
-  return {
-    nextUrl: url,
-    headers: new Headers(headers),
-  } as unknown as NextRequest;
+  return localApiRequest({} as NextRequest, {
+    method: "GET",
+    url: url.toString(),
+    headers,
+  }) as unknown as NextRequest;
 }
 
 // Helper to create Replicate API response
@@ -119,7 +123,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -151,7 +155,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -166,7 +170,7 @@ describe("/api/models route", () => {
     it("GET: should return 400 when provider filter is replicate but no key", async () => {
       // No Replicate key set, and explicitly requesting replicate only
       const request = createMockGetRequest({ provider: "replicate" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(400);
@@ -185,7 +189,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest({ provider: "replicate" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -216,7 +220,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest({ capabilities: "text-to-video" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -245,7 +249,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest({ search: "flux" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -272,7 +276,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -296,7 +300,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -322,7 +326,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest({}, { "X-Replicate-Key": "header-key" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
 
       expect(response.status).toBe(200);
       // Check that fetch was called with header key
@@ -351,7 +355,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -380,7 +384,7 @@ describe("/api/models route", () => {
       );
 
       const request = createMockGetRequest({ refresh: "true" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -405,7 +409,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest({ search: "flux", provider: "replicate" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -440,7 +444,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -466,7 +470,7 @@ describe("/api/models route", () => {
 
       // Request only fal provider so gemini is not included
       const request = createMockGetRequest({ provider: "fal" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -519,7 +523,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -527,6 +531,32 @@ describe("/api/models route", () => {
       expect(data.providers.replicate.count).toBe(3);
       expect(data.providers.fal.count).toBe(1);
       expect(replicatePageCount).toBe(3);
+    });
+
+    it("GET: should not follow a Replicate next page on another host", async () => {
+      process.env.REPLICATE_API_KEY = "test-key";
+
+      // A compromised response names a foreign host for page 2. The credential
+      // must not ride there, and the walk has to end instead of continuing.
+      mockFetch.mockImplementation((url: string) => {
+        if (url.includes("api.replicate.com")) {
+          return Promise.resolve(
+            createReplicateResponse(
+              [{ owner: "owner1", name: "model1", description: null }],
+              "https://attacker.example/steal"
+            )
+          );
+        }
+        return Promise.reject(new Error(`Unexpected URL: ${url}`));
+      });
+
+      const request = createMockGetRequest({ provider: "replicate" });
+      const response = await GET(request, { params: Promise.resolve({}) });
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(data.providers.replicate.count).toBe(1);
     });
 
     it("GET: should paginate through fal.ai results (max 15 pages)", async () => {
@@ -566,7 +596,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -596,7 +626,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -626,7 +656,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -652,7 +682,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -680,7 +710,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -708,7 +738,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -745,7 +775,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest();
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -808,7 +838,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest({ provider: "replicate", search: "topazlabs/video-upscale" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -841,7 +871,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest({ provider: "replicate", search: "ghost/missing-model" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -887,7 +917,7 @@ describe("/api/models route", () => {
 
       // A plain fragment (no "/") — only server-side search can surface it
       const request = createMockGetRequest({ provider: "replicate", search: "topaz" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -914,7 +944,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest({ provider: "replicate", search: "flux" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -956,7 +986,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest({ provider: "replicate", search: "flux" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -990,7 +1020,7 @@ describe("/api/models route", () => {
       });
 
       const request = createMockGetRequest({ providers: "gemini,fal" });
-      const response = await GET(request);
+      const response = await GET(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);

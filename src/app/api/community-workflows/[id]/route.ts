@@ -1,4 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsDeep } from "@/lib/security/secretRedaction";
 
 const COMMUNITY_WORKFLOWS_API_URL =
   "https://nodebananapro.com/api/public/community-workflows";
@@ -13,8 +15,14 @@ interface RouteParams {
  * Returns { success: true, downloadUrl: "..." } so the client can
  * download the workflow directly from R2 (avoids proxying 80-275MB files
  * through a serverless function).
+ *
+ * Fixed-host public catalog read: the `id` is only encoded into the catalog
+ * path, never into a credential-bearing request, so no privileged effect is
+ * declared beyond the local-session gate.
  */
-export async function GET(request: Request, { params }: RouteParams) {
+export const GET = withPrivilegedApi(
+  [],
+  async (request: NextRequest, { params }: RouteParams) => {
   try {
     const { id } = await params;
 
@@ -53,10 +61,17 @@ export async function GET(request: Request, { params }: RouteParams) {
       downloadUrl: urlData.downloadUrl,
     });
   } catch (error) {
-    console.error("Error getting community workflow URL:", error);
+    console.error(
+      "Error getting community workflow URL:",
+      redactSecretsDeep(
+        error instanceof Error
+          ? { ...error, name: error.name, message: error.message, stack: error.stack }
+          : error
+      )
+    );
     return NextResponse.json(
       { success: false, error: "Failed to load workflow" },
       { status: 500 }
     );
   }
-}
+});

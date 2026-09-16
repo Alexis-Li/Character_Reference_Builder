@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 
 export interface EnvStatusResponse {
   gemini: boolean;
@@ -10,7 +11,12 @@ export interface EnvStatusResponse {
   wavespeed: boolean;
 }
 
-export async function GET() {
+/**
+ * Discloses which Provider credentials this instance can see. Not billable and
+ * not a file access, but it is still local instance state: a page that is not
+ * this session must not be able to enumerate the configured providers.
+ */
+export const GET = withPrivilegedApi([], async () => {
   // Check which API keys are configured via environment variables
   const status: EnvStatusResponse = {
     gemini: !!process.env.GEMINI_API_KEY,
@@ -23,4 +29,4 @@ export async function GET() {
   };
 
   return NextResponse.json(status);
-}
+});

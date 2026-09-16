@@ -10,6 +10,16 @@
  * A stock local ComfyUI has no `/api/v2/*` routes — it needs the
  * `comfy-api-proxy` sidecar — which is why {@link ComfyConnection.useSdk}
  * gates this engine and the legacy one remains the default for local mode.
+ *
+ * CRB-09 residue, stated rather than hidden: `@comfyorg/sdk` owns its HTTP
+ * transport, including redirect handling, so a redirect that leaves the
+ * destination is followed inside the SDK and is not policy-controlled. That is
+ * why {@link createEngine} only selects this engine for a destination the
+ * product already trusts — HTTPS, and either the registered Comfy Cloud
+ * recipient or a destination a request authorized by supplying its own key —
+ * and why {@link assertSdkTransportAllowed} re-states the same rule wherever the
+ * SDK client is actually built. The engine's own legacy-surface calls
+ * (`ping`, `objectInfo`) do go through the outbound policy seam.
  */
 
 import {
@@ -24,7 +34,7 @@ import { ComfyLow } from "@comfyorg/sdk/low";
 
 import { mediaTypeForFilename, mimeForFilename } from "../graph";
 import type { ComfyConnection, ComfyGraph, ComfyObjectInfo, ComfyOutputType } from "../types";
-import { engineAuthHeaders } from "./connection";
+import { assertSdkTransportAllowed, engineRequest } from "./connection";
 import {
   ComfyEngineError,
   engineNeverAnswered,
@@ -40,7 +50,6 @@ import {
   CATALOG_RETRIES,
   CATALOG_TIMEOUT_MS,
   createEngineFetch,
-  resilientFetch,
 } from "./fetch";
 
 /**
@@ -162,6 +171,10 @@ export class SdkComfyEngine implements ComfyEngine {
    */
   private get low(): ComfyLow {
     if (!this.lowClient) {
+      // Same precondition as `sdk`: this transport carries the key and does its
+      // own redirect handling, so the destination has to be one the connection
+      // authorizes.
+      assertSdkTransportAllowed(this.connection);
       this.lowClient = new ComfyLow(
         this.connection.baseUrl,
         this.connection.apiKey ?? undefined,
@@ -177,6 +190,7 @@ export class SdkComfyEngine implements ComfyEngine {
 
   private get sdk(): Comfy {
     if (!this.client) {
+      assertSdkTransportAllowed(this.connection);
       this.client = new Comfy(this.connection.baseUrl, {
         ...(this.connection.apiKey ? { apiKey: this.connection.apiKey } : {}),
         clientInfo: "node-banana",
@@ -196,10 +210,10 @@ export class SdkComfyEngine implements ComfyEngine {
     // legacy `/api/queue` is served by the same host and answers both
     // questions at once, so use it.
     try {
-      const res = await resilientFetch(`${this.connection.baseUrl}/api/queue`, {
-        headers: engineAuthHeaders(this.connection),
+      const res = await engineRequest(this.connection, `${this.connection.baseUrl}/api/queue`, {
         timeoutMs: 8_000,
         signal,
+        label: this.label,
       });
       if (res.status === 401 || res.status === 403) {
         return { ok: false, detail: `${this.label} rejected the API key` };
@@ -217,20 +231,15 @@ export class SdkComfyEngine implements ComfyEngine {
   /**
    * The node catalog is not part of the v2 contract, so this reads the legacy
    * `/api/object_info` the same host serves. Comfy Cloud requires auth here
-   * even though the v2 routes use a different header, so both are sent.
+   * even though the v2 routes use a different header; the placement the
+   * connection declares for this endpoint is the one it accepts.
    */
   async objectInfo(signal?: AbortSignal): Promise<ComfyObjectInfo> {
-    const headers: Record<string, string> = this.connection.apiKey
-      ? {
-          Authorization: `Bearer ${this.connection.apiKey}`,
-          "X-API-Key": this.connection.apiKey,
-        }
-      : {};
-    const res = await resilientFetch(`${this.connection.baseUrl}/api/object_info`, {
-      headers,
+    const res = await engineRequest(this.connection, `${this.connection.baseUrl}/api/object_info`, {
       timeoutMs: CATALOG_TIMEOUT_MS,
       retries: CATALOG_RETRIES,
       signal,
+      label: this.label,
     });
     if (res.status === 401 || res.status === 403) {
       throw new ComfyEngineError(`${this.label} rejected the API key`, 401);

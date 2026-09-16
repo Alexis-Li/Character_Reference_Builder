@@ -11,12 +11,15 @@
  * The two limits themselves are the client's, in `comfyAppExecutor`. What this
  * route owes is the split those limits rely on: answering "is it done?" without
  * downloading anything when asked, which is what these cover.
+ *
+ * Requests carry the real local-session envelope: the privileged guard runs for
+ * real, and only what the engine returns is stubbed.
  */
 
-import { NextRequest } from "next/server";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import type { ComfyAppDefinition } from "@/lib/comfy/types";
+import { localApiNextRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
 
 const poll = vi.fn();
 const cancel = vi.fn();
@@ -52,10 +55,11 @@ const app = {
 
 const call = (body: Record<string, unknown>) =>
   POST(
-    new NextRequest("http://localhost/api/comfy/poll", {
+    localApiNextRequest(`${TEST_LOCAL_ORIGIN}/api/comfy/poll`, {
       method: "POST",
       body: JSON.stringify({ jobId: "job-1", app, ...body }),
-    })
+    }),
+    { params: Promise.resolve({}) }
   );
 
 beforeEach(() => {
@@ -106,10 +110,11 @@ describe("POST /api/comfy/poll", () => {
 
   it("cancels without a contract, because stopping needs no output map", async () => {
     const response = await POST(
-      new NextRequest("http://localhost/api/comfy/poll", {
+      localApiNextRequest(`${TEST_LOCAL_ORIGIN}/api/comfy/poll`, {
         method: "POST",
         body: JSON.stringify({ jobId: "job-1", cancel: true }),
-      })
+      }),
+      { params: Promise.resolve({}) }
     );
 
     expect(response.status).toBe(200);
@@ -120,10 +125,11 @@ describe("POST /api/comfy/poll", () => {
     // `nameFailedOutput` and `collectRun` both read it. Without this guard the
     // failure happens inside them and reaches the caller as a bare 500.
     const response = await POST(
-      new NextRequest("http://localhost/api/comfy/poll", {
+      localApiNextRequest(`${TEST_LOCAL_ORIGIN}/api/comfy/poll`, {
         method: "POST",
         body: JSON.stringify({ jobId: "job-1" }),
-      })
+      }),
+      { params: Promise.resolve({}) }
     );
 
     expect(response.status).toBe(400);

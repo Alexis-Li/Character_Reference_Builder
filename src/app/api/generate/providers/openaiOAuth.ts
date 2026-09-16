@@ -22,6 +22,7 @@ import {
   type ProviderCallRecord,
   type ReferenceInput,
 } from "@/lib/providers/imageCapabilities";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 function extractBase64Data(dataUrl: string): { data: string; mimeType: string } {
   if (dataUrl.includes("base64,")) {
@@ -63,6 +64,18 @@ export async function generateWithOpenAIOAuth(
     hasMask: Boolean(input.mask),
     auth: "oauth-experimental",
   };
+
+  // CRB-09: the transport stays deactivated until a versioned Provider target
+  // is selected. Checked here as well as in the route so a direct caller
+  // cannot reach the network around the route-level gate.
+  if (process.env.CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT !== "1") {
+    return {
+      success: false,
+      error:
+        "The OpenAI OAuth-experimental transport is disabled until a versioned Provider target is selected. Set CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT=1 (CLI-only automation) to re-enable it, or use the API-key channel.",
+      call: { ...callBase, stage: "failed" },
+    };
+  }
 
   const formData = new FormData();
   formData.append("model", modelId);
@@ -108,7 +121,9 @@ export async function generateWithOpenAIOAuth(
     const errorText = await response.text().catch(() => "");
     return {
       success: false,
-      error: `OAuth-experimental request failed: HTTP ${response.status}${errorText ? ` - ${errorText.substring(0, 200)}` : ""}`,
+      error: redactSecretsInText(
+        `OAuth-experimental request failed: HTTP ${response.status}${errorText ? ` - ${errorText.substring(0, 200)}` : ""}`
+      ),
       call: { ...callBase, stage: "failed" },
     };
   }

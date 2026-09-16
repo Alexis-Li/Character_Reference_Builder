@@ -4,6 +4,7 @@ import { promisify } from "util";
 import { stat } from "fs/promises";
 import path from "path";
 import os from "os";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,8 +33,8 @@ function isLocalhostRequest(req: NextRequest): boolean {
     return true;
 }
 
-export async function POST(req: NextRequest) {
-    // Only allow requests from localhost
+export const POST = withPrivilegedApi(["local-file-read"], async (req: NextRequest) => {
+    // Only allow requests from localhost (defense in depth behind the session guard)
     if (!isLocalhostRequest(req)) {
         return NextResponse.json(
             { success: false, error: "Forbidden: localhost only" },
@@ -128,4 +129,4 @@ export async function POST(req: NextRequest) {
             { status: 500 }
         );
     }
-}
+});

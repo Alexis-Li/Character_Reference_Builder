@@ -5,12 +5,55 @@
  */
 
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
-import { validateMediaUrl } from "@/utils/urlValidation";
+import {
+  PROVIDER_RECIPIENTS,
+  bindCredentialToDestination,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { downloadSafeMedia } from "@/lib/security/safeMedia.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 import {
   getParameterTypesFromSchema,
   coerceParameterTypes,
   getInputMappingFromSchema,
 } from "../schemaUtils";
+
+const REPLICATE_API_BASE = "https://api.replicate.com/v1";
+
+/**
+ * Origins a Replicate result may be downloaded from: the registered recipient
+ * origins for the image role plus the CDN Replicate serves prediction outputs
+ * from. Every hop is additionally checked for protocol, resolved address,
+ * media type and size by the download seam.
+ */
+const REPLICATE_MEDIA_ORIGINS: readonly string[] = [
+  ...(PROVIDER_RECIPIENTS.replicate?.image ?? []),
+  "https://replicate.delivery",
+];
+
+/** Media types a Replicate result may declare. */
+const RESULT_MEDIA_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "audio/mpeg",
+  "audio/wav",
+  "application/octet-stream",
+];
+
+/** Path extensions accepted when a CDN answers with an opaque binary. */
+const RESULT_MEDIA_EXTENSIONS: readonly string[] = [
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "mp4", "webm", "mov", "glb", "gltf",
+];
+
+/** No cap was declared before; bound the buffered result at 500MB like Kie/WaveSpeed. */
+const MAX_MEDIA_SIZE = 500 * 1024 * 1024;
 
 /**
  * Generate image using Replicate API
@@ -22,7 +65,29 @@ export async function generateWithReplicate(
 ): Promise<GenerationOutput> {
   console.log(`[API:${requestId}] Replicate generation - Model: ${input.model.id}, Images: ${input.images?.length || 0}, Prompt: ${input.prompt.length} chars`);
 
-  const REPLICATE_API_BASE = "https://api.replicate.com/v1";
+  // CRB-09: bind the credential to the recipient this call uses before it is
+  // attached anywhere. The adapter receives a key value, not its provenance, so
+  // provenance is resolved here: a value equal to this instance's environment
+  // entry is a server-environment credential.
+  const credentialSource: CredentialSource =
+    process.env.REPLICATE_API_KEY === apiKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "replicate",
+    role: "image",
+    endpoint: REPLICATE_API_BASE,
+    credential: apiKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
+    console.error(`[API:${requestId}] Replicate credential withheld from ${REPLICATE_API_BASE}: recipient not authorized`);
+    return {
+      success: false,
+      error: `${input.model.name}: Replicate credential is not authorized for this destination`,
+    };
+  }
 
   // Get the latest version of the model
   const modelId = input.model.id;
@@ -40,7 +105,7 @@ export async function generateWithReplicate(
     `${REPLICATE_API_BASE}/models/${owner}/${name}`,
     {
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
       },
     }
   );
@@ -129,7 +194,7 @@ export async function generateWithReplicate(
   const createResponse = await fetch(`${REPLICATE_API_BASE}/predictions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -147,6 +212,8 @@ export async function generateWithReplicate(
     } catch {
       // Keep original text if not JSON
     }
+    // CRB-09: upstream text can echo the credential or a signed URL.
+    errorDetail = redactSecretsInText(String(errorDetail));
 
     // Handle rate limits
     if (createResponse.status === 429) {
@@ -192,7 +259,7 @@ export async function generateWithReplicate(
       `${REPLICATE_API_BASE}/predictions/${currentPrediction.id}`,
       {
         headers: {
-          Authorization: `Bearer ${apiKey}`,
+          Authorization: `Bearer ${credential}`,
         },
       }
     );
@@ -251,11 +318,17 @@ export async function generateWithReplicate(
   // Fetch the first output and convert to base64
   const mediaUrl = outputUrls[0];
 
-  // Validate URL before fetching (SSRF protection)
-  const mediaUrlCheck = validateMediaUrl(mediaUrl);
-  if (!mediaUrlCheck.valid) {
-    console.error(`[API:${requestId}] Invalid media URL from Replicate: ${mediaUrl}`);
-    return { success: false, error: `Invalid media URL: ${mediaUrlCheck.error}` };
+  // CRB-09: a result URL must stay inside the Provider's registered output
+  // origins before this process downloads it or hands it to the client.
+  let resultOrigin: string | null = null;
+  try {
+    resultOrigin = new URL(mediaUrl).origin;
+  } catch {
+    resultOrigin = null;
+  }
+  if (!resultOrigin || !REPLICATE_MEDIA_ORIGINS.includes(resultOrigin)) {
+    console.error(`[API:${requestId}] Invalid media URL from Replicate: ${redactSecretsInText(mediaUrl)}`);
+    return { success: false, error: "Invalid media URL: destination-not-authorized" };
   }
 
   // Check if this is a 3D model — return URL directly (GLB files are binary).
@@ -275,24 +348,32 @@ export async function generateWithReplicate(
     };
   }
 
-  console.log(`[API:${requestId}] Fetching output from: ${mediaUrl.substring(0, 80)}...`);
-  const mediaResponse = await fetch(mediaUrl);
+  console.log(`[API:${requestId}] Fetching output from: ${redactSecretsInText(mediaUrl).substring(0, 80)}...`);
+  // Every hop of the download — protocol, resolved address, authorized origin,
+  // media type and size — is validated instead of trusting the Provider's URL.
+  const mediaDownload = await downloadSafeMedia(mediaUrl, {
+    authorizedOrigins: REPLICATE_MEDIA_ORIGINS,
+    allowedMediaTypes: RESULT_MEDIA_TYPES,
+    allowOctetStreamForMediaPaths: true,
+    extensionsForOpaqueMedia: RESULT_MEDIA_EXTENSIONS,
+    maxBytes: MAX_MEDIA_SIZE,
+  });
 
-  if (!mediaResponse.ok) {
+  if (!mediaDownload.ok) {
+    console.error(`[API:${requestId}] Invalid media URL from Replicate: ${redactSecretsInText(mediaUrl)} (${mediaDownload.reason}${mediaDownload.detail ? `: ${mediaDownload.detail}` : ""})`);
     return {
       success: false,
-      error: `Failed to fetch output: ${mediaResponse.status}`,
+      error: `Invalid media URL: ${mediaDownload.reason}${mediaDownload.detail ? ` (${mediaDownload.detail})` : ""}`,
     };
   }
 
-  // Determine MIME type from response
-  const contentType = mediaResponse.headers.get("content-type") || "image/png";
+  const contentType = mediaDownload.mediaType;
   const isVideo = contentType.startsWith("video/");
-  const isConcreteMedia = contentType.startsWith("audio/") || contentType.startsWith("video/") || contentType.startsWith("image/");
+  const isConcreteMedia = contentType.startsWith("audio/") || isVideo || contentType.startsWith("image/");
   const isAudio = contentType.startsWith("audio/") ||
     (!isConcreteMedia && input.model.capabilities.some(c => c.includes("audio")));
 
-  const mediaArrayBuffer = await mediaResponse.arrayBuffer();
+  const mediaArrayBuffer = mediaDownload.bytes;
   const mediaSizeBytes = mediaArrayBuffer.byteLength;
   const mediaSizeMB = mediaSizeBytes / (1024 * 1024);
 

@@ -149,7 +149,7 @@ describe("generateWithGeminiVideo", () => {
       done: true,
       response: {
         generatedVideos: [
-          { video: { uri: "https://example.com/video?id=789" } },
+          { video: { uri: "https://generativelanguage.googleapis.com/v1/video?id=789" } },
         ],
       },
     });
@@ -221,7 +221,7 @@ describe("generateWithGeminiVideo", () => {
       done: true,
       response: {
         generatedVideos: [
-          { video: { uri: "https://example.com/video?id=fail" } },
+          { video: { uri: "https://generativelanguage.googleapis.com/v1/video?id=fail" } },
         ],
       },
     });
@@ -249,7 +249,7 @@ describe("generateWithGeminiVideo", () => {
       done: true,
       response: {
         generatedVideos: [
-          { video: { uri: "https://example.com/video?id=fast" } },
+          { video: { uri: "https://generativelanguage.googleapis.com/v1/video?id=fast" } },
         ],
       },
     });
@@ -280,7 +280,7 @@ describe("generateWithGeminiVideo", () => {
       done: true,
       response: {
         generatedVideos: [
-          { video: { uri: "https://example.com/video?id=params" } },
+          { video: { uri: "https://generativelanguage.googleapis.com/v1/video?id=params" } },
         ],
       },
     });

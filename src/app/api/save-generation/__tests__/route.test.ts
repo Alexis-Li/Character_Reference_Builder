@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import * as crypto from "crypto";
+import * as nodeFs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 // Mock fs/promises before importing the route
 const mockStat = vi.fn();
@@ -28,12 +31,17 @@ vi.mock("@/utils/logger", () => ({
 const originalFetch = global.fetch;
 
 import { POST, getExtensionFromUrl } from "../route";
+import { localApiRequest } from "@/test/localApiRequest";
 
-// Helper to create mock NextRequest for POST
+// Helper to create mock NextRequest for POST. The privileged request guard runs
+// for real, so the double is wrapped in an authenticated local-API envelope
+// (loopback Host, same-origin evidence, session capability, one-time nonce).
 function createMockPostRequest(body: unknown): NextRequest {
-  return {
-    json: vi.fn().mockResolvedValue(body),
-  } as unknown as NextRequest;
+  return localApiRequest(
+    {
+      json: vi.fn().mockResolvedValue(body),
+    } as unknown as NextRequest,
+  );
 }
 
 // Helper to compute expected hash for testing
@@ -48,7 +56,15 @@ function createBase64DataUrl(content: string, mimeType = "image/png"): string {
 }
 
 describe("/api/save-generation route", () => {
+  // A real project directory of the shape the user opens in the app: the write
+  // scope check authorizes the caller-supplied project directory, which is what
+  // a normal save passes. Every filesystem call the route makes is still
+  // mocked, so nothing is written for real; `node:fs` is used directly here
+  // because `fs/promises` is the mocked module.
+  let projectDir: string;
+
   beforeEach(() => {
+    projectDir = nodeFs.mkdtempSync(path.join(os.tmpdir(), "crb-save-generation-"));
     vi.clearAllMocks();
     // Reset fetch mock
     global.fetch = originalFetch;
@@ -57,6 +73,7 @@ describe("/api/save-generation route", () => {
   afterEach(() => {
     vi.resetAllMocks();
     global.fetch = originalFetch;
+    nodeFs.rmSync(projectDir, { recursive: true, force: true });
   });
 
   describe("POST - Save generation", () => {
@@ -72,7 +89,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: base64Image,
         prompt: "A test image",
       });
@@ -84,8 +101,9 @@ describe("/api/save-generation route", () => {
       expect(data.isDuplicate).toBe(false);
       expect(data.filename).toContain(expectedHash);
       expect(data.filename.endsWith(".png")).toBe(true);
-      expect(data.filePath).toContain("/test/generations/");
-      expect(mockWriteFile).toHaveBeenCalled();
+      expect(data.filePath).toBe(path.join(projectDir, data.filename));
+      // The bytes are written inside the project directory the request named.
+      expect(mockWriteFile).toHaveBeenCalledWith(path.join(projectDir, data.filename), expect.any(Buffer));
     });
 
     it("should save base64 video with hash-based filename", async () => {
@@ -100,7 +118,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         video: base64Video,
         prompt: "A test video",
       });
@@ -126,7 +144,7 @@ describe("/api/save-generation route", () => {
       mockReaddir.mockResolvedValue([existingFilename]);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: base64Image,
         prompt: "Another prompt",
       });
@@ -155,7 +173,7 @@ describe("/api/save-generation route", () => {
 
     it("should reject missing content (no image or video)", async () => {
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         prompt: "A prompt without content",
       });
 
@@ -173,7 +191,7 @@ describe("/api/save-generation route", () => {
       });
 
       const request = createMockPostRequest({
-        directoryPath: "/test/file.txt",
+        directoryPath: path.join(projectDir, "file.txt"),
         image: createBase64DataUrl("content"),
       });
 
@@ -189,7 +207,7 @@ describe("/api/save-generation route", () => {
       mockStat.mockRejectedValue(new Error("ENOENT"));
 
       const request = createMockPostRequest({
-        directoryPath: "/nonexistent/dir",
+        directoryPath: path.join(projectDir, "missing-dir"),
         image: createBase64DataUrl("content"),
       });
 
@@ -223,7 +241,7 @@ describe("/api/save-generation route", () => {
         mockWriteFile.mockResolvedValue(undefined);
 
         const request = createMockPostRequest({
-          directoryPath: "/test/generations",
+          directoryPath: projectDir,
           image: dataUrl,
           prompt: "Test",
         });
@@ -254,7 +272,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: "https://example.com/image.png",
         prompt: "Fetched image",
       });
@@ -284,7 +302,7 @@ describe("/api/save-generation route", () => {
       });
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: "https://example.com/nonexistent.png",
         prompt: "Missing image",
       });
@@ -292,7 +310,9 @@ describe("/api/save-generation route", () => {
       const response = await POST(request);
       const data = await response.json();
 
-      expect(response.status).toBe(500);
+      // The download seam reports an upstream failure as a bad-gateway refusal
+      // when the provider answers with an error status.
+      expect(response.status).toBe(502);
       expect(data.success).toBe(false);
       expect(data.error).toContain("Failed to fetch content");
     });
@@ -309,7 +329,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: rawBase64,
         prompt: "Raw base64",
       });
@@ -334,7 +354,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: base64Image,
         prompt: "Hello! @World# with $pecial chars%",
       });
@@ -358,7 +378,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: base64Image,
       });
 
@@ -377,7 +397,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockRejectedValue(new Error("Disk full"));
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: createBase64DataUrl("content"),
         prompt: "Test",
       });
@@ -402,7 +422,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/generations",
+        directoryPath: projectDir,
         image: base64Image,
         prompt: "Test",
       });
@@ -427,7 +447,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/outputs",
+        directoryPath: projectDir,
         image: base64Image,
         customFilename: "my-custom-output",
       });
@@ -451,7 +471,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/outputs",
+        directoryPath: projectDir,
         image: base64Image,
         customFilename: "My File!@#$%Name",
       });
@@ -475,7 +495,7 @@ describe("/api/save-generation route", () => {
       mockWriteFile.mockResolvedValue(undefined);
 
       const request = createMockPostRequest({
-        directoryPath: "/test/outputs",
+        directoryPath: projectDir,
         image: base64Image,
         createDirectory: true,
       });
@@ -484,7 +504,7 @@ describe("/api/save-generation route", () => {
       const data = await response.json();
 
       expect(data.success).toBe(true);
-      expect(mockMkdir).toHaveBeenCalledWith("/test/outputs", { recursive: true });
+      expect(mockMkdir).toHaveBeenCalledWith(projectDir, { recursive: true });
     });
 
     it("should not create directory when createDirectory is false", async () => {
@@ -492,7 +512,7 @@ describe("/api/save-generation route", () => {
       mockStat.mockRejectedValue(new Error("ENOENT"));
 
       const request = createMockPostRequest({
-        directoryPath: "/test/nonexistent",
+        directoryPath: path.join(projectDir, "missing-dir"),
         image: createBase64DataUrl("content"),
         createDirectory: false,
       });
@@ -512,7 +532,7 @@ describe("/api/save-generation route", () => {
       mockMkdir.mockRejectedValue(new Error("Permission denied"));
 
       const request = createMockPostRequest({
-        directoryPath: "/test/outputs",
+        directoryPath: projectDir,
         image: createBase64DataUrl("content"),
         createDirectory: true,
       });
@@ -523,6 +543,137 @@ describe("/api/save-generation route", () => {
       expect(response.status).toBe(500);
       expect(data.success).toBe(false);
       expect(data.error).toBe("Failed to create output directory");
+    });
+
+    it("should refuse a media URL to the metadata address over plain http", async () => {
+      const fetched = vi.fn();
+      global.fetch = fetched as unknown as typeof fetch;
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const request = createMockPostRequest({
+        directoryPath: projectDir,
+        image: "http://169.254.169.254/latest/meta-data/",
+        prompt: "Metadata",
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error).toContain("protocol");
+      expect(fetched).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("should refuse an https media URL that points at the link-local metadata address", async () => {
+      const fetched = vi.fn();
+      global.fetch = fetched as unknown as typeof fetch;
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const request = createMockPostRequest({
+        directoryPath: projectDir,
+        image: "https://169.254.169.254/latest/meta-data/",
+        prompt: "Metadata over https",
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      // The destination address itself is what the refusal names, so no request
+      // to the metadata service is ever made.
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error).toContain("169.254.169.254");
+      expect(fetched).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("should refuse an HTML response instead of storing it as an image", async () => {
+      const html = "<html><body>not an image</body></html>";
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "text/html" }),
+        arrayBuffer: async () => new TextEncoder().encode(html).buffer,
+      }) as unknown as typeof fetch;
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const request = createMockPostRequest({
+        directoryPath: projectDir,
+        image: "https://cdn.example.com/actually-html.png",
+        prompt: "HTML page",
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error).toContain("text/html");
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("should refuse an SVG payload that carries a script", async () => {
+      const activeSvg =
+        '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect width="10" height="10"/></svg>';
+
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const request = createMockPostRequest({
+        directoryPath: projectDir,
+        image: createBase64DataUrl(activeSvg, "image/svg+xml"),
+        prompt: "Active svg",
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error).toContain("SVG");
+      expect(data.error).toContain("active content");
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("should refuse a request without the local session capability and write nothing", async () => {
+      const fetched = vi.fn();
+      global.fetch = fetched as unknown as typeof fetch;
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockMkdir.mockResolvedValue(undefined);
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const request = localApiRequest(
+        {
+          json: vi.fn().mockResolvedValue({
+            directoryPath: projectDir,
+            image: createBase64DataUrl("unauthenticated-content"),
+            prompt: "No session",
+          }),
+        } as unknown as NextRequest,
+        { omitSession: true },
+      );
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(401);
+      expect(data.success).toBe(false);
+      expect(data.error).toBe("Missing local session capability");
+      // The guard rejects before the handler reaches the filesystem or the network.
+      expect(mockStat).not.toHaveBeenCalled();
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(fetched).not.toHaveBeenCalled();
     });
   });
 });

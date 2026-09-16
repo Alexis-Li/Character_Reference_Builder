@@ -9,11 +9,14 @@ import {
   savePortableWorkflow,
   type PersistableWorkflow,
 } from "@/lib/projectFiles.server";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { checkWriteTarget } from "@/lib/security/projectWriteScope.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 export const maxDuration = 300; // 5 minute timeout for large workflow files
 
 // POST: Save workflow to file
-export async function POST(request: NextRequest) {
+export const POST = withPrivilegedApi(["local-file-write"], async (request: NextRequest) => {
   let directoryPath: string | undefined;
   let filename: string | undefined;
   try {
@@ -51,6 +54,28 @@ export async function POST(request: NextRequest) {
       });
       return NextResponse.json(
         { success: false, error: pathValidation.error },
+        { status: 400 }
+      );
+    }
+
+    // Confine writes to the authorized role project root: a crafted
+    // directoryPath must not land in src/, public/, build output or an
+    // executable subtree of the app, and a request cannot authorize its own
+    // destination — the record comes from the folder picker or configuration.
+    const writeScope = checkWriteTarget(directoryPath);
+    if (!writeScope.ok) {
+      logger.warn('file.error', 'Workflow save failed: write scope rejected', {
+        directoryPath,
+        reason: writeScope.reason,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            writeScope.reason === "outside-authorized-root"
+              ? `Write target not authorized (${writeScope.reason}). Choose the project directory with the folder picker, or list it in CRB_PROJECT_ROOTS.`
+              : `Write target not authorized (${writeScope.reason})`,
+        },
         { status: 400 }
       );
     }
@@ -147,15 +172,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Save failed",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "Save failed",
       },
       { status: 500 }
     );
   }
-}
+});
 
 // GET: Validate directory path, or load workflow from directory
-export async function GET(request: NextRequest) {
+export const GET = withPrivilegedApi(["local-file-read"], async (request: NextRequest) => {
   const directoryPath = request.nextUrl.searchParams.get("path");
   const shouldLoad = request.nextUrl.searchParams.get("load") === "true";
 
@@ -283,4 +308,4 @@ export async function GET(request: NextRequest) {
       isDirectory: false,
     });
   }
-}
+});

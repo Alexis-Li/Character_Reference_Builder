@@ -24,6 +24,7 @@ import {
   type ProviderCallRecord,
 } from "@/lib/providers/imageCapabilities";
 import { POST } from "../route";
+import { localApiRequest } from "@/test/localApiRequest";
 import type { GenerationInput } from "@/lib/providers/types";
 
 const { mockGenerateContent } = vi.hoisted(() => {
@@ -68,10 +69,21 @@ function postRequest(
   envKey?: string
 ): NextRequest {
   if (envKey) process.env[envKey] = "test-key-not-real";
-  return {
-    json: vi.fn().mockResolvedValue(body),
-    headers: new Headers(headers),
-  } as unknown as NextRequest;
+  // The privileged request guard runs for real: the double supplies body and
+  // headers only, the envelope supplies an authenticated local session.
+  return localApiRequest(
+    {
+      json: vi.fn().mockResolvedValue(body),
+      headers: new Headers(headers),
+    } as unknown as NextRequest,
+    { method: "POST", contentType: "application/json", headers }
+  ) as unknown as NextRequest;
+}
+
+/** The guarded route handler expects Next's context; this route has no dynamic segments. */
+const ROUTE_CONTEXT = { params: Promise.resolve({}) };
+function callPost(request: NextRequest): Promise<Response> {
+  return POST(request, ROUTE_CONTEXT);
 }
 
 beforeEach(() => {
@@ -85,6 +97,7 @@ beforeEach(() => {
   });
   delete process.env.OPENAI_API_KEY;
   delete process.env.GEMINI_API_KEY;
+  delete process.env.CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT;
 });
 
 describe("reference input contract", () => {
@@ -345,7 +358,7 @@ describe("pre-submit capability gaps", () => {
 
   it("route rejects an over-limit request with 422 and gap messages before any call", async () => {
     const refs = Array.from({ length: 4 }, (_, i) => ({ image: image(`ref-${i}`), purpose: "auxiliary" as const }));
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "test",
       selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
       references: refs,
@@ -361,7 +374,7 @@ describe("pre-submit capability gaps", () => {
 
   it("route checks legacy flat images against the same entry limits", async () => {
     const refs = Array.from({ length: 5 }, (_, i) => image(`legacy-${i}`));
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "legacy over-count",
       images: refs,
       selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
@@ -374,7 +387,7 @@ describe("pre-submit capability gaps", () => {
   });
 
   it("route rejects legacy oversize images before submission", async () => {
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "legacy oversize",
       images: [bigImage],
       selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
@@ -384,7 +397,7 @@ describe("pre-submit capability gaps", () => {
   });
 
   it("route rejects remote-URL references whose size cannot be verified", async () => {
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "remote url",
       references: [{ image: "https://example.com/a.png", purpose: "target" }],
       selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT" },
@@ -394,7 +407,7 @@ describe("pre-submit capability gaps", () => {
   });
 
   it("route rejects unknown contract models without inheriting provider defaults", async () => {
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "unknown model",
       selectedModel: { provider: "gemini", modelId: "no-such-model", displayName: "Unknown" },
     }, {}, "GEMINI_API_KEY"));
@@ -405,7 +418,7 @@ describe("pre-submit capability gaps", () => {
   });
 
   it("route rejects a Gemini mask before any provider call", async () => {
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "mask on gemini",
       references: [{ image: original, purpose: "target" }],
       mask: image("m"),
@@ -416,7 +429,7 @@ describe("pre-submit capability gaps", () => {
   });
 
   it("pre-submit rejections carry explicit not-executed evidence without a call record", async () => {
-    const overLimit = await POST(postRequest({
+    const overLimit = await callPost(postRequest({
       prompt: "test",
       selectedModel: { provider: "gemini", modelId: "nano-banana-pro", displayName: "NB Pro" },
       references: Array.from({ length: 4 }, (_, i) => ({ image: image(`ref-${i}`), purpose: "auxiliary" as const })),
@@ -426,7 +439,7 @@ describe("pre-submit capability gaps", () => {
     expect("call" in overData).toBe(false);
     expect(overData).toMatchObject({ execution: "not-executed", querySupport: "unsupported" });
 
-    const noKey = await POST(postRequest({
+    const noKey = await callPost(postRequest({
       prompt: "test",
       selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT" },
       references: canonicalReferences(),
@@ -441,7 +454,7 @@ describe("pre-submit capability gaps", () => {
 
   it("route forwards references and mask to the OpenAI entry in fixed order", async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
-    const response = await POST(postRequest({
+    const response = await callPost(postRequest({
       prompt: "swap the back plate",
       selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT Image" },
       references: canonicalReferences(),
@@ -510,6 +523,19 @@ describe("model resolution layers", () => {
 
 describe("credential and auth-channel separation", () => {
   it("drives the API-key and OAuth-experimental transports on separate paths", async () => {
+    // CRB-09: the experimental transport fails closed until it is explicitly
+    // enabled, so a direct caller cannot reach the network around the gate.
+    const disabled = await generateWithOpenAIOAuth("oauth-off", "oauth-token-not-real", input({
+      references: canonicalReferences(),
+      mask: image("mask-bytes"),
+    }));
+    expect(disabled.success).toBe(false);
+    expect(disabled.call?.auth).toBe("oauth-experimental");
+    expect(disabled.call?.stage).toBe("failed");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    process.env.CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT = "1";
+
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
     const apiResult = await generateWithOpenAI("api-path", "sk-not-a-real-key", input({
       references: canonicalReferences(),
@@ -555,22 +581,47 @@ describe("credential and auth-channel separation", () => {
     expect(oauthRecord satisfies ProviderCallRecord).toBeDefined();
   });
 
-  it("route selects the OAuth adapter only with the experimental token header", async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
+  it("route selects the OAuth adapter only for a CLI caller with the experimental transport enabled", async () => {
     const body = {
       prompt: "oauth route",
       selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT" },
       references: canonicalReferences(),
     };
-    const oauthResponse = await POST(postRequest(body, { "X-OpenAI-OAuth-Token": "oauth-token-not-real" }));
+
+    // A browser session holding the experimental token header is refused before
+    // any provider call: the transport is CLI-only and off by default.
+    const refused = await callPost(postRequest(body, { "X-OpenAI-OAuth-Token": "oauth-token-not-real" }));
+    expect(refused.status).toBe(403);
+    const refusedData = await refused.json();
+    expect(refusedData.success).toBe(false);
+    expect(refusedData.error).toContain("disabled");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // A CLI caller with the transport enabled reaches the experimental endpoint.
+    process.env.CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT = "1";
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
+    const cliRequest = localApiRequest(
+      { json: vi.fn().mockResolvedValue(body) } as unknown as NextRequest,
+      {
+        method: "POST",
+        contentType: "application/json",
+        cli: true,
+        headers: { "X-OpenAI-OAuth-Token": "oauth-token-not-real" },
+      }
+    ) as unknown as NextRequest;
+    const oauthResponse = await callPost(cliRequest);
     expect(oauthResponse.status).toBe(200);
     expect(fetchMock.mock.calls[0][0]).toBe(OAUTH_EXPERIMENTAL_ENDPOINT);
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+      Authorization: "Bearer oauth-token-not-real",
+      "X-Experimental-Transport": "codex-oauth",
+    });
     const oauthData = await oauthResponse.json();
     expect(oauthData.call?.auth).toBe("oauth-experimental");
     expect(oauthData.call?.stage).toBe("succeeded");
 
     fetchMock.mockClear();
-    const apiResponse = await POST(postRequest(body, { "X-OpenAI-API-Key": "sk-not-a-real-key" }));
+    const apiResponse = await callPost(postRequest(body, { "X-OpenAI-API-Key": "sk-not-a-real-key" }));
     expect(apiResponse.status).toBe(200);
     expect(fetchMock.mock.calls[0][0]).toBe("https://api.openai.com/v1/images/edits");
     const apiData = await apiResponse.json();
@@ -588,5 +639,22 @@ describe("credential and auth-channel separation", () => {
     // Authorization rides only in the request header.
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(`Bearer ${secret}`);
     logSpy.mockRestore();
+  });
+});
+
+describe("privileged request guard", () => {
+  it("refuses a request from a hostile origin before any provider work", async () => {
+    const response = await callPost(postRequest({
+      prompt: "hostile origin",
+      selectedModel: { provider: "gemini", modelId: "nano-banana", displayName: "Nano Banana" },
+    }, { origin: "https://attacker.example" }, "GEMINI_API_KEY"));
+
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.reason).toBe("unexpected-origin");
+    // No credential was read and no adapter ran.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 });

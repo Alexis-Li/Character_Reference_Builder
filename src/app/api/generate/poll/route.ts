@@ -9,6 +9,8 @@ import { NextRequest, NextResponse } from "next/server";
 import type { GenerateResponse } from "@/types";
 import { checkKieTaskOnce, fetchKieMediaResult, isVeoModel } from "../providers/kie";
 import { buildMediaResponse } from "../shared";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsDeep, redactSecretsInText } from "@/lib/security/secretRedaction";
 
 export const maxDuration = 120; // 2 min — enough for media fetch, not for polling
 export const dynamic = 'force-dynamic';
@@ -21,7 +23,13 @@ interface PollRequest {
   mediaType: string;
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Polls a paid Provider task and pulls the finished media bytes back through
+ * this process, so it both spends and fetches.
+ */
+export const POST = withPrivilegedApi(
+  ["cloud-request", "remote-media-fetch"],
+  async (request: NextRequest) => {
   const requestId = Math.random().toString(36).substring(7);
 
   try {
@@ -71,7 +79,7 @@ export async function POST(request: NextRequest) {
 
     if (pollResult.status === "failed") {
       return NextResponse.json<GenerateResponse>(
-        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: `${modelName}: ${pollResult.error}` },
+        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: redactSecretsInText(`${modelName}: ${pollResult.error}`) },
         { status: 500 }
       );
     }
@@ -93,7 +101,7 @@ export async function POST(request: NextRequest) {
 
     if (!result.success) {
       return NextResponse.json<GenerateResponse>(
-        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: result.error || "Failed to fetch result" },
+        { success: false, execution: "submitted", querySupport: "supported", upstreamRequestId: taskId, error: redactSecretsInText(result.error || "Failed to fetch result") },
         { status: 500 }
       );
     }
@@ -115,10 +123,17 @@ export async function POST(request: NextRequest) {
       upstreamRequestId: taskId,
     });
   } catch (error) {
-    console.error(`[API:${requestId}] Poll error:`, error);
+    console.error(
+      `[API:${requestId}] Poll error:`,
+      redactSecretsDeep(
+        error instanceof Error
+          ? { ...error, name: error.name, message: error.message, stack: error.stack }
+          : error
+      )
+    );
     return NextResponse.json<GenerateResponse>(
-      { success: false, execution: "unknown", querySupport: "unsupported", error: error instanceof Error ? error.message : "Poll failed" },
+      { success: false, execution: "unknown", querySupport: "unsupported", error: error instanceof Error ? redactSecretsInText(error.message) : "Poll failed" },
       { status: 500 }
     );
   }
-}
+});

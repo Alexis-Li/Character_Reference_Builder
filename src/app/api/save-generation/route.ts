@@ -3,8 +3,39 @@ import * as fs from "fs/promises";
 import * as crypto from "crypto";
 import { logger } from "@/utils/logger";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { checkWriteTarget } from "@/lib/security/projectWriteScope.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
+import { downloadSafeMedia, type SafeMediaOutcome } from "@/lib/security/safeMedia.server";
+import {
+  ACCEPTED_ASSET_MEDIA_TYPES,
+  classifyMediaContent,
+} from "@/lib/security/activeContent";
 
 export const maxDuration = 300; // 5 minute timeout for large media operations
+
+/** A provider media download is aborted after this long (large video files). */
+const FETCH_TIMEOUT_MS = 60000;
+/** Hard cap on a single stored asset (500MB max). */
+const MAX_CONTENT_SIZE = 500 * 1024 * 1024;
+/** Extensions accepted for opaque binaries served by provider CDNs. */
+const OPAQUE_MEDIA_EXTENSIONS = [
+  "glb",
+  "gltf",
+  "obj",
+  "fbx",
+  "usdz",
+  "stl",
+  "ply",
+  "mp4",
+  "webm",
+  "mov",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+];
 
 // Helper to get file extension from MIME type
 function getExtensionFromMime(mimeType: string): string {
@@ -99,8 +130,64 @@ async function findExistingFileByHash(
   }
 }
 
+/**
+ * Caller-visible refusal for a rejected media download. A blocked or
+ * unauthorized destination is reported as refused, never silently accepted.
+ */
+function describeDownloadRefusal(failure: Extract<SafeMediaOutcome, { ok: false }>): {
+  status: number;
+  message: string;
+} {
+  switch (failure.reason) {
+    case "blocked-address":
+      return {
+        status: 400,
+        message: `Refused: destination address is not allowed (${failure.detail ?? "blocked address"})`,
+      };
+    case "destination-not-authorized":
+      return {
+        status: 400,
+        message: `Refused: destination is not an authorized media source (${failure.detail ?? "unknown origin"})`,
+      };
+    case "blocked-protocol":
+      return {
+        status: 400,
+        message: `Refused: destination protocol is not allowed (${failure.detail ?? "blocked protocol"})`,
+      };
+    case "invalid-url":
+      return { status: 400, message: "Invalid media URL" };
+    case "too-many-redirects":
+      return {
+        status: 400,
+        message: `Refused: redirect chain is longer than allowed (${failure.detail ?? "too many hops"})`,
+      };
+    case "unsupported-media-type":
+      return {
+        status: 400,
+        message: `Refused: unsupported media type (${failure.detail ?? "no content type"})`,
+      };
+    case "oversized":
+      return {
+        status: 413,
+        message: `Content size exceeds maximum allowed ${MAX_CONTENT_SIZE} bytes`,
+      };
+    case "resolution-failed":
+      return {
+        status: 502,
+        message: `Failed to resolve media destination (${failure.detail ?? "unknown host"})`,
+      };
+    case "upstream-error":
+      return {
+        status: 502,
+        message: `Failed to fetch content: ${failure.detail ?? "upstream error"}`,
+      };
+  }
+}
+
 // POST: Save a generated image or video to the generations folder (or outputs folder)
-export async function POST(request: NextRequest) {
+export const POST = withPrivilegedApi(
+  ["local-file-write", "remote-media-fetch"],
+  async (request: NextRequest) => {
   let directoryPath: string | undefined;
   try {
     const body = await request.json();
@@ -152,6 +239,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Confine writes: the caller-supplied project directory is the write root,
+    // but it must itself be an authorized root and outside the application's
+    // own source and static subtrees. This runs before anything is created.
+    const directoryScope = checkWriteTarget(directoryPath);
+    if (!directoryScope.ok) {
+      logger.warn('file.save', 'Generation save refused: directory outside authorized write scope', {
+        directoryPath,
+        reason: directoryScope.reason,
+      });
+      return NextResponse.json(
+        { success: false, error: `Write target not authorized (${directoryScope.reason})` },
+        { status: 400 }
+      );
+    }
+
     // Validate directory exists (or create if requested)
     try {
       const stats = await fs.stat(directoryPath);
@@ -192,36 +294,43 @@ export async function POST(request: NextRequest) {
 
     let buffer: Buffer;
     let extension: string;
+    let mediaType: string;
 
     if (isHttpUrl(content)) {
       // Handle HTTP URL (common for large video files from providers)
       logger.info('file.save', 'Fetching content from URL', { url: content.substring(0, 100) });
 
-      // Set up timeout to prevent hanging requests (60 seconds for large video files)
-      const FETCH_TIMEOUT_MS = 60000;
-      const MAX_CONTENT_SIZE = 500 * 1024 * 1024; // 500MB max
-
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
       try {
-        const response = await fetch(content, { signal: controller.signal });
-        clearTimeout(timeoutId);
+        // One safe-media seam for the whole download: every hop of the redirect
+        // chain is checked against the address policy before it is followed, the
+        // response must be an accepted media type and the byte budget is
+        // enforced while reading.
+        const download = await downloadSafeMedia(content, {
+          authorizedOrigins: "provider-output",
+          allowedMediaTypes: ACCEPTED_ASSET_MEDIA_TYPES,
+          allowOctetStreamForMediaPaths: true,
+          extensionsForOpaqueMedia: OPAQUE_MEDIA_EXTENSIONS,
+          maxBytes: MAX_CONTENT_SIZE,
+          signal: controller.signal,
+        });
 
-        if (!response.ok) {
-          throw new Error(`Failed to fetch content: ${response.status} ${response.statusText}`);
+        if (!download.ok) {
+          const refusal = describeDownloadRefusal(download);
+          logger.warn('file.save', 'Generation save refused: unsafe media download', {
+            directoryPath,
+            reason: download.reason,
+            detail: download.detail,
+          });
+          return NextResponse.json(
+            { success: false, error: redactSecretsInText(refusal.message) },
+            { status: refusal.status }
+          );
         }
 
-        // Check content-length before downloading to avoid excessive bandwidth usage
-        const contentLength = response.headers.get("content-length");
-        if (contentLength) {
-          const size = parseInt(contentLength, 10);
-          if (size > MAX_CONTENT_SIZE) {
-            throw new Error(`Content size ${size} bytes exceeds maximum allowed ${MAX_CONTENT_SIZE} bytes`);
-          }
-        }
-
-        const rawSaveContentType = response.headers.get("content-type");
+        mediaType = download.mediaType;
 
         // For 3D models, try extracting extension from URL first (most reliable with CDN URLs)
         const urlExtension = isModel ? getExtensionFromUrl(content) : null;
@@ -229,40 +338,59 @@ export async function POST(request: NextRequest) {
         if (urlExtension) {
           extension = urlExtension;
         } else {
-          const contentType = (rawSaveContentType && (rawSaveContentType.startsWith("video/") || rawSaveContentType.startsWith("image/") || rawSaveContentType.startsWith("model/") || rawSaveContentType.startsWith("audio/")))
-            ? rawSaveContentType
+          const contentType = (mediaType.startsWith("video/") || mediaType.startsWith("image/") || mediaType.startsWith("model/") || mediaType.startsWith("audio/"))
+            ? mediaType
             : (isModel ? "model/gltf-binary" : isAudio ? "audio/mpeg" : isVideo ? "video/mp4" : "image/png");
           extension = getExtensionFromMime(contentType);
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-
-        // Double-check actual size after download
-        if (arrayBuffer.byteLength > MAX_CONTENT_SIZE) {
-          throw new Error(`Downloaded content size ${arrayBuffer.byteLength} bytes exceeds maximum allowed ${MAX_CONTENT_SIZE} bytes`);
-        }
-
-        buffer = Buffer.from(arrayBuffer);
+        buffer = Buffer.from(download.bytes);
       } catch (fetchError) {
-        clearTimeout(timeoutId);
         if (fetchError instanceof Error && fetchError.name === 'AbortError') {
           throw new Error(`Fetch timed out after ${FETCH_TIMEOUT_MS}ms`);
         }
         throw fetchError;
+      } finally {
+        clearTimeout(timeoutId);
       }
     } else {
-      // Handle base64 data URL
-      const dataUrlMatch = content.match(/^data:([\w/+-]+);base64,/);
+      // Handle base64 data URL. The payload is taken from the match itself, so
+      // the `data:` header (with or without `;charset=…`-style parameters) can
+      // never end up inside the stored bytes.
+      const dataUrlMatch = content.match(/^data:([^;,]+)((?:;[^;,]*)*);base64,([\s\S]*)$/);
       if (dataUrlMatch) {
-        const mimeType = dataUrlMatch[1];
-        extension = getExtensionFromMime(mimeType);
-        const base64Data = content.replace(/^data:[\w/+-]+;base64,/, "");
-        buffer = Buffer.from(base64Data, "base64");
+        mediaType = dataUrlMatch[1];
+        extension = getExtensionFromMime(mediaType);
+        buffer = Buffer.from(dataUrlMatch[3], "base64");
       } else {
         // Fallback: assume it's raw base64 without data URL prefix
+        mediaType = isAudio ? "audio/mpeg" : isVideo ? "video/mp4" : isModel ? "model/gltf-binary" : "image/png";
         extension = isAudio ? "mp3" : isVideo ? "mp4" : "png";
         buffer = Buffer.from(content, "base64");
       }
+    }
+
+    // Nothing text-like may be renamed as an image asset: an SVG carrying active
+    // content and any unknown/HTML/text payload are refused on both branches.
+    // An inert SVG stays supported, but only as a download artifact.
+    const contentKind = classifyMediaContent(mediaType, buffer);
+    if (contentKind === "active-svg" || contentKind === "unknown") {
+      logger.warn('file.save', 'Generation save refused: content is not storable media', {
+        directoryPath,
+        mediaType,
+        contentKind,
+      });
+      return NextResponse.json(
+        {
+          success: false,
+          error: redactSecretsInText(
+            contentKind === "active-svg"
+              ? "Refused: SVG payload contains active content (script, event handler or external reference)"
+              : `Refused: unsupported media content (${mediaType || "unknown type"})`
+          ),
+        },
+        { status: 400 }
+      );
     }
 
     // Safety net: if extension resolved to "bin" but we know the media type, use correct extension
@@ -318,6 +446,21 @@ export async function POST(request: NextRequest) {
     }
     const filePath = joinWorkflowPath(directoryPath, filename);
 
+    // The resolved asset path must stay inside the project directory that the
+    // request was allowed to write into.
+    const fileScope = checkWriteTarget(filePath);
+    if (!fileScope.ok) {
+      logger.warn('file.save', 'Generation save refused: file outside authorized write scope', {
+        directoryPath,
+        filePath,
+        reason: fileScope.reason,
+      });
+      return NextResponse.json(
+        { success: false, error: `Write target not authorized (${fileScope.reason})` },
+        { status: 400 }
+      );
+    }
+
     // Write the file
     await fs.writeFile(filePath, buffer);
 
@@ -345,9 +488,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : "Save failed",
+        error: error instanceof Error ? redactSecretsInText(error.message) : "Save failed",
       },
       { status: 500 }
     );
   }
-}
+});

@@ -18,6 +18,7 @@ import {
   type ResolvedInputMedia,
 } from "@/lib/comfy/server/run";
 import type { ComfyAppDefinition } from "@/lib/comfy/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { comfyErrorResponse, decodeDataUrl, uploadFilename } from "../shared";
 
 export const maxDuration = 300;
@@ -46,7 +47,15 @@ export interface ComfyRunResponse {
   status: string;
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Decoding a Design Reference into bytes, hashing it and uploading it to the
+ * engine is the "design-reference-upload" effect; the submit that follows is a
+ * "cloud-request" whenever the engine is Comfy Cloud, and the destination
+ * itself is always the user-configured "configurable-backend".
+ */
+export const POST = withPrivilegedApi(
+  ["configurable-backend", "design-reference-upload", "cloud-request"],
+  async (request: NextRequest) => {
   try {
     const body = (await request.json()) as ComfyRunRequest;
     const app = body?.app;
@@ -147,4 +156,5 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return comfyErrorResponse(error);
   }
-}
+  }
+);

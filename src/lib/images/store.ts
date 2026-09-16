@@ -7,6 +7,8 @@
  * Features:
  * - Store base64 data URLs as binary buffers
  * - Retrieve images by unique ID
+ * - Raster images only: entries are served inline from the application origin,
+ *   so SVG and non-image payloads are refused on insert
  * - Explicit cleanup, plus automatic TTL expiry and a total-bytes LRU cap so
  *   orphaned entries are reclaimed even if a caller skips deleteImage
  *
@@ -14,6 +16,7 @@
  */
 
 import { randomUUID } from "crypto";
+import { classifyMediaContent } from "@/lib/security/activeContent";
 
 /**
  * Maximum age of a stored entry before it is considered expired (30 minutes).
@@ -112,15 +115,27 @@ function parseBase64DataUrl(
 /**
  * Store an image and return its unique ID
  *
+ * Only raster images are accepted: entries are served inline from the
+ * application origin, and an SVG is an executable document rather than an
+ * image. Active-content and non-image payloads are refused here, so nothing
+ * unsafe can be stored or served.
+ *
  * @param base64DataUrl - Image as base64 data URL (data:{mimeType};base64,{data})
  * @returns Unique ID for retrieving the image
- * @throws Error if data URL format is invalid
+ * @throws Error if the data URL format is invalid or the payload is not raster
  */
 export function storeImage(base64DataUrl: string): string {
   const parsed = parseBase64DataUrl(base64DataUrl);
   if (!parsed) {
     throw new Error(
       "Invalid base64 data URL format. Expected: data:{mimeType};base64,{data}"
+    );
+  }
+
+  const contentKind = classifyMediaContent(parsed.mimeType, parsed.data);
+  if (contentKind !== "raster") {
+    throw new Error(
+      `Refusing to store ${parsed.mimeType} (${contentKind}): only raster images can be served from this origin`
     );
   }
 

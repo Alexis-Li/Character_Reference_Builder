@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { LocalSessionGate } from "@/components/LocalSessionGate";
 import { Toast } from "@/components/Toast";
 
 export const metadata: Metadata = {
@@ -15,6 +16,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
+        <LocalSessionGate />
         {children}
         <Toast />
       </body>

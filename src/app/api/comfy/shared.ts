@@ -13,6 +13,7 @@ import { ComfyConfigError } from "@/lib/comfy/server";
 import { ComfyEngineError } from "@/lib/comfy/server/engine";
 import { ComfyImportError } from "@/lib/comfy/server/import";
 import { ComfyConversionError } from "@/lib/comfy/editor";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 export interface ComfyErrorResponse {
   success: false;
@@ -32,12 +33,15 @@ export interface ComfyErrorResponse {
  * Turn any failure into the response shape the client understands.
  *
  * Every message here is shown verbatim in the UI, so they name the thing to do
- * next rather than the layer that failed.
+ * next rather than the layer that failed. They also pass through the shared
+ * redaction seam: an engine can echo a request header or a signed URL back in
+ * its error text, and that text must not become the way a credential leaves the
+ * process (CRB-09).
  */
 export function comfyErrorResponse(error: unknown): NextResponse<ComfyErrorResponse> {
   if (error instanceof ComfyConfigError) {
     return NextResponse.json<ComfyErrorResponse>(
-      { success: false, error: error.message, notConfigured: true },
+      { success: false, error: redactSecretsInText(error.message), notConfigured: true },
       { status: error.status }
     );
   }
@@ -45,7 +49,7 @@ export function comfyErrorResponse(error: unknown): NextResponse<ComfyErrorRespo
     return NextResponse.json<ComfyErrorResponse>(
       {
         success: false,
-        error: error.message,
+        error: redactSecretsInText(error.message),
         ...(error.missingNodes.length > 0 ? { missingNodes: error.missingNodes } : {}),
       },
       { status: error.status }
@@ -53,13 +57,17 @@ export function comfyErrorResponse(error: unknown): NextResponse<ComfyErrorRespo
   }
   if (error instanceof ComfyEngineError) {
     return NextResponse.json<ComfyErrorResponse>(
-      { success: false, error: error.message, ...(error.transient ? { transient: true } : {}) },
+      {
+        success: false,
+        error: redactSecretsInText(error.message),
+        ...(error.transient ? { transient: true } : {}),
+      },
       { status: error.status }
     );
   }
   if (error instanceof ComfyConversionError) {
     return NextResponse.json<ComfyErrorResponse>(
-      { success: false, error: error.message },
+      { success: false, error: redactSecretsInText(error.message) },
       { status: 422 }
     );
   }
@@ -70,7 +78,10 @@ export function comfyErrorResponse(error: unknown): NextResponse<ComfyErrorRespo
     );
   }
   return NextResponse.json<ComfyErrorResponse>(
-    { success: false, error: error instanceof Error ? error.message : "ComfyUI request failed" },
+    {
+      success: false,
+      error: redactSecretsInText(error instanceof Error ? error.message : "ComfyUI request failed"),
+    },
     { status: 500 }
   );
 }

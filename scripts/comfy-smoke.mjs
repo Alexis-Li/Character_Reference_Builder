@@ -29,7 +29,8 @@
  * graph builder, and output collection included.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -92,7 +93,35 @@ const nbHeaders = () => ({
   "X-Comfy-Api-V2": USE_SDK ? "1" : "0",
   "X-Comfy-Job-Timeout": String(Number(flag("timeout-ms", 900_000))),
   ...(KEY ? { "X-Comfy-Api-Key": KEY, "X-Comfy-Org-Key": KEY } : {}),
+  // This script is automation, not the browser: it authenticates as the CLI
+  // request class with the instance's own token (CRB-09 / Issue #10). No
+  // exception is carved out for scripts on the browser path.
+  ...cliAuthHeader(),
 });
+
+/**
+ * The CLI bearer token for this instance. `CRB_LOCAL_API_TOKEN` wins; otherwise
+ * the token the server generated under `<CRB_TEMP_ROOT>/runtime/`.
+ */
+function cliAuthHeader() {
+  const fromEnv = process.env.CRB_LOCAL_API_TOKEN?.trim();
+  if (fromEnv) return { Authorization: `Bearer ${fromEnv}` };
+
+  const tempRoot =
+    process.env.CRB_TEMP_ROOT?.trim() ||
+    join(tmpdir(), "Character_Reference_Builder");
+  const tokenPath = join(tempRoot, "runtime", "local-api-token");
+  try {
+    const token = readFileSync(tokenPath, "utf8").trim();
+    if (token) return { Authorization: `Bearer ${token}` };
+  } catch {
+    /* fall through to the explicit failure below */
+  }
+  console.error(
+    `No local API token found. Set CRB_LOCAL_API_TOKEN, or start the app once so it writes ${tokenPath}.`
+  );
+  process.exit(2);
+}
 
 /** Auth for a direct call to the engine, bypassing Node Banana. */
 const engineHeaders = () =>

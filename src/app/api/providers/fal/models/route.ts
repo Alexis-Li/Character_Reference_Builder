@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ProviderModel, ModelCapability } from "@/lib/providers";
+import {
+  bindCredentialToDestination,
+  type CredentialSource,
+} from "@/lib/security/providerConnection";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
+import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 const FAL_API_BASE = "https://api.fal.ai/v1";
 
@@ -105,16 +111,31 @@ type ModelsResponse = ModelsSuccessResponse | ModelsErrorResponse;
  * Query params:
  *   - search: Optional search query to filter models
  */
-export async function GET(
-  request: NextRequest
-): Promise<NextResponse<ModelsResponse>> {
+export const GET = withPrivilegedApi(
+  ["cloud-request"],
+  async (request: NextRequest): Promise<NextResponse<ModelsResponse>> => {
   // Get API key from header or env (never from query params to avoid credential leakage)
-  const apiKey =
+  const headerKey =
     request.headers.get("X-API-Key") ||
     request.headers.get("Authorization")?.replace(/^Key\s+/i, "") ||
-    process.env.FAL_API_KEY;
+    process.env.FAL_API_KEY ||
+    null;
 
-  if (!apiKey) {
+  // CRB-09: bind the credential to the catalog recipient before it is attached,
+  // and attach only the bound value.
+  const credentialSource: CredentialSource =
+    process.env.FAL_API_KEY === headerKey ? "server-environment" : "browser-supplied";
+  const { credential } = bindCredentialToDestination({
+    provider: "fal",
+    role: "catalog",
+    endpoint: FAL_API_BASE,
+    credential: headerKey,
+    credentialKind: "api-key",
+    credentialSource,
+    userAuthorizedDestination: false,
+  });
+
+  if (!credential) {
     return NextResponse.json<ModelsErrorResponse>(
       {
         success: false,
@@ -135,11 +156,10 @@ export async function GET(
       url += `&q=${encodeURIComponent(searchQuery)}`;
     }
 
-    // Build headers with optional auth
-    const headers: HeadersInit = {};
-    if (apiKey) {
-      headers["Authorization"] = `Key ${apiKey}`;
-    }
+    // Build headers with the bound credential
+    const headers: HeadersInit = {
+      Authorization: `Key ${credential}`,
+    };
 
     const response = await fetch(url, { headers });
 
@@ -178,10 +198,11 @@ export async function GET(
         success: false,
         error:
           error instanceof Error
-            ? error.message
+            ? redactSecretsInText(error.message)
             : "Failed to fetch models from fal.ai",
       },
       { status: 500 }
     );
   }
 }
+);

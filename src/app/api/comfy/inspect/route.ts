@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { engineFromRequest } from "@/lib/comfy/server";
 import { inspectUpload } from "@/lib/comfy/server/import";
 import type { ComfyGraph, ComfyWorkflowInspection } from "@/lib/comfy/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { comfyErrorResponse } from "../shared";
 
 export const maxDuration = 120;
@@ -46,7 +47,14 @@ function nameFromFilename(filename: string | undefined): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * Inspecting an editor-format save reads the node catalog off the configured
+ * engine, so the destination is user-configurable even though nothing is
+ * submitted or downloaded.
+ */
+export const POST = withPrivilegedApi(
+  ["configurable-backend"],
+  async (request: NextRequest) => {
   try {
     const raw = await request.text();
     // Bytes, not `raw.length`: that counts UTF-16 code units, so a workflow of
@@ -96,4 +104,5 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return comfyErrorResponse(error);
   }
-}
+  }
+);

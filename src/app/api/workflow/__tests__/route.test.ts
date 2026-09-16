@@ -29,21 +29,42 @@ vi.mock("@/utils/logger", () => ({
 }));
 
 import { POST, GET } from "../route";
+import { authorizeTestProjectRoot, localApiRequest, TEST_LOCAL_ORIGIN } from "@/test/localApiRequest";
+import * as path from "node:path";
 
-// Helper to create mock NextRequest for POST
-function createMockPostRequest(body: unknown): NextRequest {
-  return {
-    json: vi.fn().mockResolvedValue(body),
-  } as unknown as NextRequest;
+/**
+ * The write-scope check authorizes a directory the application has recorded,
+ * not one a request names. These cases mock the filesystem, so the project
+ * directories they pretend exist are recorded explicitly — the same signal the
+ * folder picker or a project read produces in production.
+ */
+for (const fakeProjectDir of ["/test/dir", "/test", "/nonexistent", "/test/new-workflow"]) {
+  authorizeTestProjectRoot(fakeProjectDir);
 }
 
-// Helper to create mock NextRequest for GET
+// Helper to create mock NextRequest for POST. The privileged request guard runs
+// for real, so the double is wrapped in an authenticated local-API envelope.
+function createMockPostRequest(body: unknown): NextRequest {
+  return localApiRequest(
+    {
+      json: vi.fn().mockResolvedValue(body),
+    } as unknown as NextRequest,
+    { url: `${TEST_LOCAL_ORIGIN}/api/workflow` },
+  );
+}
+
+// Helper to create mock NextRequest for GET. The envelope URL carries the query
+// string the handler reads through `request.nextUrl`.
 function createMockGetRequest(params: Record<string, string>): NextRequest {
-  return {
-    nextUrl: {
-      searchParams: new URLSearchParams(params),
-    },
-  } as unknown as NextRequest;
+  const query = new URLSearchParams(params).toString();
+  return localApiRequest(
+    {
+      nextUrl: {
+        searchParams: new URLSearchParams(params),
+      },
+    } as unknown as NextRequest,
+    { method: "GET", url: `${TEST_LOCAL_ORIGIN}/api/workflow${query ? `?${query}` : ""}` },
+  );
 }
 
 describe("/api/workflow route", () => {
@@ -306,6 +327,44 @@ describe("/api/workflow route", () => {
       expect(response.status).toBe(400);
       expect(data.success).toBe(false);
       expect(data.error).toBe("Access to /etc is not allowed");
+    });
+
+    it("should reject a request without the local session capability and touch nothing", async () => {
+      const request = localApiRequest(
+        {
+          json: vi.fn().mockResolvedValue({
+            directoryPath: "/test/dir",
+            filename: "workflow",
+            workflow: { nodes: [], edges: [] },
+          }),
+        } as unknown as NextRequest,
+        { omitSession: true, url: `${TEST_LOCAL_ORIGIN}/api/workflow` },
+      );
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(401);
+      expect(data.success).toBe(false);
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("should refuse a write below an application subtree before any filesystem mutation", async () => {
+      const request = createMockPostRequest({
+        directoryPath: path.join(process.cwd(), "src", "some-project"),
+        filename: "workflow",
+        workflow: { nodes: [], edges: [] },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error).toContain("denied-subtree");
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
     });
   });
 

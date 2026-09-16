@@ -11,6 +11,11 @@
  * carries App Mode configuration — are converted on import.
  */
 
+import type {
+  CredentialWithheldReason,
+  ProviderConnection,
+} from "@/lib/security/providerConnection";
+
 /* ── raw ComfyUI graph shapes ──────────────────────────────────── */
 
 /** One node of an API-format graph. */
@@ -255,6 +260,11 @@ export type ComfyBackendMode = "cloud" | "local" | "remote";
 export interface ComfyConnection {
   mode: ComfyBackendMode;
   baseUrl: string;
+  /**
+   * The engine credential that may be sent to {@link baseUrl}: the key the
+   * request (or the environment) offered, or `null` when the CRB-09 binding
+   * kept it off this destination. Never a credential that policy withheld.
+   */
   apiKey: string | null;
   /**
    * True when the endpoint speaks the Comfy API v2 (`/api/v2/jobs`) and can be
@@ -263,6 +273,22 @@ export interface ComfyConnection {
    */
   useSdk: boolean;
   jobTimeoutMs: number;
+  /**
+   * CRB-09: the record this connection's credential was bound to — provider,
+   * role, recipient origin and credential provenance (request-supplied vs
+   * server environment).
+   *
+   * Optional because a record can also be built by hand (the client-side
+   * settings path, a test), where there is no provenance to state; every
+   * connection resolved off a request carries it.
+   */
+  providerConnection?: ProviderConnection;
+  /**
+   * Set when a credential existed but the binding withheld it, naming why.
+   * The engine then runs unauthenticated and fails honestly upstream, and a
+   * route can explain the missing key instead of blaming it.
+   */
+  credentialWithheld?: CredentialWithheldReason | null;
 }
 
 /** A file an engine produced. */

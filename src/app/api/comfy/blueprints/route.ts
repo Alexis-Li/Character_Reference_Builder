@@ -13,11 +13,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { engineFromRequest } from "@/lib/comfy/server";
-import { engineAuthHeaders } from "@/lib/comfy/server/connection";
-import { resilientFetch } from "@/lib/comfy/server/fetch";
+import { engineRequest } from "@/lib/comfy/server/connection";
 import { inspectUpload } from "@/lib/comfy/server/import";
 import { ComfyImportError } from "@/lib/comfy/server/import";
 import type { ComfyConnection } from "@/lib/comfy/types";
+import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { comfyErrorResponse } from "../shared";
 import type { ComfyInspectResponse } from "../inspect/route";
 
@@ -75,8 +75,7 @@ async function fetchCatalog(
   connection: ComfyConnection,
   signal?: AbortSignal
 ): Promise<Record<string, GlobalSubgraphEntry>> {
-  const res = await resilientFetch(`${connection.baseUrl}/api/global_subgraphs`, {
-    headers: engineAuthHeaders(connection),
+  const res = await engineRequest(connection, `${connection.baseUrl}/api/global_subgraphs`, {
     timeoutMs: LIST_TIMEOUT_MS,
     retries: LIST_RETRIES,
     ...(signal ? { signal } : {}),
@@ -93,7 +92,9 @@ async function fetchCatalog(
   return (await res.json()) as Record<string, GlobalSubgraphEntry>;
 }
 
-export async function GET(request: NextRequest) {
+export const GET = withPrivilegedApi(
+  ["configurable-backend"],
+  async (request: NextRequest) => {
   try {
     const { engine, connection } = engineFromRequest(request);
     const catalog = await fetchCatalog(connection, request.signal);
@@ -115,14 +116,17 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     return comfyErrorResponse(error);
   }
-}
+  }
+);
 
 interface BlueprintImportRequest {
   /** Catalog id from `GET`. */
   id: string;
 }
 
-export async function POST(request: NextRequest) {
+export const POST = withPrivilegedApi(
+  ["configurable-backend"],
+  async (request: NextRequest) => {
   try {
     const body = (await request.json()) as BlueprintImportRequest;
     if (!body?.id) {
@@ -130,10 +134,10 @@ export async function POST(request: NextRequest) {
     }
 
     const { engine, connection } = engineFromRequest(request);
-    const res = await resilientFetch(
+    const res = await engineRequest(
+      connection,
       `${connection.baseUrl}/api/global_subgraphs/${encodeURIComponent(body.id)}`,
       {
-        headers: engineAuthHeaders(connection),
         timeoutMs: IMPORT_TIMEOUT_MS,
         retries: IMPORT_RETRIES,
         signal: request.signal,
@@ -173,4 +177,5 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return comfyErrorResponse(error);
   }
-}
+  }
+);

@@ -43,19 +43,25 @@ vi.mock("@/lib/images", () => ({
 
 import { POST } from "../route";
 import { clearFalInputMappingCache } from "../shared";
+import { localApiRequest } from "@/test/localApiRequest";
 
 // Store original env
 const originalEnv = { ...process.env };
 
-// Helper to create mock NextRequest for POST
+// Helper to create mock NextRequest for POST. The privileged request guard runs
+// for real, so the body/headers double is wrapped in an authenticated local
+// envelope (loopback Host, same-origin evidence, session capability, nonce).
 function createMockPostRequest(
   body: unknown,
   headers?: Record<string, string>
 ): NextRequest {
-  return {
-    json: vi.fn().mockResolvedValue(body),
-    headers: new Headers(headers),
-  } as unknown as NextRequest;
+  return localApiRequest(
+    {
+      json: vi.fn().mockResolvedValue(body),
+      headers: new Headers(headers),
+    } as unknown as NextRequest,
+    { method: "POST", contentType: "application/json", headers }
+  ) as unknown as NextRequest;
 }
 
 // Helper to create successful Gemini response with image
@@ -118,7 +124,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -148,7 +154,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -184,7 +190,7 @@ describe("/api/generate route", () => {
         aspectRatio: "16:9",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -209,7 +215,7 @@ describe("/api/generate route", () => {
         resolution: "1024x1024",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -235,7 +241,7 @@ describe("/api/generate route", () => {
         resolution: "1024x1024",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -263,7 +269,7 @@ describe("/api/generate route", () => {
         useGoogleSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -288,7 +294,7 @@ describe("/api/generate route", () => {
         useGoogleSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -315,7 +321,7 @@ describe("/api/generate route", () => {
         useImageSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -342,7 +348,7 @@ describe("/api/generate route", () => {
         resolution: "1024x1024",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -368,7 +374,7 @@ describe("/api/generate route", () => {
         useImageSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -394,7 +400,7 @@ describe("/api/generate route", () => {
         useImageSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -419,7 +425,7 @@ describe("/api/generate route", () => {
         useGoogleSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -445,7 +451,7 @@ describe("/api/generate route", () => {
         useImageSearch: true,
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -469,7 +475,7 @@ describe("/api/generate route", () => {
         prompt: "Test prompt without model specified",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -494,7 +500,7 @@ describe("/api/generate route", () => {
         { "X-Gemini-API-Key": "header-gemini-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -513,7 +519,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -531,7 +537,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(429);
@@ -552,7 +558,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -572,7 +578,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -592,7 +598,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -619,7 +625,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -645,7 +651,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -663,7 +669,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -681,7 +687,7 @@ describe("/api/generate route", () => {
         model: "nano-banana",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -703,7 +709,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-2-lite",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -726,7 +732,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -762,7 +768,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -796,7 +802,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(400);
@@ -814,7 +820,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -835,7 +841,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -855,7 +861,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -874,7 +880,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -893,7 +899,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -910,7 +916,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(400);
@@ -932,7 +938,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -981,7 +987,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1005,7 +1011,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1025,7 +1031,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -1047,7 +1053,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1091,7 +1097,7 @@ describe("/api/generate route", () => {
         model: "nano-banana-pro",
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1161,7 +1167,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1227,7 +1233,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1248,7 +1254,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -1284,7 +1290,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -1332,7 +1338,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -1382,7 +1388,7 @@ describe("/api/generate route", () => {
       );
 
       // Start the POST request
-      const responsePromise = POST(request);
+      const responsePromise = POST(request, { params: Promise.resolve({}) });
 
       // Advance time past the 5-minute timeout
       // We need to run pending timers multiple times to simulate polling
@@ -1465,7 +1471,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1523,7 +1529,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1576,7 +1582,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1650,7 +1656,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       expect(response.status).toBe(200);
 
       // Verify image_urls was wrapped in array because schema says type: "array"
@@ -1716,7 +1722,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       expect(response.status).toBe(200);
 
       // Verify image_url was unwrapped to first element because schema says type: "string"
@@ -1764,7 +1770,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1824,7 +1830,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1888,7 +1894,7 @@ describe("/api/generate route", () => {
         { "X-Replicate-API-Key": "test-replicate-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1942,7 +1948,7 @@ describe("/api/generate route", () => {
         { "X-OpenAI-API-Key": "test-openai-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -1986,7 +1992,7 @@ describe("/api/generate route", () => {
         { "X-OpenAI-API-Key": "test-openai-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2017,7 +2023,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(401);
@@ -2044,7 +2050,7 @@ describe("/api/generate route", () => {
         { "X-OpenAI-API-Key": "test-openai-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -2070,7 +2076,7 @@ describe("/api/generate route", () => {
         { "X-OpenAI-API-Key": "test-openai-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -2100,7 +2106,7 @@ describe("/api/generate route", () => {
         { "X-OpenAI-API-Key": "test-openai-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -2193,7 +2199,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2238,7 +2244,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2258,7 +2264,7 @@ describe("/api/generate route", () => {
 
       // Queue flow: submit → poll → result → media
       mockFalQueueSuccess(
-        { images: [{ url: "https://example.com/image.png" }] },
+        { images: [{ url: "https://fal.media/image.png" }] },
         "image/png",
         8
       );
@@ -2272,7 +2278,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       // Should proceed without key (no 401 early return)
@@ -2306,7 +2312,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -2340,7 +2346,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       // Without API key, request proceeds but may get rate-limited by fal.ai
@@ -2375,7 +2381,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2409,7 +2415,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2460,7 +2466,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2505,7 +2511,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2513,7 +2519,7 @@ describe("/api/generate route", () => {
 
       // Find the queue submit call (the one to queue.fal.run)
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2559,7 +2565,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2567,7 +2573,7 @@ describe("/api/generate route", () => {
 
       // Find the queue submit call
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2605,7 +2611,7 @@ describe("/api/generate route", () => {
         },
       });
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2656,7 +2662,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2664,7 +2670,7 @@ describe("/api/generate route", () => {
 
       // Find the queue submit call
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2711,7 +2717,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -2719,7 +2725,7 @@ describe("/api/generate route", () => {
 
       // Find the queue submit call
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2788,12 +2794,12 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       expect(response.status).toBe(200);
 
       // Find the queue submit call
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2858,12 +2864,12 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       expect(response.status).toBe(200);
 
       // Find the queue submit call
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2939,12 +2945,12 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       expect(response.status).toBe(200);
 
       // Find the queue submit call
       const queueSubmitCall = mockFetch.mock.calls.find(
-        (call: [string, ...unknown[]]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
+        (call: unknown[]) => typeof call[0] === "string" && call[0].includes("queue.fal.run") && !call[0].includes("/requests/")
       );
       expect(queueSubmitCall).toBeDefined();
       const requestBody = JSON.parse((queueSubmitCall![1] as { body: string }).body);
@@ -2982,7 +2988,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -3021,7 +3027,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -3065,7 +3071,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
@@ -3110,7 +3116,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -3156,7 +3162,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -3202,7 +3208,7 @@ describe("/api/generate route", () => {
         { "X-Fal-API-Key": "test-fal-key" }
       );
 
-      const response = await POST(request);
+      const response = await POST(request, { params: Promise.resolve({}) });
       const data = await response.json();
 
       expect(response.status).toBe(500);
