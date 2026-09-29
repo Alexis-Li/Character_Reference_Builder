@@ -83,6 +83,7 @@ interface Harness {
 
 interface HarnessOptions {
   target?: OAuthProviderTarget | null;
+  store?: CredentialStore;
   exchange?: (request: TokenExchangeRequest) => Promise<TokenExchangeResponse>;
   refresh?: (request: RefreshRequest) => Promise<TokenExchangeResponse>;
   revoke?: (request: RevokeRequest) => Promise<{ ok: boolean; error?: string }>;
@@ -110,7 +111,7 @@ function grantedResponse(account: { sub?: string; name?: string } = {}): TokenEx
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
-  const store = createMemoryCredentialStore();
+  const store = options.store ?? createMemoryCredentialStore();
   const exchanges: TokenExchangeRequest[] = [];
   const refreshes: RefreshRequest[] = [];
   const revocations: RevokeRequest[] = [];
@@ -136,6 +137,12 @@ function createHarness(options: HarnessOptions = {}): Harness {
   });
 
   return { session, store, exchanges, refreshes, revocations };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 function recorded<T>(items: readonly T[], index = 0): T {
@@ -581,6 +588,159 @@ describe("OAuth session adapter", () => {
       ok: false,
       failure: "revoked",
     });
+  });
+
+  it("invalidates an authorization started before logout, including an exchange already in flight", async () => {
+    const exchange = deferred<TokenExchangeResponse>();
+    const h = createHarness({ exchange: () => exchange.promise });
+    const first = authorizationStart(h.session);
+
+    await h.session.logout();
+    expect(await h.session.handleCallback(callbackFor(first.state))).toMatchObject({
+      ok: false,
+      reason: "unknown-state",
+    });
+    expect(h.exchanges).toHaveLength(0);
+
+    const second = authorizationStart(h.session);
+    const pending = h.session.handleCallback(callbackFor(second.state));
+    expect(h.exchanges).toHaveLength(1);
+    await h.session.logout();
+    exchange.resolve(grantedResponse());
+
+    expect(await pending).toMatchObject({ ok: false, reason: "not-authenticated" });
+    expect(h.session.state).toBe("logged-out");
+    expect(await h.store.keys()).toEqual([]);
+  });
+
+  it("does not return or restore a token when logout wins an in-flight refresh", async () => {
+    const refresh = deferred<TokenExchangeResponse>();
+    const h = createHarness({
+      exchange: async () => ({ ...grantedResponse(), tokens: grantedTokens({ expiresIn: 1 }) }),
+      refresh: () => refresh.promise,
+    });
+    await authenticate(h);
+    h.session.confirmFirstCall();
+
+    const pendingToken = h.session.accessToken();
+    await vi.waitFor(() => expect(h.refreshes).toHaveLength(1));
+    await h.session.logout();
+    refresh.resolve({ ok: true, tokens: grantedTokens({ accessToken: ROTATED_ACCESS_TOKEN }) });
+
+    expect(await pendingToken).toMatchObject({ ok: false, reason: "not-authenticated" });
+    expect(h.session.browserView()).toMatchObject({ state: "logged-out", account: null });
+    expect(await h.store.keys()).toEqual([]);
+  });
+
+  it("orders logout deletion after a refresh credential write already in progress", async () => {
+    const backing = createMemoryCredentialStore();
+    const setStarted = deferred<void>();
+    const releaseSet = deferred<void>();
+    const store: CredentialStore = {
+      get: (key) => backing.get(key),
+      keys: () => backing.keys(),
+      delete: (key) => backing.delete(key),
+      set: async (key, value) => {
+        if (value.includes(ROTATED_ACCESS_TOKEN)) {
+          setStarted.resolve();
+          await releaseSet.promise;
+        }
+        await backing.set(key, value);
+      },
+    };
+    const h = createHarness({ store, refresh: async () => ({
+      ok: true,
+      tokens: grantedTokens({ accessToken: ROTATED_ACCESS_TOKEN }),
+    }) });
+    await authenticate(h);
+
+    const pendingRefresh = h.session.refresh();
+    await setStarted.promise;
+    const pendingLogout = h.session.logout();
+    releaseSet.resolve();
+
+    expect(await pendingRefresh).toMatchObject({ ok: false, reason: "not-authenticated" });
+    expect(await pendingLogout).toMatchObject({ ok: true });
+    expect(await backing.keys()).toEqual([]);
+    expect(h.session.state).toBe("logged-out");
+  });
+
+  it("removes credentials written by an exchange interrupted during storage", async () => {
+    const backing = createMemoryCredentialStore();
+    const setStarted = deferred<void>();
+    const releaseSet = deferred<void>();
+    const store: CredentialStore = {
+      get: (key) => backing.get(key),
+      keys: () => backing.keys(),
+      delete: (key) => backing.delete(key),
+      set: async (key, value) => {
+        setStarted.resolve();
+        await releaseSet.promise;
+        await backing.set(key, value);
+      },
+    };
+    const h = createHarness({ store });
+    const start = authorizationStart(h.session);
+    const pendingCallback = h.session.handleCallback(callbackFor(start.state));
+    await setStarted.promise;
+
+    await h.session.logout();
+    releaseSet.resolve();
+
+    expect(await pendingCallback).toMatchObject({ ok: false, reason: "not-authenticated" });
+    expect(await backing.keys()).toEqual([]);
+    expect(h.session.state).toBe("logged-out");
+  });
+
+  it("does not let an old account refresh overwrite a newly selected account", async () => {
+    const refresh = deferred<TokenExchangeResponse>();
+    let exchangeCount = 0;
+    const h = createHarness({
+      exchange: async () => {
+        exchangeCount += 1;
+        return exchangeCount === 1 ? grantedResponse() : grantedResponse({ sub: "acct-synthetic-2" });
+      },
+      refresh: () => refresh.promise,
+    });
+    await authenticate(h);
+    const pendingRefresh = h.session.refresh();
+    await vi.waitFor(() => expect(h.refreshes).toHaveLength(1));
+    await h.session.switchAccount();
+    await authenticate(h);
+    refresh.resolve({ ok: true, tokens: grantedTokens({ accessToken: ROTATED_ACCESS_TOKEN }) });
+
+    expect(await pendingRefresh).toMatchObject({ ok: false, reason: "not-authenticated" });
+    expect(h.session.browserView()).toMatchObject({
+      state: "authenticated",
+      account: { accountId: "acct-synthetic-2" },
+    });
+    expect(await h.store.keys()).toEqual([`oauth-token:${TARGET.id}:acct-synthetic-2`]);
+    expect(await storedText(h.store)).not.toContain(ROTATED_ACCESS_TOKEN);
+  });
+
+  it("does not delete a new login after a slow remote revocation completes", async () => {
+    const remote = deferred<{ ok: boolean }>();
+    let exchangeCount = 0;
+    const h = createHarness({
+      exchange: async () => {
+        exchangeCount += 1;
+        return exchangeCount === 1 ? grantedResponse() : {
+          ...grantedResponse(),
+          tokens: grantedTokens({ refreshToken: "synthetic-refresh-token-new" }),
+        };
+      },
+      revoke: () => remote.promise,
+    });
+    await authenticate(h);
+
+    const pendingRevocation = h.session.revoke();
+    await vi.waitFor(() => expect(h.revocations).toHaveLength(1));
+    await authenticate(h);
+    remote.resolve({ ok: true });
+
+    expect(await pendingRevocation).toMatchObject({ ok: true, remote: "revoked" });
+    expect(h.session.browserView()).toMatchObject({ state: "authenticated", account: { accountId: ACCOUNT_SUB } });
+    expect(await storedText(h.store)).toContain("synthetic-refresh-token-new");
   });
 
   it("reports a Provider revocation only when it actually succeeded", async () => {

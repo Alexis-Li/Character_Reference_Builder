@@ -202,6 +202,22 @@ describe("CRB-06 real project files", () => {
     expect(await readRecoverableJson(filePath)).toEqual(original);
   });
 
+  it("refuses an atomic replacement if its parent becomes a junction before commit", async () => {
+    const parent = path.join(projectDirectory, "pending");
+    const destination = path.join(ownedRoot, "destination");
+    await fs.mkdir(parent);
+    await fs.mkdir(destination);
+    const filePath = path.join(parent, "project.json");
+
+    await expect(atomicReplaceFile(filePath, "new", {
+      beforeCommit: async () => {
+        await fs.rename(parent, `${parent}-moved`);
+        await fs.symlink(destination, parent, process.platform === "win32" ? "junction" : "dir");
+      },
+    })).rejects.toThrow("linked-path");
+    await expect(fs.stat(path.join(destination, "project.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("redacts absolute paths while preserving HTTPS sources through save, reopen and export", async () => {
     const filePath = path.join(projectDirectory, "project.json");
     const input = workflow(projectDirectory);

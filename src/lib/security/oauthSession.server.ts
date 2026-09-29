@@ -231,6 +231,8 @@ export class OAuthSessionAdapter {
   private lastFailureState: OAuthFailure | null = null;
   private transactions = new Map<string, AuthorizationTransaction>();
   private refreshInFlight: Promise<OAuthResult<{ tokens: OAuthTokens }>> | null = null;
+  private generation = 0;
+  private credentialMutation: Promise<void> = Promise.resolve();
 
   constructor(options: OAuthAdapterOptions) {
     this.target = options.target;
@@ -255,6 +257,33 @@ export class OAuthSessionAdapter {
 
   private tokenKey(accountId: string): string {
     return `oauth-token:${this.target?.id ?? "unconfigured"}:${accountId}`;
+  }
+
+  private isCurrent(generation: number, account?: OAuthAccountSummary): boolean {
+    return generation === this.generation && (!account || this.summaryState === account);
+  }
+
+  private stale<T>(): OAuthResult<T> {
+    return { ok: false, reason: "not-authenticated" };
+  }
+
+  private async mutateCredential<T>(action: () => Promise<T>): Promise<T> {
+    const pending = this.credentialMutation.then(action);
+    this.credentialMutation = pending.then(() => undefined, () => undefined);
+    return pending;
+  }
+
+  private endSession(status: OAuthSessionState): void {
+    // Invalidate pending exchanges, refreshes and token reads synchronously.
+    // A later credential deletion is ordered after any write already in flight.
+    this.generation += 1;
+    this.transactions.clear();
+    this.refreshInFlight = null;
+    this.summaryState = null;
+    this.scopesState = [];
+    this.expiresAtState = null;
+    this.confirmationRequiredState = true;
+    this.status = status;
   }
 
   /**
@@ -324,6 +353,7 @@ export class OAuthSessionAdapter {
    */
   async handleCallback(input: CallbackInput): Promise<OAuthResult<{ account: OAuthAccountSummary }>> {
     const target = this.target;
+    const generation = this.generation;
     if (!target) {
       this.lastFailureState = "provider-not-configured";
       return { ok: false, reason: "provider-not-configured" };
@@ -367,8 +397,11 @@ export class OAuthSessionAdapter {
         codeVerifier: transaction.codeVerifier,
       });
     } catch (error) {
+      if (!this.isCurrent(generation)) return this.stale();
       return this.fail("exchange-failed", error instanceof Error ? error.message : "transport error");
     }
+
+    if (!this.isCurrent(generation)) return this.stale();
 
     if (!response.ok) {
       return this.fail("exchange-failed", response.error ?? `HTTP ${response.status ?? "unknown"}`);
@@ -399,7 +432,28 @@ export class OAuthSessionAdapter {
       scopes: grantedScopes,
       expiresAt: now + (response.tokens?.expiresIn ?? 3600) * 1000,
     };
-    await this.store.set(this.tokenKey(accountId), JSON.stringify(tokens));
+    // A successful new login supersedes token reads and refreshes started for
+    // the previous account, even when no explicit switch action preceded it.
+    this.generation += 1;
+    const commitGeneration = this.generation;
+    this.refreshInFlight = null;
+    const previousAccount = this.summaryState;
+    await this.mutateCredential(async () => {
+      if (this.isCurrent(commitGeneration)) {
+        if (previousAccount && previousAccount.accountId !== accountId) {
+          await this.store.delete(this.tokenKey(previousAccount.accountId));
+        }
+        if (!this.isCurrent(commitGeneration)) return;
+        await this.store.set(this.tokenKey(accountId), JSON.stringify(tokens));
+        if (!this.isCurrent(commitGeneration)) {
+          await this.store.delete(this.tokenKey(accountId));
+        }
+      }
+    });
+    if (!this.isCurrent(commitGeneration)) return this.stale();
+    if (previousAccount && previousAccount.accountId !== accountId) {
+      revokeSessionsForAccount(previousAccount.accountId);
+    }
 
     this.summaryState = {
       accountId,
@@ -427,17 +481,19 @@ export class OAuthSessionAdapter {
     try {
       return await pending;
     } finally {
-      this.refreshInFlight = null;
+      if (this.refreshInFlight === pending) this.refreshInFlight = null;
     }
   }
 
   private async performRefresh(): Promise<OAuthResult<{ tokens: OAuthTokens }>> {
     const target = this.target;
     const account = this.summaryState;
+    const generation = this.generation;
     if (!target || !account) return this.fail("not-authenticated");
     if (this.status === "revoked") return this.fail("not-authenticated");
 
     const stored = await this.store.get(this.tokenKey(account.accountId));
+    if (!this.isCurrent(generation, account)) return this.stale();
     if (!stored) return this.fail("not-authenticated");
     let previous: OAuthTokens;
     try {
@@ -459,8 +515,11 @@ export class OAuthSessionAdapter {
         refreshToken: previous.refreshToken,
       });
     } catch (error) {
+      if (!this.isCurrent(generation, account)) return this.stale();
       return this.failReauthentication(error instanceof Error ? error.message : "transport error");
     }
+
+    if (!this.isCurrent(generation, account)) return this.stale();
 
     const accessToken = response.tokens?.accessToken?.trim();
     if (!response.ok || !accessToken) {
@@ -477,7 +536,15 @@ export class OAuthSessionAdapter {
       scopes: response.tokens?.scopes ?? previous.scopes,
       expiresAt: this.clock.now() + (response.tokens?.expiresIn ?? 3600) * 1000,
     };
-    await this.store.set(this.tokenKey(account.accountId), JSON.stringify(tokens));
+    await this.mutateCredential(async () => {
+      if (this.isCurrent(generation, account)) {
+        await this.store.set(this.tokenKey(account.accountId), JSON.stringify(tokens));
+        if (!this.isCurrent(generation, account)) {
+          await this.store.delete(this.tokenKey(account.accountId));
+        }
+      }
+    });
+    if (!this.isCurrent(generation, account)) return this.stale();
     this.scopesState = tokens.scopes;
     this.expiresAtState = tokens.expiresAt;
     this.status = "authenticated";
@@ -492,6 +559,7 @@ export class OAuthSessionAdapter {
    */
   async accessToken(): Promise<OAuthResult<{ token: string; expiresAt: number }>> {
     const account = this.summaryState;
+    const generation = this.generation;
     if (!account) return this.fail("not-authenticated");
     if (this.status === "revoked" || this.status === "logged-out" || this.status === "account-switched") {
       return this.fail("not-authenticated");
@@ -500,6 +568,7 @@ export class OAuthSessionAdapter {
     if (this.confirmationRequiredState) return this.fail("confirmation-required");
 
     const stored = await this.store.get(this.tokenKey(account.accountId));
+    if (!this.isCurrent(generation, account)) return this.stale();
     if (!stored) return this.fail("not-authenticated");
     let tokens: OAuthTokens;
     try {
@@ -509,6 +578,7 @@ export class OAuthSessionAdapter {
     }
     if (tokens.expiresAt <= this.clock.now() + 30_000) {
       const refreshed = await this.refresh();
+      if (!this.isCurrent(generation, account)) return this.stale();
       if (!refreshed.ok) return { ok: false, reason: refreshed.reason, detail: refreshed.detail };
       return { ok: true, token: refreshed.tokens.accessToken, expiresAt: refreshed.tokens.expiresAt };
     }
@@ -536,15 +606,11 @@ export class OAuthSessionAdapter {
    */
   async logout(): Promise<OAuthResult<{ revokedLocalSessions: number }>> {
     const account = this.summaryState;
-    if (account) {
-      await this.store.delete(this.tokenKey(account.accountId));
-    }
+    this.endSession(this.target ? "logged-out" : "unconfigured");
     const revokedLocalSessions = account ? revokeSessionsForAccount(account.accountId) : 0;
-    this.summaryState = null;
-    this.scopesState = [];
-    this.expiresAtState = null;
-    this.confirmationRequiredState = true;
-    this.status = this.target ? "logged-out" : "unconfigured";
+    if (account) {
+      await this.mutateCredential(() => this.store.delete(this.tokenKey(account.accountId)));
+    }
     return { ok: true, revokedLocalSessions };
   }
 
@@ -556,11 +622,25 @@ export class OAuthSessionAdapter {
   async revoke(): Promise<OAuthResult<{ remote: "revoked" | "unknown" | "not-configured" }>> {
     const target = this.target;
     const account = this.summaryState;
-    if (!target || !account) return this.fail("not-authenticated");
+    if (!target) return this.fail("not-authenticated");
+    if (!account) {
+      this.endSession("revoked");
+      return this.fail("not-authenticated");
+    }
+    this.endSession("revoked");
+    revokeSessionsForAccount(account.accountId);
+
+    // Capture and remove the old credential before any new login can queue a
+    // write for the same account. Remote revocation may then take arbitrarily
+    // long without deleting the new session's credential on completion.
+    const stored = await this.mutateCredential(async () => {
+      const value = await this.store.get(this.tokenKey(account.accountId));
+      await this.store.delete(this.tokenKey(account.accountId));
+      return value;
+    });
 
     let remote: "revoked" | "unknown" | "not-configured" = "not-configured";
     if (target.revocationEndpoint) {
-      const stored = await this.store.get(this.tokenKey(account.accountId));
       if (stored) {
         let tokens: OAuthTokens | null = null;
         try {
@@ -586,13 +666,6 @@ export class OAuthSessionAdapter {
       }
     }
 
-    await this.store.delete(this.tokenKey(account.accountId));
-    revokeSessionsForAccount(account.accountId);
-    this.summaryState = null;
-    this.scopesState = [];
-    this.expiresAtState = null;
-    this.confirmationRequiredState = true;
-    this.status = "revoked";
     return { ok: true, remote };
   }
 
@@ -603,15 +676,11 @@ export class OAuthSessionAdapter {
    */
   async switchAccount(): Promise<OAuthResult<{ previousAccountId: string | null }>> {
     const previousAccountId = this.summaryState?.accountId ?? null;
+    this.endSession(this.target ? "account-switched" : "unconfigured");
     if (previousAccountId) {
-      await this.store.delete(this.tokenKey(previousAccountId));
       revokeSessionsForAccount(previousAccountId);
+      await this.mutateCredential(() => this.store.delete(this.tokenKey(previousAccountId)));
     }
-    this.summaryState = null;
-    this.scopesState = [];
-    this.expiresAtState = null;
-    this.confirmationRequiredState = true;
-    this.status = this.target ? "account-switched" : "unconfigured";
     return { ok: true, previousAccountId };
   }
 

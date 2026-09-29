@@ -152,6 +152,28 @@ describe("privileged write scope", () => {
     });
   });
 
+  it.skipIf(process.platform !== "win32")("denies differently cased aliases of application source directories", () => {
+    registerProjectRoot(REPO_ROOT);
+    const alias = path.join(REPO_ROOT, "SRC", "payload.png");
+    expect(checkWriteTarget(alias)).toMatchObject({ ok: false, reason: "denied-subtree" });
+    expect(isReadOnlyApplicationPath(alias)).toBe(true);
+  });
+
+  it("rejects symlink or junction components even beneath an authorized directory", async () => {
+    const root = await makeWorkDir("crb-write-link-");
+    const destination = path.join(root, "destination");
+    const link = path.join(root, "project", "linked");
+    await fs.mkdir(destination);
+    await fs.mkdir(path.dirname(link));
+    await fs.symlink(destination, link, process.platform === "win32" ? "junction" : "dir");
+
+    expect(checkWriteTarget(path.join(link, "out.png"))).toMatchObject({
+      ok: false,
+      reason: "linked-path",
+    });
+    expect(checkWriteTarget(path.join(path.dirname(link), "out.png")).ok).toBe(true);
+  });
+
   it("refuses a relative or empty target as not-absolute", () => {
     expect(checkWriteTarget("data/media/out.png")).toMatchObject({
       ok: false,

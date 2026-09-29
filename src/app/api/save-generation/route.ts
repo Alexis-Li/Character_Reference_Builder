@@ -11,6 +11,7 @@ import {
   ACCEPTED_ASSET_MEDIA_TYPES,
   classifyMediaContent,
 } from "@/lib/security/activeContent";
+import { isDecodableRaster } from "@/lib/security/activeContent.server";
 
 export const maxDuration = 300; // 5 minute timeout for large media operations
 
@@ -35,6 +36,7 @@ const OPAQUE_MEDIA_EXTENSIONS = [
   "jpeg",
   "gif",
   "webp",
+  "avif",
 ];
 
 // Helper to get file extension from MIME type
@@ -42,9 +44,12 @@ function getExtensionFromMime(mimeType: string): string {
   const mimeToExt: Record<string, string> = {
     "image/png": "png",
     "image/jpeg": "jpg",
+    "image/jpg": "jpg",
     "image/gif": "gif",
     "image/webp": "webp",
+    "image/avif": "avif",
     "image/svg+xml": "svg",
+    "image/svg": "svg",
     "video/mp4": "mp4",
     "video/webm": "webm",
     "video/quicktime": "mov",
@@ -91,7 +96,16 @@ function isHttpUrl(str: string): boolean {
 
 // Known file extensions for 3D models and common media
 const KNOWN_3D_EXTENSIONS = new Set(["glb", "gltf", "obj", "fbx", "usdz", "stl", "ply"]);
-const KNOWN_MEDIA_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "mp4", "webm", "mov"]);
+const KNOWN_MEDIA_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "mp4", "webm", "mov"]);
+
+const OPAQUE_RASTER_TYPES: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+};
 
 // Helper to extract a recognized file extension from a URL pathname
 export function getExtensionFromUrl(url: string): string | null {
@@ -331,6 +345,10 @@ export const POST = withPrivilegedApi(
         }
 
         mediaType = download.mediaType;
+        if (mediaType === "application/octet-stream") {
+          const finalExtension = getExtensionFromUrl(download.finalUrl);
+          mediaType = finalExtension ? OPAQUE_RASTER_TYPES[finalExtension] ?? mediaType : mediaType;
+        }
 
         // For 3D models, try extracting extension from URL first (most reliable with CDN URLs)
         const urlExtension = isModel ? getExtensionFromUrl(content) : null;
@@ -359,7 +377,7 @@ export const POST = withPrivilegedApi(
       // never end up inside the stored bytes.
       const dataUrlMatch = content.match(/^data:([^;,]+)((?:;[^;,]*)*);base64,([\s\S]*)$/);
       if (dataUrlMatch) {
-        mediaType = dataUrlMatch[1];
+        mediaType = dataUrlMatch[1].toLowerCase();
         extension = getExtensionFromMime(mediaType);
         buffer = Buffer.from(dataUrlMatch[3], "base64");
       } else {
@@ -374,7 +392,8 @@ export const POST = withPrivilegedApi(
     // content and any unknown/HTML/text payload are refused on both branches.
     // An inert SVG stays supported, but only as a download artifact.
     const contentKind = classifyMediaContent(mediaType, buffer);
-    if (contentKind === "active-svg" || contentKind === "unknown") {
+    if (contentKind === "active-svg" || contentKind === "unknown" ||
+      (contentKind === "model" && !isModel && !isVideo && !isAudio)) {
       logger.warn('file.save', 'Generation save refused: content is not storable media', {
         directoryPath,
         mediaType,
@@ -390,6 +409,13 @@ export const POST = withPrivilegedApi(
           ),
         },
         { status: 400 }
+      );
+    }
+
+    if (contentKind === "raster" && !(await isDecodableRaster(mediaType, buffer))) {
+      return NextResponse.json(
+        { success: false, error: "Refused: raster image could not be decoded" },
+        { status: 400 },
       );
     }
 

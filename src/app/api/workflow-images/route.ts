@@ -8,6 +8,7 @@ import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { checkWriteTarget } from "@/lib/security/projectWriteScope.server";
 import { redactSecretsInText } from "@/lib/security/secretRedaction";
 import { classifyMediaContent } from "@/lib/security/activeContent";
+import { isDecodableRaster } from "@/lib/security/activeContent.server";
 
 export const maxDuration = 300; // 5 minute timeout for large image operations
 
@@ -197,6 +198,13 @@ export const POST = withPrivilegedApi(["local-file-write"], async (request: Next
       return NextResponse.json(
         { success: false, error: redactSecretsInText(refusal) },
         { status: 400 }
+      );
+    }
+
+    if (!(await isDecodableRaster(declaredMime, buffer))) {
+      return NextResponse.json(
+        { success: false, error: "Refused: raster image could not be decoded" },
+        { status: 400 },
       );
     }
 

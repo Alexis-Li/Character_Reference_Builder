@@ -41,6 +41,62 @@ const ACTIVE_SVG_PATTERNS: ReadonlyArray<RegExp> = [
   /<!DOCTYPE[^>]*(?:SYSTEM|PUBLIC)/i,
 ];
 
+function ascii(bytes: Uint8Array, start: number, end: number): string {
+  return String.fromCharCode(...bytes.subarray(start, end));
+}
+
+function u32be(bytes: Uint8Array, offset: number): number {
+  return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+}
+
+function matchesRasterFormat(type: string, bytes: Uint8Array): boolean {
+  if (type === "image/png") {
+    if (bytes.length < 57 || ascii(bytes, 0, 8) !== "\x89PNG\r\n\x1a\n") return false;
+    let offset = 8;
+    let hasImageData = false;
+    while (offset + 12 <= bytes.length) {
+      const length = u32be(bytes, offset);
+      if (length > bytes.length - offset - 12) return false;
+      const chunk = ascii(bytes, offset + 4, offset + 8);
+      if (offset === 8 && (chunk !== "IHDR" || length !== 13 ||
+        u32be(bytes, offset + 8) === 0 || u32be(bytes, offset + 12) === 0)) return false;
+      if (chunk === "IDAT" && length > 0) hasImageData = true;
+      offset += length + 12;
+      if (chunk === "IEND") return length === 0 && hasImageData && offset === bytes.length;
+    }
+    return false;
+  }
+  if (type === "image/jpeg" || type === "image/jpg") {
+    return bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 &&
+      bytes[2] === 0xff && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+  }
+  if (type === "image/gif") {
+    return bytes.length >= 15 && ["GIF87a", "GIF89a"].includes(ascii(bytes, 0, 6)) &&
+      (bytes[6] | (bytes[7] << 8)) > 0 && (bytes[8] | (bytes[9] << 8)) > 0 &&
+      bytes.includes(0x2c, 13) && bytes[bytes.length - 1] === 0x3b;
+  }
+  if (type === "image/webp") {
+    const chunk = ascii(bytes, 12, 16);
+    const declaredLength = bytes.length >= 8
+      ? (bytes[4] | (bytes[5] << 8) | (bytes[6] << 16) | (bytes[7] << 24)) >>> 0
+      : 0;
+    return bytes.length >= 20 && ascii(bytes, 0, 4) === "RIFF" &&
+      declaredLength === bytes.length - 8 && ascii(bytes, 8, 12) === "WEBP" &&
+      ["VP8 ", "VP8L", "VP8X"].includes(chunk);
+  }
+  if (type === "image/avif") {
+    if (bytes.length < 24 || ascii(bytes, 4, 8) !== "ftyp") return false;
+    const boxLength = u32be(bytes, 0);
+    if (boxLength < 24 || boxLength > bytes.length) return false;
+    for (let offset = 8; offset + 4 <= boxLength; offset += 4) {
+      if (offset === 12) continue; // minor version, not a brand
+      if (["avif", "avis"].includes(ascii(bytes, offset, offset + 4))) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 function decodeText(bytes: Uint8Array, limit = 512 * 1024): string {
   const slice = bytes.byteLength > limit ? bytes.subarray(0, limit) : bytes;
   return new TextDecoder("utf-8", { fatal: false }).decode(slice);
@@ -59,19 +115,19 @@ export function isActiveSvg(svgText: string): boolean {
 export function classifyMediaContent(contentType: string, bytes: Uint8Array): MediaContentKind {
   const type = contentType.split(";")[0].trim().toLowerCase();
 
-  if (type === "image/svg+xml" || type === "image/svg") {
-    return isActiveSvg(decodeText(bytes)) ? "active-svg" : "inert-svg";
+  const head = decodeText(bytes, 4096).trimStart();
+  const looksLikeSvg = /^(?:<\?xml\b[^>]*>\s*)?<svg[\s>]/i.test(head);
+  if (looksLikeSvg) {
+    if (isActiveSvg(decodeText(bytes))) return "active-svg";
+    return type === "image/svg+xml" || type === "image/svg" ? "inert-svg" : "unknown";
   }
-  if (RASTER_TYPES.includes(type)) return "raster";
+  if (type === "image/svg+xml" || type === "image/svg") return "unknown";
+  if (RASTER_TYPES.includes(type)) return matchesRasterFormat(type, bytes) ? "raster" : "unknown";
   if (VIDEO_TYPES.includes(type)) return "video";
   if (AUDIO_TYPES.includes(type)) return "audio";
   if (MODEL_TYPES.includes(type)) return "model";
 
   // A text/HTML payload that happens to start with XML is still not media.
-  const head = decodeText(bytes, 4096).trimStart();
-  if (/^<\?xml|^<svg/i.test(head)) {
-    return classifyMediaContent("image/svg+xml", bytes);
-  }
   return "unknown";
 }
 

@@ -11,6 +11,7 @@ import {
   type ProjectAssetWarning,
 } from "./projectAssets";
 import { SECRET_FIELD_PATTERN, redactSecretsInText } from "./security/secretRedaction";
+import { checkWriteTarget } from "./security/projectWriteScope.server";
 
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
 /**
@@ -46,6 +47,11 @@ export interface AtomicWriteOptions {
 
 function sha256(bytes: Uint8Array): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function requireWriteTarget(filePath: string): void {
+  const scope = checkWriteTarget(filePath);
+  if (!scope.ok) throw new Error(`Write target not authorized (${scope.reason})`);
 }
 
 function mimeForExtension(extension: string): string {
@@ -240,7 +246,11 @@ export async function atomicReplaceFile(
   contents: string | Uint8Array,
   options: AtomicWriteOptions = {},
 ): Promise<void> {
+  requireWriteTarget(filePath);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
+  // A directory created by mkdir, or an existing junction below the project,
+  // must be checked at the final parent before the temporary file is written.
+  requireWriteTarget(filePath);
   const suffix = crypto.randomUUID();
   const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${suffix}.tmp`);
   const previousPath = `${filePath}.previous`;
@@ -255,6 +265,7 @@ export async function atomicReplaceFile(
       await handle.close();
     }
     await options.beforeCommit?.();
+    requireWriteTarget(filePath);
     if (await exists(filePath)) {
       await fs.rm(previousPath, { force: true });
       await fs.rename(filePath, previousPath);
@@ -426,7 +437,9 @@ export async function createReferencePackage(
   const exportsRoot = path.join(directoryPath, "exports");
   const packagePath = path.join(exportsRoot, packageName);
   const temporaryPath = path.join(exportsRoot, `.${packageName}.${crypto.randomUUID()}.tmp`);
+  requireWriteTarget(path.join(temporaryPath, "images"));
   await fs.mkdir(path.join(temporaryPath, "images"), { recursive: true });
+  requireWriteTarget(path.join(temporaryPath, "images"));
 
   const exportedAssets: ProjectAssetRecord[] = [];
   const overviewRows: Array<{ asset: ProjectAssetRecord; title: string; note: string }> = [];
@@ -508,7 +521,10 @@ export async function createReferencePackage(
     await atomicReplaceFile(path.join(temporaryPath, "README.md"), readme);
     await atomicReplaceFile(path.join(temporaryPath, "asset-manifest.json"), JSON.stringify(manifest, null, 2));
     await atomicReplaceFile(path.join(temporaryPath, "overview.svg"), await buildOverviewSvg(directoryPath, overviewRows));
+    requireWriteTarget(packagePath);
     await fs.mkdir(exportsRoot, { recursive: true });
+    requireWriteTarget(packagePath);
+    requireWriteTarget(temporaryPath);
     await fs.rename(temporaryPath, packagePath);
     return {
       packageName,

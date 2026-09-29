@@ -30,6 +30,8 @@ vi.mock("@/utils/logger", () => ({
 import { POST } from "../route";
 import { localApiRequest } from "@/test/localApiRequest";
 
+const VALID_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==";
+
 // The privileged request guard runs for real, so the double is wrapped in an
 // authenticated local-API envelope (loopback Host, same-origin evidence,
 // session capability, one-time nonce).
@@ -74,7 +76,7 @@ describe("/api/workflow-images route", () => {
         workflowPath: projectDir,
         imageId: "img_123",
         folder: "inputs",
-        imageData: "data:image/png;base64,aGVsbG8=",
+        imageData: `data:image/png;base64,${VALID_PNG}`,
       });
 
       const response = await POST(request);
@@ -102,7 +104,7 @@ describe("/api/workflow-images route", () => {
         workflowPath: workflowDir,
         imageId: "img_123",
         folder: "inputs",
-        imageData: "data:image/png;base64,aGVsbG8=",
+        imageData: `data:image/png;base64,${VALID_PNG}`,
       });
 
       const response = await POST(request);
@@ -112,6 +114,38 @@ describe("/api/workflow-images route", () => {
       expect(data.filePath).toBe(path.join(workflowDir, "inputs", "img_123.png"));
       expect(mockMkdir).toHaveBeenCalledWith(workflowDir, { recursive: true });
       expect(mockMkdir).toHaveBeenCalledWith(path.join(workflowDir, "inputs"), { recursive: true });
+    });
+
+    it("refuses active SVG bytes declared as PNG before replacing a workflow image", async () => {
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockMkdir.mockResolvedValue(undefined);
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+
+      const response = await POST(createMockPostRequest({
+        workflowPath: projectDir,
+        imageId: "img_123",
+        imageData: `data:image/png;base64,${Buffer.from(svg).toString("base64")}`,
+      }));
+
+      expect(response.status).toBe(400);
+      expect(mockAtomicReplaceFile).not.toHaveBeenCalled();
+    });
+
+    it("refuses a structurally valid PNG whose pixels cannot decode", async () => {
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockMkdir.mockResolvedValue(undefined);
+      const damaged = Buffer.from(VALID_PNG, "base64");
+      damaged[damaged.indexOf("IDAT", 8) + 4] ^= 0xff;
+
+      const response = await POST(createMockPostRequest({
+        workflowPath: projectDir,
+        imageId: "img_123",
+        imageData: `data:image/png;base64,${damaged.toString("base64")}`,
+      }));
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain("could not be decoded");
+      expect(mockAtomicReplaceFile).not.toHaveBeenCalled();
     });
 
     it("should reject path traversal attempts", async () => {

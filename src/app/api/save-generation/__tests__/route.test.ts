@@ -49,9 +49,23 @@ function computeExpectedHash(buffer: Buffer): string {
   return crypto.createHash("md5").update(buffer).digest("hex");
 }
 
-// Helper to create base64 data URL from string content
+// Decodable one-pixel images. Image acceptance tests must use real image bytes.
+const RASTER_FIXTURES: Record<string, string> = {
+  "image/png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==",
+  "image/jpeg": "/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABgj/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABykX//Z",
+  "image/gif": "R0lGODlhAQABAIAAAExpcQAAACH5BAUAAAAALAAAAAABAAEAAAICRAEAOw==",
+  "image/webp": "UklGRkAAAABXRUJQVlA4WAoAAAAQAAAAAAAAAAAAQUxQSAIAAAAAAFZQOCAYAAAAMAEAnQEqAQABAAFAJiWkAANwAP79NmgA",
+};
+
+function rasterFixture(mimeType = "image/png"): Buffer {
+  const encoded = RASTER_FIXTURES[mimeType];
+  if (!encoded) throw new Error(`missing raster fixture for ${mimeType}`);
+  return Buffer.from(encoded, "base64");
+}
+
+// Helper to create a data URL. Raster requests use actual image bytes.
 function createBase64DataUrl(content: string, mimeType = "image/png"): string {
-  const buffer = Buffer.from(content);
+  const buffer = RASTER_FIXTURES[mimeType] ? rasterFixture(mimeType) : Buffer.from(content);
   return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }
 
@@ -80,7 +94,7 @@ describe("/api/save-generation route", () => {
     it("should save base64 image with hash-based filename", async () => {
       const imageContent = "test-image-content";
       const base64Image = createBase64DataUrl(imageContent, "image/png");
-      const expectedHash = computeExpectedHash(Buffer.from(imageContent));
+      const expectedHash = computeExpectedHash(rasterFixture());
 
       mockStat.mockResolvedValue({
         isDirectory: () => true,
@@ -135,7 +149,7 @@ describe("/api/save-generation route", () => {
     it("should deduplicate existing files by hash suffix", async () => {
       const imageContent = "duplicate-image-content";
       const base64Image = createBase64DataUrl(imageContent, "image/png");
-      const expectedHash = computeExpectedHash(Buffer.from(imageContent));
+      const expectedHash = computeExpectedHash(rasterFixture());
       const existingFilename = `existing_prompt_${expectedHash}.png`;
 
       mockStat.mockResolvedValue({
@@ -219,6 +233,23 @@ describe("/api/save-generation route", () => {
       expect(data.error).toBe("Directory does not exist");
     });
 
+    it("refuses a project directory that reaches another location through a link", async () => {
+      const destination = path.join(projectDir, "destination");
+      const linked = path.join(projectDir, "linked");
+      nodeFs.mkdirSync(destination);
+      nodeFs.symlinkSync(destination, linked, process.platform === "win32" ? "junction" : "dir");
+
+      const response = await POST(createMockPostRequest({
+        directoryPath: linked,
+        image: createBase64DataUrl("image"),
+      }));
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain("linked-path");
+      expect(mockStat).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
     it("should handle various MIME types correctly", async () => {
       const testCases = [
         { mimeType: "image/jpeg", expectedExt: ".jpg" },
@@ -255,14 +286,14 @@ describe("/api/save-generation route", () => {
     });
 
     it("should handle HTTP URLs by fetching content", async () => {
-      const mockContent = "fetched-image-content";
-      const expectedHash = computeExpectedHash(Buffer.from(mockContent));
+      const mockContent = rasterFixture();
+      const expectedHash = computeExpectedHash(mockContent);
 
       // Mock fetch
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         headers: new Map([["content-type", "image/png"]]),
-        arrayBuffer: () => Promise.resolve(new TextEncoder().encode(mockContent).buffer),
+        arrayBuffer: () => Promise.resolve(Uint8Array.from(mockContent).buffer),
       }) as unknown as typeof fetch;
 
       mockStat.mockResolvedValue({
@@ -318,9 +349,8 @@ describe("/api/save-generation route", () => {
     });
 
     it("should handle raw base64 without data URL prefix", async () => {
-      const content = "raw-base64-content";
-      const rawBase64 = Buffer.from(content).toString("base64");
-      const expectedHash = computeExpectedHash(Buffer.from(content));
+      const rawBase64 = rasterFixture().toString("base64");
+      const expectedHash = computeExpectedHash(rasterFixture());
 
       mockStat.mockResolvedValue({
         isDirectory: () => true,
@@ -413,7 +443,7 @@ describe("/api/save-generation route", () => {
     it("should return imageId without extension", async () => {
       const imageContent = "content-for-id-test";
       const base64Image = createBase64DataUrl(imageContent, "image/png");
-      const expectedHash = computeExpectedHash(Buffer.from(imageContent));
+      const expectedHash = computeExpectedHash(rasterFixture());
 
       mockStat.mockResolvedValue({
         isDirectory: () => true,
@@ -438,7 +468,7 @@ describe("/api/save-generation route", () => {
     it("should use custom filename when provided", async () => {
       const imageContent = "content-for-custom-filename";
       const base64Image = createBase64DataUrl(imageContent, "image/png");
-      const expectedHash = computeExpectedHash(Buffer.from(imageContent));
+      const expectedHash = computeExpectedHash(rasterFixture());
 
       mockStat.mockResolvedValue({
         isDirectory: () => true,
@@ -462,7 +492,7 @@ describe("/api/save-generation route", () => {
     it("should sanitize custom filename", async () => {
       const imageContent = "content-for-sanitize-custom";
       const base64Image = createBase64DataUrl(imageContent, "image/png");
-      const expectedHash = computeExpectedHash(Buffer.from(imageContent));
+      const expectedHash = computeExpectedHash(rasterFixture());
 
       mockStat.mockResolvedValue({
         isDirectory: () => true,
@@ -641,6 +671,103 @@ describe("/api/save-generation route", () => {
       expect(data.success).toBe(false);
       expect(data.error).toContain("SVG");
       expect(data.error).toContain("active content");
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("checks the bytes of an opaque PNG CDN response before saving", async () => {
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+      const fetched = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/octet-stream" }),
+        arrayBuffer: async () => Uint8Array.from(Buffer.from(svg)).buffer,
+      });
+      global.fetch = fetched as unknown as typeof fetch;
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const bad = await POST(createMockPostRequest({
+        directoryPath: projectDir,
+        image: "https://cdn.example.com/opaque.png",
+      }));
+      expect(bad.status).toBe(400);
+      expect(mockWriteFile).not.toHaveBeenCalled();
+
+      fetched.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/octet-stream" }),
+        arrayBuffer: async () => Uint8Array.from(rasterFixture()).buffer,
+      });
+      const good = await POST(createMockPostRequest({
+        directoryPath: projectDir,
+        image: "https://cdn.example.com/opaque.png",
+      }));
+      expect(good.status).toBe(200);
+      expect((await good.json()).filename).toMatch(/\.png$/);
+      expect(mockWriteFile).toHaveBeenCalledOnce();
+    });
+
+    it("refuses opaque non-media data rather than renaming it as an image", async () => {
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      const response = await POST(createMockPostRequest({
+        directoryPath: projectDir,
+        image: `data:application/octet-stream;base64,${Buffer.from("<html>not an image</html>").toString("base64")}`,
+      }));
+      expect(response.status).toBe(400);
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["active SVG", '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'],
+      ["inert SVG", '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>'],
+      ["HTML", "<html><script>alert(1)</script></html>"],
+    ])("refuses %s bytes declared as PNG", async (_label, payload) => {
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const response = await POST(createMockPostRequest({
+        directoryPath: projectDir,
+        image: `data:image/png;base64,${Buffer.from(payload).toString("base64")}`,
+      }));
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).success).toBe(false);
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("refuses a genuine JPEG declared as PNG and a truncated PNG", async () => {
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      for (const bytes of [rasterFixture("image/jpeg"), rasterFixture().subarray(0, 20)]) {
+        const response = await POST(createMockPostRequest({
+          directoryPath: projectDir,
+          image: `data:image/png;base64,${bytes.toString("base64")}`,
+        }));
+        expect(response.status).toBe(400);
+      }
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("refuses a PNG with undecodable pixel data before writing", async () => {
+      const damaged = rasterFixture();
+      damaged[damaged.indexOf("IDAT", 8) + 4] ^= 0xff;
+      mockStat.mockResolvedValue({ isDirectory: () => true });
+      mockReaddir.mockResolvedValue([]);
+      mockWriteFile.mockResolvedValue(undefined);
+
+      const response = await POST(createMockPostRequest({
+        directoryPath: projectDir,
+        image: `data:image/png;base64,${damaged.toString("base64")}`,
+      }));
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error).toContain("could not be decoded");
       expect(mockWriteFile).not.toHaveBeenCalled();
     });
 

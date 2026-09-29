@@ -14,6 +14,7 @@
  * own destination by naming it.
  */
 
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { registeredProjectRoots } from "./projectRoots.server";
@@ -36,7 +37,7 @@ export const DENIED_WRITE_SUBTREES: readonly string[] = [
   ".git",
 ];
 
-export type WriteScopeFailure = "not-absolute" | "denied-subtree" | "outside-authorized-root" | "traversal";
+export type WriteScopeFailure = "not-absolute" | "denied-subtree" | "outside-authorized-root" | "traversal" | "linked-path" | "filesystem-error";
 
 export interface WriteScopeCheck {
   ok: boolean;
@@ -51,10 +52,45 @@ function normalize(candidate: string): string {
 
 /** True when `candidate` is `root` or lives below it. */
 export function isInsideDirectory(candidate: string, root: string): boolean {
-  const normalizedRoot = normalize(root);
-  const normalizedCandidate = normalize(candidate);
+  // Windows resolves file names without regard to case. A string comparison
+  // must have the same behavior or `SRC` can bypass a ban on `src`.
+  const comparable = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+  const normalizedRoot = comparable(normalize(root));
+  const normalizedCandidate = comparable(normalize(candidate));
   if (normalizedCandidate === normalizedRoot) return true;
   return normalizedCandidate.startsWith(normalizedRoot + path.sep);
+}
+
+/** Resolve aliases through the nearest existing ancestor, including for new files. */
+function realTarget(candidate: string): string {
+  let ancestor = candidate;
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return path.join(fs.realpathSync.native(ancestor), ...missing.reverse());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      missing.push(path.basename(ancestor));
+      ancestor = parent;
+    }
+  }
+}
+
+/** Junctions and symlinks must not redirect an API write after authorization. */
+function containsLink(candidate: string): boolean {
+  let current = candidate;
+  while (true) {
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
 }
 
 /** The directory that always exists for role project data, outside the repo. */
@@ -116,7 +152,28 @@ export function checkWriteTarget(targetPath: string): WriteScopeCheck {
     }
   }
 
-  if (!authorizedWriteRoots().some((root) => isInsideDirectory(resolved, root))) {
+  let physicalTarget: string;
+  let physicalRepo: string;
+  try {
+    if (containsLink(resolved)) return { ok: false, reason: "linked-path", detail: resolved };
+    physicalTarget = realTarget(resolved);
+    physicalRepo = realTarget(repo);
+  } catch {
+    return { ok: false, reason: "filesystem-error", detail: resolved };
+  }
+  for (const subtree of DENIED_WRITE_SUBTREES) {
+    if (isInsideDirectory(physicalTarget, path.join(physicalRepo, subtree))) {
+      return { ok: false, reason: "denied-subtree", detail: subtree };
+    }
+  }
+
+  let authorized: boolean;
+  try {
+    authorized = authorizedWriteRoots().some((root) => isInsideDirectory(physicalTarget, realTarget(root)));
+  } catch {
+    return { ok: false, reason: "filesystem-error", detail: resolved };
+  }
+  if (!authorized) {
     return { ok: false, reason: "outside-authorized-root", detail: resolved };
   }
   return { ok: true };
@@ -126,7 +183,15 @@ export function checkWriteTarget(targetPath: string): WriteScopeCheck {
 export function isReadOnlyApplicationPath(targetPath: string): boolean {
   const resolved = normalize(targetPath);
   const repo = repositoryRoot();
-  return DENIED_WRITE_SUBTREES.some(
-    (subtree) => subtree !== ".git" && isInsideDirectory(resolved, path.join(repo, subtree)),
-  );
+  try {
+    const physicalTarget = realTarget(resolved);
+    const physicalRepo = realTarget(repo);
+    return DENIED_WRITE_SUBTREES.some(
+      (subtree) => subtree !== ".git" &&
+        (isInsideDirectory(resolved, path.join(repo, subtree)) ||
+          isInsideDirectory(physicalTarget, path.join(physicalRepo, subtree))),
+    );
+  } catch {
+    return true;
+  }
 }
