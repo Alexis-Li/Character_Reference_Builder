@@ -87,6 +87,12 @@ Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windo
 
 相关约定与状态见 `docs/validation/security-gate-issue-10.md`。
 
+## ChatGPT/Codex 账号接入
+
+设置 → Providers 中提供 ChatGPT/Codex 的设备授权、账号摘要、取消、重连、退出与切换。连接不生成图片；连接后可选为新图像节点及单部件任务的默认入口并保存，每次生成另行确认资料外发与未知费用。OAuth 图像通道最多三张参考，不支持精确 Mask，不沿用 API Key 价格或能力。
+
+当前未取得本应用客户端身份的 Provider 许可，默认连接入口显示“尚未开放连接”。部署只接受获准的 `CRB_CODEX_OAUTH_CLIENT_ID`，没有复制上游客户端身份或要求用户粘贴 bearer。持久凭据位于仓库及临时目录之外的本用户应用目录；Windows 使用 CurrentUser DPAPI，Linux 使用 0700／0600 文件。许可调查、固定端点与后续申请内容见 [社区复用决策](docs/research/oauth-community-reuse.md)。真实账号、图像能力与 Windows 保护仍待验收。
+
 ## 单部件参考工作区
 
 关闭首次引导和欢迎弹层后，点击顶部“单部件参考工作区”。导入原画，填写部件归属及有效要求并确认；选择视图生成候选，再并排比较、人工选择、批准、继续优化或导出旧版本。默认预设无需 SAM 或 Mask，载入不自动生成；其他视图的人工选定结果自动作为一致性参考。图像模型沿用现有项目默认设置，也可在画布生成节点中配置。
@@ -97,9 +103,11 @@ Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windo
 
 ## 当前验证状态
 
-截至 2026-09-16，当前本地 `main` 的生产构建、145 个测试文件共 2986 项测试、CRB-05 Edge 浏览器完整交互回归、CRB-06 真实临时目录集成回归，以及 CRB-09 安全准入的合成回归（安全套件 226 项）与开发／生产双模式浏览器回归均已通过。CRB-09 建立了本机特权请求边界、Provider 接收方与凭据绑定、媒体与活动内容隔离、写入范围限制与 OAuth 会话适配器；真实 OAuth 账号审查因未选定 Provider 目标而标记为 blocked，详见[安全准入验证](docs/validation/security-gate-issue-10.md)。CRB-06 的路径清理回归覆盖中文全角标点与紧邻中文文本中的 UNC、Windows 扩展路径、盘符路径、`file:` URL、POSIX 绝对路径，并确认 HTTPS 来源及相对资产引用保持不变。CRB-01 的干净安装与 Windows 本机启停另有基线证据。导入前探针记录的 P04–P07 是历史基线缺口，相关工程路径现已由 CRB-02–CRB-06 闭合；真实模型质量与费用仍待 CRB-07。详见对应验证记录、Issue 和 CRB-01 基线说明。
+截至 2026-10-05，云端生产构建、148 个测试文件共 3023 项测试通过（另 1 项跳过），CRB-09 Codex 设置与登录路径的开发／生产 Chromium 合成回归通过。认证会话已接通设备授权、持久恢复及服务端图像工具调用；真实 OAuth 端到端验收仍因客户端身份许可与真实账号条件 blocked，Windows DPAPI／启动待本机验证，#10 保持打开，详见[安全准入验证](docs/validation/security-gate-issue-10.md)。
 
-复跑入口见 [验证脚本说明](scripts/validation/README.md)。其中的探针针对外置的隔离候选快照运行，不调用云端生成服务；当前产品基线的安装与启动命令见上文。
+CRB-05 Edge 浏览器交互、CRB-06 真实临时目录保存／迁移／导出，以及本机特权请求、接收方、媒体与写入边界另有历史验证记录，本轮全量回归继续通过。CRB-06 路径清理覆盖中文标点附近的 UNC、Windows 扩展路径、盘符、`file:` URL、POSIX 绝对路径，保持 HTTPS 来源及相对资产引用。CRB-01 干净安装与 Windows 启停的基线证据不替代本次新增 DPAPI 验收。导入前 P04–P07 是历史缺口，工程路径由 CRB-02–CRB-06 闭合；真实质量和费用仍待 CRB-07，本轮未执行 #8。
+
+复跑入口见 [验证脚本说明](scripts/validation/README.md)。候选探针针对外置快照，新增 OAuth 浏览器脚本针对当前产品且使用合成授权响应；均不调用真实云端生成。安装与启动命令见上文。
 
 ## 工程 Skills
 

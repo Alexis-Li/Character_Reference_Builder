@@ -49,6 +49,7 @@ interface MultiProviderGenerateRequest extends GenerateRequest {
   mask?: string;
   /** Persisted origin of the model choice, echoed in the call record. */
   modelSource?: ModelResolutionSource;
+  oauthGrant?: string;
 }
 
 
@@ -126,6 +127,13 @@ export const POST = withPrivilegedApi(
 
     // Determine which provider to use
     const provider: ProviderType = selectedModel?.provider || "gemini";
+    const authChannel = selectedModel?.authChannel ?? "api-key";
+    if (request.headers.has("X-OpenAI-OAuth-Token")) {
+      return NextResponse.json({ success: false, ...NOT_EXECUTED, error: "手工 bearer 入口已移除，请从服务商设置连接账号。" }, { status: 403 });
+    }
+    if (authChannel !== "api-key" && (authChannel !== "oauth" || provider !== "openai")) {
+      return NextResponse.json({ success: false, ...NOT_EXECUTED, error: "Unsupported authentication channel" }, { status: 400 });
+    }
     console.log(`[API:${requestId}] Provider: ${provider}, Model: ${selectedModel?.modelId || model}`);
 
     // CRB-03: capability checks run against the complete input set the
@@ -151,7 +159,7 @@ export const POST = withPrivilegedApi(
       );
     }
     const entryModelId = selectedModel?.modelId || model;
-    const declaredCapabilities = imageCapabilities(provider, entryModelId);
+    const declaredCapabilities = imageCapabilities(provider, entryModelId, authChannel);
     const referencesForCheck =
       provider === "gemini" || provider === "openai"
         ? effectiveReferences(references, images)
@@ -521,33 +529,8 @@ export const POST = withPrivilegedApi(
         );
       }
 
-      // Two mutually exclusive transports: the API-key entry and the
-      // OAuth-experimental entry. Presence of the experimental token header
-      // selects the OAuth adapter; it never falls back to the API-key
-      // endpoint, and the API-key path never claims an OAuth success.
-      const oauthToken = request.headers.get("X-OpenAI-OAuth-Token");
       const openaiApiKey = request.headers.get("X-OpenAI-API-Key") || process.env.OPENAI_API_KEY;
-      if (oauthToken) {
-        // CRB-09: the experimental transport is deactivated until a versioned
-        // Provider target is selected. CLI-only so a browser page can never
-        // hold a reusable bearer; the adapter re-checks the flag itself.
-        if (
-          process.env.CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT !== "1" ||
-          session.requestClass !== "cli"
-        ) {
-          console.warn(`[API:${requestId}] OpenAI OAuth-experimental transport refused`);
-          return NextResponse.json<GenerateResponse>(
-            {
-              success: false,
-              ...NOT_EXECUTED,
-              error:
-                "The OpenAI OAuth-experimental transport is disabled. It requires CRB_ENABLE_OAUTH_EXPERIMENTAL_TRANSPORT=1 and is limited to CLI callers until a versioned Provider target is selected; use the API-key channel (X-OpenAI-API-Key or OPENAI_API_KEY) instead.",
-            },
-            { status: 403 }
-          );
-        }
-        console.log(`[API:${requestId}] OpenAI auth channel: oauth-experimental`);
-      } else if (!openaiApiKey) {
+      if (authChannel === "api-key" && !openaiApiKey) {
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
@@ -556,8 +539,6 @@ export const POST = withPrivilegedApi(
           },
           { status: 401 }
         );
-      } else {
-        console.log(`[API:${requestId}] OpenAI auth channel: api-key`);
       }
 
       // Keep Data URIs as-is since localhost URLs won't work
@@ -598,10 +579,20 @@ export const POST = withPrivilegedApi(
         dynamicInputs: processedDynamicInputs,
       };
 
+      if (authChannel === "oauth") {
+        if (typeof body.oauthGrant !== "string") {
+          return NextResponse.json({ success: false, ...NOT_EXECUTED, error: "请确认本次资料外发与未知费用。" }, { status: 403 });
+        }
+        const result = await generateWithOpenAIOAuth(requestId, genInput, session.sessionId, body.oauthGrant);
+        if (!result.success) return NextResponse.json({ success: false, querySupport: "unsupported", execution: result.execution,
+          statusUnknown: result.statusUnknown, error: result.error, ...(result.call ? { call: result.call } : {}) },
+        { status: result.execution === "not-executed" ? 409 : 502 });
+        const output = result.outputs?.[0];
+        if (!output?.data) return NextResponse.json({ success: false, ...SUBMITTED, error: "No OAuth image output" }, { status: 502 });
+        return buildMediaResponse(output, result.call);
+      }
       providerInvocationStarted = true;
-      const result = oauthToken
-        ? await generateWithOpenAIOAuth(requestId, oauthToken, genInput)
-        : await generateWithOpenAI(requestId, openaiApiKey!, genInput);
+      const result = await generateWithOpenAI(requestId, openaiApiKey!, genInput);
 
       if (!result.success) {
         return NextResponse.json<GenerateResponse>(

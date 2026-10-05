@@ -41,6 +41,7 @@ export function estimateSelectedModelCost(
   model: SelectedModel,
   resolution: Resolution,
 ): number | null {
+  if (model.authChannel === "oauth") return null;
   if (model.pricing?.type === "per-run" && Number.isFinite(model.pricing.amount)) {
     return model.pricing.amount;
   }

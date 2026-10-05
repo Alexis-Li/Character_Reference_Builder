@@ -60,8 +60,11 @@ export async function GET(request: Request) {
     );
   }
 
+  await oauthSession().restore();
   const account = oauthSession().browserView();
-  const issued = issueBrowserSession(origin, null);
+  // Device transactions belong only to the initiating capability.
+  account.device = null;
+  const issued = issueBrowserSession(origin, account.account);
   const response = NextResponse.json({
     success: true,
     sessionId: issued.sessionId,

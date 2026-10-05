@@ -101,6 +101,36 @@ beforeEach(() => {
 });
 
 describe("executeNanoBanana", () => {
+  it("uses explicit OAuth consent, ordered references and no API key", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const node = makeNode({ selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" } });
+    const images = ["data:image/png;base64,synthetic-front", "data:image/png;base64,synthetic-back"];
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ oauth: { state: "authenticated", account: { accountId: "synthetic", displayName: "Synthetic User", workspaceId: "workspace" } } }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ grant: "synthetic-operation-grant" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, image: "data:image/webp;base64,synthetic-output", execution: "submitted", call: { auth: "oauth", stage: "succeeded" } }) });
+    const ctx = makeCtx(node, { getConnectedInputs: vi.fn().mockReturnValue({ images, text: "Preserve the selected view", dynamicInputs: { image: images } }),
+      providerSettings: { providers: { ...defaultProviderSettings.providers, openai: { apiKey: "synthetic-api-key-must-not-ride" } } } });
+    await executeNanoBanana(ctx);
+    const generation = mockFetch.mock.calls.find(call => call[0] === "/api/generate")!;
+    expect(generation[1].headers["X-OpenAI-API-Key"]).toBeUndefined();
+    expect(JSON.parse(generation[1].body)).toMatchObject({ oauthGrant: "synthetic-operation-grant", selectedModel: { authChannel: "oauth" }, images });
+    expect(ctx.addIncurredCost).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("keeps output and selection when OAuth consent is cancelled without submitting", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const node = makeNode({ selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" }, outputImage: "existing-image", selectedHistoryIndex: 2 });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ oauth: { state: "authenticated", account: { accountId: "synthetic", displayName: "Synthetic User" } } }) });
+    const ctx = makeCtx(node);
+    await expect(executeNanoBanana(ctx)).rejects.toThrow(/已取消/);
+    expect(mockFetch.mock.calls.filter(call => call[0] === "/api/generate")).toHaveLength(0);
+    expect(ctx.updateNodeData).not.toHaveBeenCalledWith(node.id, expect.objectContaining({ outputImage: null }));
+    expect(node.data.outputImage).toBe("existing-image");
+    expect(node.data.selectedHistoryIndex).toBe(2);
+    confirm.mockRestore();
+  });
+
   it("should throw when no text input is provided", async () => {
     const node = makeNode();
     const ctx = makeCtx(node, {

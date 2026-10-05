@@ -19,6 +19,8 @@ export interface SelectedModel {
   provider: ProviderType;
   modelId: string;
   displayName: string;
+  /** Explicit selection; absence retains existing API-key behavior. */
+  authChannel?: "api-key" | "oauth";
   pricing?: SelectedModelPricing;  // Optional pricing info from provider API
   capabilities?: string[];  // Model capabilities (e.g., "text-to-image", "image-to-3d")
 }

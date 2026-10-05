@@ -16,6 +16,7 @@ import type {
 import { pollGenerateTask } from "./pollTaskCompletion";
 import { CloudAttemptError, runWithFallback, type RunAttemptContext } from "./runWithFallback";
 import { calculateGenerationCost, estimateSelectedModelCost } from "@/utils/costCalculator";
+import { oauthCallConsent } from "@/lib/oauthCallConsent";
 import { buildGenerateHeaders } from "@/store/utils/buildApiHeaders";
 import { rememberSessionMedia } from "./sessionMedia";
 import { newCharacterId } from "@/lib/characterProject";
@@ -188,6 +189,7 @@ export async function executeNanoBanana(
   ): Promise<void> => {
     const provider = modelToUse.provider;
     const headers = buildGenerateHeaders(provider, providerSettings);
+    if (modelToUse.authChannel === "oauth") delete headers["X-OpenAI-API-Key"];
 
     // Sanitize dynamicInputs: remove prompt since it's already sent as the top-level
     // `prompt` field in requestPayload. Keeping both can cause providers like Replicate
@@ -219,6 +221,19 @@ export async function executeNanoBanana(
       modelToUse.modelId !== primaryResolution.model.modelId;
     const servingSource = isFallbackServing ? "node-override" : primaryResolution.resolvedFrom;
 
+    let oauthGrant: string | undefined;
+    if (modelToUse.authChannel === "oauth") {
+      try { oauthGrant = await oauthCallConsent(images.length); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : "OAuth 调用未获授权";
+        const request = makeRequest(modelToUse, attemptContext.attempt, attemptContext.switchReason);
+        persistRequest({ ...request, failureReason: "cancelled", error: message });
+        updateNodeData(node.id, { status: "error", error: message });
+        recordDefiniteFailure(message);
+        throw new CloudAttemptError(message, "not-executed", "cancelled");
+      }
+    }
+
     const requestPayload = {
       images,
       references,
@@ -232,6 +247,7 @@ export async function executeNanoBanana(
       modelSource: servingSource,
       parameters: parametersOverride ?? nodeData.parameters,
       dynamicInputs: sanitizedDynamicInputs,
+      ...(oauthGrant ? { oauthGrant } : {}),
     };
 
     // Final guard: assert that prompt is a string before sending to API
@@ -532,7 +548,7 @@ export async function executeNanoBanana(
           });
 
         // Track cost
-        if ((modelToUse.provider === "fal" || modelToUse.provider === "openai") && modelToUse.pricing) {
+        if (modelToUse.authChannel !== "oauth" && (modelToUse.provider === "fal" || modelToUse.provider === "openai") && modelToUse.pricing) {
           addIncurredCost(modelToUse.pricing.amount);
         } else if (modelToUse.provider === "gemini") {
           const generationCost = calculateGenerationCost(nodeData.model, nodeData.resolution);
@@ -667,7 +683,7 @@ export async function executeNanoBanana(
       : null,
     validateFallback: nodeData.fallbackModel
       ? () => checkReferenceGaps(
-          imageCapabilities(nodeData.fallbackModel!.provider, nodeData.fallbackModel!.modelId),
+          imageCapabilities(nodeData.fallbackModel!.provider, nodeData.fallbackModel!.modelId, nodeData.fallbackModel!.authChannel),
           { references: images.map((image, index) => ({
             image,
             ...(imageRoles[index] ? { purpose: imageRoles[index] } : {}),

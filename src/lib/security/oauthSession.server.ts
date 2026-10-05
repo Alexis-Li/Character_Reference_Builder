@@ -13,15 +13,15 @@
  * credential store. No automatic fallback across authorization channels
  * happens here: an unavailable OAuth session reports its own state and stops.
  *
- * No Provider target is registered by default. Until one is selected and its
- * exact version, issuer, client registration, redirect URI and minimum scopes
- * are recorded, `authorize()` reports `provider-not-configured` — the honest
- * result, not a simulated success.
+ * Production uses the pinned Codex device protocol only when this application
+ * has a Provider-permitted client identity. The generic PKCE branch remains
+ * available for protocol tests; it is not a second production login system.
  */
 
 import * as crypto from "node:crypto";
-import { defaultCredentialStore, type CredentialStore } from "./credentialStore.server";
+import { createMemoryCredentialStore, defaultCredentialStore, type CredentialStore } from "./credentialStore.server";
 import { revokeSessionsForAccount, type AccountSummary } from "./localSession.server";
+import { codexOAuthTarget, codexOAuthTransports } from "./codexOAuth.server";
 
 export type OAuthSessionState =
   | "unconfigured"
@@ -87,7 +87,7 @@ export interface TokenExchangeResponse {
     scopes?: readonly string[];
     expiresIn?: number;
   };
-  account?: { sub?: string; name?: string; email?: string };
+  account?: { sub?: string; name?: string; email?: string; workspaceId?: string };
   issuer?: string;
   clientId?: string;
   error?: string;
@@ -109,6 +109,22 @@ export interface OAuthTransports {
   exchange(request: TokenExchangeRequest): Promise<TokenExchangeResponse>;
   refresh(request: RefreshRequest): Promise<TokenExchangeResponse>;
   revoke(request: RevokeRequest): Promise<{ ok: boolean; error?: string }>;
+  startDevice?(signal: AbortSignal): Promise<DeviceAuthorization>;
+  pollDevice?(device: DeviceAuthorization, signal: AbortSignal): Promise<{ pending: true } | { pending: false; response: TokenExchangeResponse }>;
+}
+
+export interface DeviceAuthorization {
+  deviceId: string;
+  userCode: string;
+  verificationUrl: string;
+  intervalMs: number;
+  expiresInMs: number;
+}
+export interface DeviceAuthorizationView {
+  userCode: string;
+  verificationUrl: string;
+  expiresAt: number;
+  intervalMs: number;
 }
 
 export type AuthorizationFailure = "provider-not-configured" | "invalid-redirect-uri";
@@ -167,12 +183,16 @@ export interface BrowserSafeSessionView {
   scopes: readonly string[];
   expiresAt: number | null;
   confirmationRequired: boolean;
+  scopesKnown?: boolean;
+  device?: DeviceAuthorizationView | null;
+  failure?: string | null;
 }
 
 export interface OAuthAccountSummary {
   accountId: string;
   displayName: string;
   provider: string;
+  workspaceId?: string;
 }
 
 export interface OAuthClock {
@@ -233,11 +253,19 @@ export class OAuthSessionAdapter {
   private refreshInFlight: Promise<OAuthResult<{ tokens: OAuthTokens }>> | null = null;
   private generation = 0;
   private credentialMutation: Promise<void> = Promise.resolve();
+  private device: { authorization: DeviceAuthorization; sessionId: string; generation: number; expiresAt: number; nextPollAt: number; controller: AbortController } | null = null;
+  private devicePoll: Promise<BrowserSafeSessionView> | null = null;
+  private deviceController: AbortController | null = null;
+  private scopesKnown = false;
+  private deviceFailure: string | null = null;
+  private restoreInFlight: Promise<void> | null = null;
+  private restored = false;
+  private grants = new Map<string, { sessionId: string; generation: number; expiresAt: number }>();
 
   constructor(options: OAuthAdapterOptions) {
     this.target = options.target;
     this.transports = options.transports ?? {};
-    this.store = options.store ?? defaultCredentialStore();
+    this.store = options.store ?? (options.target ? defaultCredentialStore() : createMemoryCredentialStore());
     this.clock = options.clock ?? { now: () => Date.now() };
     this.status = options.target ? "logged-out" : "unconfigured";
   }
@@ -259,6 +287,36 @@ export class OAuthSessionAdapter {
     return `oauth-token:${this.target?.id ?? "unconfigured"}:${accountId}`;
   }
 
+  private activeKey(): string { return `oauth-active:${this.target?.id ?? "unconfigured"}`; }
+
+  /** Restore only our own protected store, never another application's auth files. */
+  async restore(): Promise<void> {
+    if (this.restored || !this.target) return;
+    if (this.restoreInFlight) return this.restoreInFlight;
+    const generation = this.generation;
+    this.restoreInFlight = (async () => {
+      const raw = await this.store.get(this.activeKey());
+      if (!this.isCurrent(generation) || !raw) return;
+      try {
+        const saved = JSON.parse(raw);
+        if (saved.clientId !== this.target?.clientId || saved.version !== this.target?.implementationVersion ||
+            typeof saved.account?.accountId !== "string" || saved.account.provider !== this.target?.provider) return;
+        const token = await this.store.get(this.tokenKey(saved.account.accountId));
+        if (!this.isCurrent(generation) || !token) return;
+        const tokens = JSON.parse(token) as OAuthTokens;
+        if (typeof tokens.accessToken !== "string" || !Number.isFinite(tokens.expiresAt) || !Array.isArray(tokens.scopes)) return;
+        this.summaryState = saved.account;
+        this.scopesState = tokens.scopes;
+        this.scopesKnown = saved.scopesKnown === true;
+        this.expiresAtState = tokens.expiresAt;
+        this.status = saved.state === "re-authentication-required" ? "re-authentication-required" : "authenticated";
+        // A restart requires fresh external-data/cost authorization.
+        this.confirmationRequiredState = true;
+      } catch { /* Invalid saved state requires a new connection. */ }
+    })();
+    try { await this.restoreInFlight; } finally { this.restored = true; this.restoreInFlight = null; }
+  }
+
   private isCurrent(generation: number, account?: OAuthAccountSummary): boolean {
     return generation === this.generation && (!account || this.summaryState === account);
   }
@@ -277,6 +335,13 @@ export class OAuthSessionAdapter {
     // Invalidate pending exchanges, refreshes and token reads synchronously.
     // A later credential deletion is ordered after any write already in flight.
     this.generation += 1;
+    this.restored = true;
+    this.deviceController?.abort();
+    this.deviceController = null;
+    this.device = null;
+    this.devicePoll = null;
+    this.deviceFailure = null;
+    this.grants.clear();
     this.transactions.clear();
     this.refreshInFlight = null;
     this.summaryState = null;
@@ -284,6 +349,95 @@ export class OAuthSessionAdapter {
     this.expiresAtState = null;
     this.confirmationRequiredState = true;
     this.status = status;
+  }
+
+  async startDeviceAuthorization(sessionId: string): Promise<BrowserSafeSessionView> {
+    if (!this.target || !this.transports.startDevice) return this.browserView();
+    const previous = this.summaryState;
+    this.endSession("authorization-started");
+    const generation = this.generation;
+    if (previous) revokeSessionsForAccount(previous.accountId);
+    await this.mutateCredential(async () => {
+      if (previous) await this.store.delete(this.tokenKey(previous.accountId));
+      await this.store.delete(this.activeKey());
+    });
+    if (!this.isCurrent(generation)) return this.browserView();
+    const controller = new AbortController();
+    this.deviceController = controller;
+    try {
+      const authorization = await this.transports.startDevice(controller.signal);
+      if (!this.isCurrent(generation) || controller.signal.aborted) return this.browserView();
+      if (authorization.verificationUrl !== this.target.authorizationEndpoint) throw new Error("unexpected-device-page");
+      this.device = { authorization, sessionId, generation, controller,
+        expiresAt: this.clock.now() + authorization.expiresInMs, nextPollAt: this.clock.now() + authorization.intervalMs };
+    } catch {
+      if (this.isCurrent(generation)) {
+        this.endSession("logged-out");
+        this.deviceFailure = "device-start-failed";
+      }
+    }
+    return this.browserView();
+  }
+
+  async pollDeviceAuthorization(sessionId: string): Promise<BrowserSafeSessionView> {
+    const device = this.device;
+    if (!device || device.sessionId !== sessionId) return this.viewForSession(sessionId);
+    if (this.clock.now() >= device.expiresAt) {
+      this.endSession("logged-out"); this.deviceFailure = "device-expired";
+      return this.browserView();
+    }
+    if (this.devicePoll) return this.devicePoll;
+    if (this.clock.now() < device.nextPollAt || !this.transports.pollDevice) return this.browserView();
+    device.nextPollAt = this.clock.now() + device.authorization.intervalMs;
+    const pending = (async () => {
+      try {
+        const result = await this.transports.pollDevice!(device.authorization, device.controller.signal);
+        if (!this.isCurrent(device.generation) || device.controller.signal.aborted) return this.viewForSession(sessionId);
+        if (this.clock.now() >= device.expiresAt) throw new Error("device-expired");
+        if (!result.pending) {
+          this.device = null;
+          this.deviceController = null;
+          const committed = await this.acceptResponse(result.response, device.generation);
+          if (!committed.ok && this.isCurrent(device.generation)) throw new Error("device-exchange-failed");
+        }
+      } catch {
+        if (this.isCurrent(device.generation)) {
+          this.endSession("logged-out"); this.deviceFailure = "device-authorization-failed";
+        }
+      }
+      return this.viewForSession(sessionId);
+    })();
+    this.devicePoll = pending;
+    try { return await pending; } finally { if (this.devicePoll === pending) this.devicePoll = null; }
+  }
+
+  viewForSession(sessionId: string): BrowserSafeSessionView {
+    const view = this.browserView();
+    if (this.device && this.device.sessionId !== sessionId) view.device = null;
+    return view;
+  }
+
+  /** One operation, one account generation, one local caller, five minutes. */
+  createCallGrant(sessionId: string, accountId: string): string | null {
+    if (!this.summaryState || this.summaryState.accountId !== accountId ||
+        !["authenticated", "refresh-pending"].includes(this.status)) return null;
+    for (const [key, grant] of this.grants) if (grant.expiresAt <= this.clock.now()) this.grants.delete(key);
+    if (this.grants.size >= 100) return null;
+    const grant = oneTimeState();
+    this.grants.set(grant, { sessionId, generation: this.generation, expiresAt: this.clock.now() + 300_000 });
+    return grant;
+  }
+
+  async accessTokenForCall(sessionId: string, grantId: string): Promise<OAuthResult<{ token: string; expiresAt: number; isCurrent: () => boolean }>> {
+    const grant = this.grants.get(grantId);
+    if (!grant || grant.sessionId !== sessionId || grant.generation !== this.generation || grant.expiresAt <= this.clock.now()) {
+      return { ok: false, reason: "confirmation-required" };
+    }
+    this.grants.delete(grantId);
+    this.confirmFirstCall();
+    const result = await this.accessToken();
+    if (!this.isCurrent(grant.generation)) return this.stale();
+    return result.ok ? { ...result, isCurrent: () => this.isCurrent(grant.generation) } : result;
   }
 
   /**
@@ -402,7 +556,12 @@ export class OAuthSessionAdapter {
     }
 
     if (!this.isCurrent(generation)) return this.stale();
+    return this.acceptResponse(response, generation);
+  }
 
+  private async acceptResponse(response: TokenExchangeResponse, generation: number): Promise<OAuthResult<{ account: OAuthAccountSummary }>> {
+    const target = this.target;
+    if (!target || !this.isCurrent(generation)) return this.stale();
     if (!response.ok) {
       return this.fail("exchange-failed", response.error ?? `HTTP ${response.status ?? "unknown"}`);
     }
@@ -423,7 +582,8 @@ export class OAuthSessionAdapter {
     }
 
     const now = this.clock.now();
-    const grantedScopes = response.tokens?.scopes ?? target.minimumScopes;
+    const grantedScopes = response.tokens?.scopes ?? [];
+    const scopesKnown = response.tokens?.scopes !== undefined;
     const tokens: OAuthTokens = {
       accessToken,
       refreshToken: response.tokens?.refreshToken ?? null,
@@ -438,6 +598,10 @@ export class OAuthSessionAdapter {
     const commitGeneration = this.generation;
     this.refreshInFlight = null;
     const previousAccount = this.summaryState;
+    const summary: OAuthAccountSummary = {
+      accountId, displayName: response.account?.name ?? response.account?.email ?? accountId,
+      provider: target.provider, ...(response.account?.workspaceId ? { workspaceId: response.account.workspaceId } : {}),
+    };
     await this.mutateCredential(async () => {
       if (this.isCurrent(commitGeneration)) {
         if (previousAccount && previousAccount.accountId !== accountId) {
@@ -445,8 +609,13 @@ export class OAuthSessionAdapter {
         }
         if (!this.isCurrent(commitGeneration)) return;
         await this.store.set(this.tokenKey(accountId), JSON.stringify(tokens));
+        if (this.isCurrent(commitGeneration)) {
+          await this.store.set(this.activeKey(), JSON.stringify({ clientId: target.clientId,
+            version: target.implementationVersion, account: summary, scopesKnown }));
+        }
         if (!this.isCurrent(commitGeneration)) {
           await this.store.delete(this.tokenKey(accountId));
+          await this.store.delete(this.activeKey());
         }
       }
     });
@@ -455,11 +624,8 @@ export class OAuthSessionAdapter {
       revokeSessionsForAccount(previousAccount.accountId);
     }
 
-    this.summaryState = {
-      accountId,
-      displayName: response.account?.name ?? response.account?.email ?? accountId,
-      provider: target.provider,
-    };
+    this.summaryState = summary;
+    this.scopesKnown = scopesKnown;
     this.scopesState = grantedScopes;
     this.expiresAtState = tokens.expiresAt;
     this.confirmationRequiredState = true;
@@ -525,6 +691,12 @@ export class OAuthSessionAdapter {
     if (!response.ok || !accessToken) {
       return this.failReauthentication(response.error ?? `HTTP ${response.status ?? "unknown"}`);
     }
+    if ((response.issuer !== undefined && response.issuer !== target.issuer) ||
+        (response.clientId !== undefined && response.clientId !== target.clientId) ||
+        (response.account?.sub !== undefined && response.account.sub !== account.accountId) ||
+        (response.account?.workspaceId !== undefined && response.account.workspaceId !== account.workspaceId)) {
+      return this.failReauthentication("refresh-account-mismatch");
+    }
 
     const tokens: OAuthTokens = {
       accessToken,
@@ -546,6 +718,7 @@ export class OAuthSessionAdapter {
     });
     if (!this.isCurrent(generation, account)) return this.stale();
     this.scopesState = tokens.scopes;
+    if (response.tokens?.scopes !== undefined) this.scopesKnown = true;
     this.expiresAtState = tokens.expiresAt;
     this.status = "authenticated";
     this.lastFailureState = null;
@@ -608,9 +781,10 @@ export class OAuthSessionAdapter {
     const account = this.summaryState;
     this.endSession(this.target ? "logged-out" : "unconfigured");
     const revokedLocalSessions = account ? revokeSessionsForAccount(account.accountId) : 0;
-    if (account) {
-      await this.mutateCredential(() => this.store.delete(this.tokenKey(account.accountId)));
-    }
+    await this.mutateCredential(async () => {
+      if (account) await this.store.delete(this.tokenKey(account.accountId));
+      await this.store.delete(this.activeKey());
+    });
     return { ok: true, revokedLocalSessions };
   }
 
@@ -636,6 +810,7 @@ export class OAuthSessionAdapter {
     const stored = await this.mutateCredential(async () => {
       const value = await this.store.get(this.tokenKey(account.accountId));
       await this.store.delete(this.tokenKey(account.accountId));
+      await this.store.delete(this.activeKey());
       return value;
     });
 
@@ -679,8 +854,11 @@ export class OAuthSessionAdapter {
     this.endSession(this.target ? "account-switched" : "unconfigured");
     if (previousAccountId) {
       revokeSessionsForAccount(previousAccountId);
-      await this.mutateCredential(() => this.store.delete(this.tokenKey(previousAccountId)));
     }
+    await this.mutateCredential(async () => {
+      if (previousAccountId) await this.store.delete(this.tokenKey(previousAccountId));
+      await this.store.delete(this.activeKey());
+    });
     return { ok: true, previousAccountId };
   }
 
@@ -694,6 +872,10 @@ export class OAuthSessionAdapter {
       scopes: this.scopesState,
       expiresAt: this.expiresAtState,
       confirmationRequired: this.confirmationRequiredState,
+      scopesKnown: this.scopesKnown,
+      device: this.device ? { userCode: this.device.authorization.userCode, verificationUrl: this.device.authorization.verificationUrl,
+        intervalMs: this.device.authorization.intervalMs, expiresAt: this.device.expiresAt } : null,
+      failure: this.deviceFailure ?? this.lastFailureState,
     };
   }
 
@@ -711,18 +893,31 @@ export class OAuthSessionAdapter {
     return { ok: false, reason, detail };
   }
 
-  private failReauthentication<T>(detail: string): OAuthResult<T> {
+  private async failReauthentication<T>(detail: string): Promise<OAuthResult<T>> {
     // Refresh failure never deletes the account or project data: the session
     // becomes explicitly unusable and says why.
     this.status = "re-authentication-required";
     this.lastFailureState = "refresh-rejected";
+    const generation = this.generation;
+    const account = this.summaryState;
+    await this.mutateCredential(async () => {
+      if (this.isCurrent(generation, account ?? undefined)) await this.store.set(this.activeKey(), JSON.stringify({
+        clientId: this.target?.clientId, version: this.target?.implementationVersion, account,
+        scopesKnown: this.scopesKnown, state: "re-authentication-required",
+      }));
+    });
+    if (!this.isCurrent(generation, account ?? undefined)) return this.stale();
     return { ok: false, reason: "refresh-rejected", detail };
   }
 }
 
-let activeAdapter: OAuthSessionAdapter = new OAuthSessionAdapter({ target: null });
+let activeAdapter: OAuthSessionAdapter | null = null;
 
 export function oauthSession(): OAuthSessionAdapter {
+  if (!activeAdapter) {
+    const target = codexOAuthTarget();
+    activeAdapter = new OAuthSessionAdapter({ target, ...(target ? { transports: codexOAuthTransports(target.clientId) } : {}) });
+  }
   return activeAdapter;
 }
 

@@ -10,6 +10,7 @@ import { clearFetchCache } from "@/utils/deduplicatedFetch";
 import { ProviderModel } from "@/lib/providers/types";
 import { ModelSearchDialog } from "@/components/modals/ModelSearchDialog";
 import { ComfySettingsTab, useComfySettingsDraft } from "@/components/settings/ComfySettingsTab";
+import { CodexAccountSettings } from "@/components/settings/CodexAccountSettings";
 import { saveComfySettings } from "@/lib/comfy/settings";
 import { useInlineParameters } from "@/hooks/useInlineParameters";
 
@@ -341,6 +342,8 @@ export function ProjectSetupModal({
     clearFetchCache();
     localStorage.removeItem("node-banana-models-cache");
     localStorage.removeItem("node-banana-schema-cache");
+    // OAuth's explicit default selection is edited from this settings tab.
+    saveNodeDefaults(localNodeDefaults);
     onClose();
   };
 
@@ -547,6 +550,7 @@ export function ProjectSetupModal({
         {/* Providers Tab Content */}
         {activeTab === "providers" && (
           <div className="space-y-3">
+            <CodexAccountSettings onSelectModel={(selectedModel) => setLocalNodeDefaults(prev => ({ ...prev, generateImage: { ...prev.generateImage, selectedModel, parameters: {} } }))} />
             {/* Gemini Provider */}
             <div className="p-3 bg-neutral-900 rounded-lg border border-neutral-700">
               <div className="flex items-center justify-between">

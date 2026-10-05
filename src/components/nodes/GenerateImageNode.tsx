@@ -85,6 +85,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
 
   // Get the current selected provider (default to gemini)
   const currentProvider: ProviderType = nodeData.selectedModel?.provider || "gemini";
+  const isOAuth = nodeData.selectedModel?.authChannel === "oauth";
 
   // Get enabled providers
   const enabledProviders = useMemo(() => {
@@ -102,11 +103,11 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
       providers.push({ id: "kie", name: "Kie.ai" });
     }
     // Add OpenAI if configured
-    if (openaiEnabled && openaiApiKey) {
-      providers.push({ id: "openai", name: "OpenAI" });
+    if (isOAuth || (openaiEnabled && openaiApiKey)) {
+      providers.push({ id: "openai", name: isOAuth ? "ChatGPT/Codex (OAuth)" : "OpenAI" });
     }
     return providers;
-  }, [replicateEnabled, replicateApiKey, kieEnabled, kieApiKey, openaiEnabled, openaiApiKey]);
+  }, [replicateEnabled, replicateApiKey, kieEnabled, kieApiKey, openaiEnabled, openaiApiKey, isOAuth]);
 
   // Migrate legacy data: derive selectedModel from model field if missing
   useEffect(() => {
@@ -123,6 +124,12 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
 
   // Fetch models from external providers when provider changes
   const fetchModels = useCallback(async () => {
+    if (isOAuth) {
+      setExternalModels([{ id: "codex-image", name: "ChatGPT/Codex 图像", provider: "openai", description: "OAuth hosted image tool; availability unverified", capabilities: IMAGE_CAPABILITIES }]);
+      setModelsFetchError(null);
+      setIsLoadingModels(false);
+      return;
+    }
     if (currentProvider === "gemini") {
       setExternalModels([]);
       setModelsFetchError(null);
@@ -168,7 +175,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
     } finally {
       setIsLoadingModels(false);
     }
-  }, [currentProvider, replicateApiKey, falApiKey, kieApiKey, openaiApiKey]);
+  }, [currentProvider, replicateApiKey, falApiKey, kieApiKey, openaiApiKey, isOAuth]);
 
   useEffect(() => {
     fetchModels();
@@ -222,6 +229,7 @@ export function GenerateImageNode({ id, data, selected }: NodeProps<NanoBananaNo
           modelId: model.id,
           displayName: model.name,
           capabilities: model.capabilities,
+          ...(model.id === "codex-image" ? { authChannel: "oauth" as const } : {}),
         };
         // Clear parameters when changing models (different models have different schemas)
         updateNodeData(id, { selectedModel: newSelectedModel, modelSource: "node-override", parameters: {} });

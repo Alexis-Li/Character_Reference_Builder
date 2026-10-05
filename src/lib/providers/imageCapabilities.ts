@@ -143,9 +143,14 @@ const ENTRY_IMAGE_CAPABILITIES: Record<string, ImageCapabilities> = {
 /** Capabilities declared for one entry, or null when undeclared. */
 export function imageCapabilities(
   provider: ProviderType,
-  modelId?: string
+  modelId?: string,
+  channel: "api-key" | "oauth" = "api-key",
 ): ImageCapabilities | null {
   if (!modelId) return null;
+  if (channel === "oauth") return provider === "openai" && modelId === "codex-image" ? {
+    generate: true, edit: true, multiReference: true, mask: false,
+    maxReferenceImages: 3, maxImageBytes: 7 * MB, maxRequestBytes: 20 * MB,
+  } : null;
   return ENTRY_IMAGE_CAPABILITIES[`${provider}/${modelId}`] ?? null;
 }
 
@@ -351,7 +356,7 @@ export interface ModelResolution {
 }
 
 function sameModel(a: SelectedModel, b: SelectedModel): boolean {
-  return a.provider === b.provider && a.modelId === b.modelId;
+  return a.provider === b.provider && a.modelId === b.modelId && a.authChannel === b.authChannel;
 }
 
 /**
@@ -417,7 +422,7 @@ export function resolveGenerationModel(input: {
  * success: every call record carries exactly one channel, set from the
  * transport that actually submitted the request.
  */
-export type ProviderAuthChannel = "api-key" | "oauth-experimental";
+export type ProviderAuthChannel = "api-key" | "oauth-experimental" | "oauth";
 
 /** Submission outcome of one provider attempt. */
 export type ProviderCallStage = "succeeded" | "failed";
@@ -453,4 +458,6 @@ export interface ProviderCallRecord {
   auth: ProviderAuthChannel;
   /** Whether the provider transport reported success or failure. */
   stage: ProviderCallStage;
+  carrierModelId?: string;
+  actualImageModelId?: string;
 }

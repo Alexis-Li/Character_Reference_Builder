@@ -1275,6 +1275,8 @@ function getOpenAiSchema(modelId: string): ExtractedSchema {
     { name: "image", type: "image", required: false, label: "Image", isArray: true },
   ];
   const schemas: Record<string, ExtractedSchema> = {
+    // OAuth hosted-image entry has no API-key size/quality/background controls.
+    "codex-image": { parameters: [], inputs },
     "gpt-image-2": { parameters, inputs },
     "gpt-image-1": { parameters, inputs },
   };

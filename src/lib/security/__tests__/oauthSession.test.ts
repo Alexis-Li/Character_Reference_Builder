@@ -539,7 +539,7 @@ describe("OAuth session adapter", () => {
       account: { accountId: ACCOUNT_SUB, displayName: ACCOUNT_NAME, provider: PROVIDER },
       scopes: ["images.read"],
     });
-    expect(await h.store.keys()).toHaveLength(1);
+    expect(await h.store.keys()).toHaveLength(2); // token + restart metadata, both protected
     expect(await storedText(h.store)).toContain(ACCESS_TOKEN);
     expect(await h.session.accessToken()).toMatchObject({
       ok: false,
@@ -684,10 +684,11 @@ describe("OAuth session adapter", () => {
     const pendingCallback = h.session.handleCallback(callbackFor(start.state));
     await setStarted.promise;
 
-    await h.session.logout();
+    const pendingLogout = h.session.logout();
     releaseSet.resolve();
 
     expect(await pendingCallback).toMatchObject({ ok: false, reason: "not-authenticated" });
+    await pendingLogout;
     expect(await backing.keys()).toEqual([]);
     expect(h.session.state).toBe("logged-out");
   });
@@ -714,7 +715,7 @@ describe("OAuth session adapter", () => {
       state: "authenticated",
       account: { accountId: "acct-synthetic-2" },
     });
-    expect(await h.store.keys()).toEqual([`oauth-token:${TARGET.id}:acct-synthetic-2`]);
+    expect(await h.store.keys()).toEqual([`oauth-token:${TARGET.id}:acct-synthetic-2`, `oauth-active:${TARGET.id}`]);
     expect(await storedText(h.store)).not.toContain(ROTATED_ACCESS_TOKEN);
   });
 
