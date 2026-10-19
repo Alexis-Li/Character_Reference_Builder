@@ -1,11 +1,11 @@
 # Triage Labels
 
-`triage` 是否可用以当前会话技能列表为准。以下映射基于 2026-09-10 对 `Alexis-Li/Character-Reference-Builder` 远端标签的检查。
+`triage` 是否可用以当前会话技能列表为准。以下映射于 2026-10-19 通过 `gh label list --repo Alexis-Li/Character_Reference_Builder --limit 100 --json name` 复核；历史描述不替代使用前的远端检查。
 
 | Skill 中的角色 | 本仓库标签名称 | 含义 | 远端状态 |
 | --- | --- | --- | --- |
 | `needs-triage` | `needs-triage` | 等待维护者评估 | 尚未创建，采用默认名称 |
-| `needs-info` | `question` | 等待报告者补充信息 | 已存在，说明为 Further information is requested |
+| `needs-info` | `question` | 等待报告者补充信息 | 已存在 |
 | `ready-for-agent` | `ready-for-agent` | 规格明确，可交给 Agent 实施 | 已创建并用于首批开发任务 |
 | `ready-for-human` | `ready-for-human` | 需要人工实施 | 尚未创建，采用默认名称 |
 | `wontfix` | `wontfix` | 不予处理 | 已存在 |

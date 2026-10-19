@@ -16,7 +16,7 @@
 - [文档索引](docs/README.md)：文档职责与状态。
 - [领域词汇表](CONTEXT.md)：角色项目、部件、参考图等统一术语。
 - [协作约定](AGENTS.md)：项目规则和工程 Skill 配置入口。
-- [GitHub 仓库](https://github.com/Alexis-Li/Character-Reference-Builder) / [Issues](https://github.com/Alexis-Li/Character-Reference-Builder/issues)。
+- [GitHub 仓库](https://github.com/Alexis-Li/Character_Reference_Builder) / [Issues](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。
 
 ## 目录结构
 
@@ -31,7 +31,7 @@
 │   ├── README.md                 # 文档索引
 │   ├── product-requirements.md   # 统一产品需求（含交互）
 │   ├── first-development-tasks.md # 开发顺序与交付要求
-│   ├── agents/                   # Issue、标签、领域文档消费规则
+│   ├── agents/                   # 文档、Issue／PR、归档、标签与领域规则
 │   ├── research/                 # 可复用项目与 Provider 证据
 │   ├── validation/               # 验证协议与执行结果
 │   └── adr/                      # 已作出的架构取舍
@@ -52,6 +52,7 @@
 ## 开发约定
 
 - 开始工作前阅读 [AGENTS.md](AGENTS.md)。
+- 任务交付、审核、集成与归档遵循 [Issue／PR 流程](docs/agents/issue-tracker.md)；文档按[维护与留存规则](docs/agents/documentation.md)就地更新。
 - 按 ADR 的固定底座建立原型基线时，补齐依赖清单、锁文件及安装、启动、构建、测试命令。
 - 按实际需求细分目录；当前空目录使用 `.gitkeep` 跟踪，加入实际文件时移除占位文件。
 - `assets/` 仅存放可提交的项目素材。用户上传、生成图像及其他运行时数据使用根目录 `data/`，该目录默认被 Git 忽略。

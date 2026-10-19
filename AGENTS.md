@@ -16,6 +16,15 @@
 - 每个提交围绕一个逻辑改动组织，便于独立审查和回退。
 - 合并文档时逐项核对需求、交互、输入输出、异常、验收及研究来源的去向；去重不等于删减需求，不能以概览替代详细规格。移除原文前确认有效内容已迁入正文，冲突依据明确。
 
+## 文档与交付
+
+- 文档按职责就地更新；README 面向使用者，Issue 维护任务范围与验收，PR 维护交付与审核。长期知识进入现有需求、领域、ADR、研究或验证记录，普通修复不强制新增报告。详见[文档维护与证据留存](docs/agents/documentation.md)。
+- 功能、较大修复或重叠任务使用 `codex/<任务名>` 分支和 PR；小型独立改动可留在当前分支，交付时明确差异范围。检查并保留已有未提交工作。
+- Issue/PR 工作遵循[交付、审核与归档流程](docs/agents/issue-tracker.md)。审核绑定完整基线和范围；已实现、已审核、已集成、真实验收、发布及归档分别报告，不以测试通过代替全部验收。
+- 先做受影响检查，实现稳定后完成相关构建／回归。纯文档改动检查内容、相对链接、模板及差异；运行与浏览器验证入口见 [README](README.md) 和[验证脚本说明](scripts/validation/README.md)。模拟 Provider 不能证明真实模型质量、费用或账号可用。
+- 普通关闭保留原始交付与审核记录。归档先保全唯一结论和来源、核验可恢复性，再按授权处理旧记录与任务专属临时文件；共享 `../.tmp/` 不是本任务可整体清理的目录。
+- 提交文件与 Issue/PR 正文不得包含凭据、私人素材或本机绝对路径；使用仓库相对路径、环境变量或占位符。规则不额外授予发布、合并、关闭或删除权限。
+
 ## 按需定位
 
 - 产品功能与交互：[产品需求](docs/product-requirements.md)，唯一需求入口，直接修改正文，不新增版本副本或补充说明。排期、技术决策和证据见[文档索引](docs/README.md)。
@@ -27,11 +36,11 @@
 
 ### Issue tracker
 
-使用 `Alexis-Li/Character-Reference-Builder` 的 GitHub Issues。详见 [issue-tracker.md](docs/agents/issue-tracker.md)。
+使用 `Alexis-Li/Character_Reference_Builder` 的 GitHub Issues 维护任务，PR 承载交付与审核，不作为需求分诊入口。详见 [issue-tracker.md](docs/agents/issue-tracker.md)。
 
 ### Triage labels
 
-复用 `question` 和 `wontfix`，其余三个角色使用默认名称并记录远端未创建状态。详见 [triage-labels.md](docs/agents/triage-labels.md)。
+标签映射与远端检查记录统一维护在 [triage-labels.md](docs/agents/triage-labels.md)，使用前检查实际状态，不在此复制状态快照。
 
 ### Domain docs
 
