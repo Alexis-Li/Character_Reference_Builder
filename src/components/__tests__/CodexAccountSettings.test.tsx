@@ -74,6 +74,7 @@ describe("OAuth account settings", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "连接账号 / 重新连接" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "连接账号 / 重新连接" }));
     await screen.findByText("SYNTH-CODE");
+    expect(screen.getByRole("link", { name: "ChatGPT 安全性设置" })).toHaveAttribute("href", "https://chatgpt.com/#settings/Security");
     expect(popup.location.href).toBe(device.verificationUrl);
     expect(popup.opener).toBeNull();
     await screen.findByText("账号：Synthetic User");

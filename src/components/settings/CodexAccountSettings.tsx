@@ -101,7 +101,12 @@ export function CodexAccountSettings({ onSelectModel }: { onSelectModel: (model:
     <p className="text-xs text-neutral-400">图像工具：待实际验收；额度：未知；费用：未知。支持最多三张参考图的生成／优化协议，暂不支持精确 Mask 编辑。每次调用会单独确认资料外发及可能的费用。</p>
     {oauth?.device && <div className="p-3 border border-neutral-600 rounded space-y-2">
       <p>在服务商页面输入设备码：<strong className="font-mono text-lg">{oauth.device.userCode}</strong></p>
+      <button type="button" className={button} onClick={async () => {
+        try { await navigator.clipboard.writeText(oauth.device!.userCode); setMessage("设备码已复制，请粘贴到服务商页面；确认后回到本应用查看账号。"); }
+        catch { setMessage("无法访问剪贴板，请复制本页显示的设备码，再切换到服务商页面输入。"); }
+      }}>复制设备码</button>
       <a className="underline" href={oauth.device.verificationUrl} target="_blank" rel="noopener noreferrer">打开服务商授权页面</a>
+      <p className="text-xs">若服务商要求启用装置代码登入，请由本人在 <a className="underline" href="https://chatgpt.com/#settings/Security" target="_blank" rel="noopener noreferrer">ChatGPT 安全性设置</a> 开启后，重新获取设备码。无需运行其他应用的登录命令。</p>
       <p className="text-xs">有效期至 {new Date(oauth.device.expiresAt).toLocaleTimeString()}。确认后应用自动完成连接；拒绝或放弃授权时可取消并重试。</p>
       <button type="button" className={button} disabled={busy} onClick={() => act("cancel")}>取消连接</button>
     </div>}
