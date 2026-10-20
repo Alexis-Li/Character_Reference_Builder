@@ -309,6 +309,9 @@ export function ProjectSetupModal({
       setUseExternalImageStorage(externalStorage);
       // Remember the base directory for next time
       setLastProjectBaseDir(directoryPath);
+      // The image default can be chosen on Providers before saving Project.
+      // Persist the staged choice before onSave updates the project/store.
+      saveNodeDefaults(localNodeDefaults);
       onSave(id, name.trim(), fullProjectPath);
       setIsValidating(false);
     } catch (err) {
@@ -353,11 +356,13 @@ export function ProjectSetupModal({
   };
 
   const handleSaveCanvas = () => {
+    saveNodeDefaults(localNodeDefaults);
     updateCanvasNavigationSettings(localCanvasSettings);
     onClose();
   };
 
   const handleSaveComfy = () => {
+    saveNodeDefaults(localNodeDefaults);
     saveComfySettings(localComfySettings);
     onClose();
   };
