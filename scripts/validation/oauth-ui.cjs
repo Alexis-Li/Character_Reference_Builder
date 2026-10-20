@@ -91,7 +91,7 @@ async function authorize(page, action, user) {
     const response = await popup.goto(callback.href);
     assert.equal(response.status(), 200, `${await popup.locator("body").innerText()} Failure: ${(await state(page)).oauth?.failure}`);
     await popup.getByText(/ChatGPT\/Codex connected/).waitFor();
-    await page.getByText(`账号：synthetic-${user}@example.invalid`, { exact: true }).waitFor();
+    await page.getByText(`登录账号：synthetic-${user}@example.invalid`, { exact: true }).waitFor();
   }
   return { popup, auth };
 }
@@ -136,7 +136,7 @@ async function authorize(page, action, user) {
   await fs.writeFile(path.join(runtimeRoot, "synthetic-runtime.txt"), "disposable");
   await stopServer(); await removeOwnedDirectory(runtimeRoot, output, "runtime-cleanup-"); await startServer();
   await page.reload({ waitUntil: "domcontentloaded" }); await openSettings(page);
-  await page.getByText("账号：synthetic-one@example.invalid", { exact: true }).waitFor();
+  await page.getByText("登录账号：synthetic-one@example.invalid", { exact: true }).waitFor();
   const restored = await state(page);
   assert.equal(restored.oauth.state, "authenticated"); assert.equal(restored.oauth.confirmationRequired, true);
   assert.ok(restored.oauth.expiresAt > Date.now() + 300_000, "Expired credentials must automatically refresh after restart");
@@ -152,7 +152,7 @@ async function authorize(page, action, user) {
   const devicePopup = page.waitForEvent("popup");
   await page.getByRole("button", { name: "使用设备码登录", exact: true }).click();
   const device = await devicePopup; await page.getByText("CRB-SYNTH", { exact: true }).waitFor();
-  await page.getByText("账号：synthetic-one@example.invalid", { exact: true }).waitFor({ timeout: 30_000 });
+  await page.getByText("登录账号：synthetic-one@example.invalid", { exact: true }).waitFor({ timeout: 30_000 });
   await device.close();
   await page.getByRole("button", { name: "本地断开并检查远端授权" }).click();
   await page.getByText(/远端授权状态未知/).waitFor();

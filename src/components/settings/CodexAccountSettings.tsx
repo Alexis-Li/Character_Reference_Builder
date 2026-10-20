@@ -92,13 +92,11 @@ export function CodexAccountSettings({ onSelectModel }: { onSelectModel: (model:
   return <section aria-label="ChatGPT/Codex 账号连接" className="p-3 bg-neutral-900 rounded-lg border border-neutral-700 space-y-3 text-neutral-100">
     <div className="flex items-center justify-between"><strong>ChatGPT/Codex · OAuth</strong><span role="status">{oauth ? STATUS[oauth.state] ?? oauth.state : "正在读取连接状态"}</span></div>
     {!available && oauth && <p className="text-sm text-amber-300">登录服务未配置，请重启应用后重试。</p>}
-    <p className="text-xs text-neutral-400">通过服务商页面登录和授权。可使用该浏览器已有登录状态，服务商也可能要求重新验证。连接账号不会自动生成图片。</p>
+    {!connected && <p className="text-xs text-neutral-400">通过服务商页面登录和授权。确认后自动显示登录账号。</p>}
     {oauth?.account && <div className="text-sm space-y-1">
-      <p>账号：{oauth.account.displayName}</p><p>工作区：{oauth.account.workspaceId ?? "未提供"}</p>
-      <p>实际授权范围：{oauth.scopesKnown ? oauth.scopes.join("、") || "服务商报告为空" : "服务商未报告，未知"}</p>
-      <p>授权有效期：{oauth.expiresAt ? new Date(oauth.expiresAt).toLocaleString() : "未知"}；调用前自动续期。</p>
+      <p>登录账号：{oauth.account.displayName}</p>
+      <p>授权有效期：{oauth.expiresAt ? new Date(oauth.expiresAt).toLocaleString() : "未知"}</p>
     </div>}
-    <p className="text-xs text-neutral-400">图像工具：待实际验收；额度：未知；费用：未知。支持最多三张参考图的生成／优化协议，暂不支持精确 Mask 编辑。每次调用会单独确认资料外发及可能的费用。</p>
     {oauth?.device && <div className="p-3 border border-neutral-600 rounded space-y-2">
       <p>在服务商页面输入设备码：<strong className="font-mono text-lg">{oauth.device.userCode}</strong></p>
       <button type="button" className={button} onClick={async () => {

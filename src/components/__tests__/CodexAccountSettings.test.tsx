@@ -21,7 +21,7 @@ describe("OAuth account settings", () => {
     await screen.findByRole("link", { name: "打开浏览器授权页面" });
     expect(popup.location.href).toBe(browser.authorizationUrl);
     expect(JSON.parse(network.mock.calls[1][1].body)).toEqual({ action: "start", method: "browser" });
-    await screen.findByText("账号：Browser User");
+    await screen.findByText("登录账号：Browser User");
     expect(network.mock.calls[2][1]).toBeUndefined();
   });
 
@@ -37,7 +37,7 @@ describe("OAuth account settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "取消连接" }));
     await screen.findByText(/已取消等待/);
     await act(async () => { resolvePoll(Response.json({ oauth: { ...base, state: "authenticated", account: { displayName: "Old User" } } })); await pending; });
-    expect(screen.queryByText("账号：Old User")).toBeNull();
+    expect(screen.queryByText("登录账号：Old User")).toBeNull();
     expect(screen.getByRole("button", { name: "连接账号 / 重新连接" })).toBeEnabled();
   });
 
@@ -77,8 +77,10 @@ describe("OAuth account settings", () => {
     expect(screen.getByRole("link", { name: "ChatGPT 安全性设置" })).toHaveAttribute("href", "https://chatgpt.com/#settings/Security");
     expect(popup.location.href).toBe(device.verificationUrl);
     expect(popup.opener).toBeNull();
-    await screen.findByText("账号：Synthetic User");
-    expect(screen.getByText(/服务商未报告，未知/)).toBeInTheDocument();
+    await screen.findByText("登录账号：Synthetic User");
+    expect(screen.getByText(/^授权有效期：/)).toBeInTheDocument();
+    expect(screen.queryByText(/工作区：|实际授权范围：|图像工具：|额度：|费用：/)).toBeNull();
+    expect(screen.queryByText(/synthetic-workspace|服务商未报告，未知/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "设为图像任务默认入口" }));
     expect(select).toHaveBeenCalledWith(expect.objectContaining({ modelId: "codex-image", authChannel: "oauth" }));
     expect(network.mock.calls.map(call => call[0])).toEqual(["/api/oauth", "/api/oauth", "/api/oauth"]);
