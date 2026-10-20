@@ -71,6 +71,20 @@ afterEach(async () => {
 });
 
 describe("guarded browser login with real loopback callbacks and synthetic Provider responses", () => {
+  it("rejects an unparsable raw callback target and keeps the valid transaction usable", async () => {
+    setup(); const { callback } = await start();
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({ hostname: callback.hostname, port: callback.port,
+        path: "/\\[", headers: { Host: callback.host } }, response => {
+        response.resume(); response.on("end", () => resolve(response.statusCode!));
+      });
+      request.on("error", reject); request.end();
+    });
+    expect(status).toBe(400); expect(network).not.toHaveBeenCalled();
+    network.mockResolvedValueOnce(Response.json(tokens));
+    expect((await send(callback)).status).toBe(200);
+  });
+
   it("matches the official CLI native authorization contract with the default client", () => {
     vi.stubEnv("CRB_CODEX_OAUTH_CLIENT_ID", "");
     const target = codexOAuthTarget();

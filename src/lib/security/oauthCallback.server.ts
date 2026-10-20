@@ -30,7 +30,9 @@ export async function listenOAuthCallback(
         !request.url?.startsWith("/") || request.url.startsWith("//")) {
       reply(400, "Invalid login callback."); return;
     }
-    const url = new URL(request.url, redirect.origin);
+    let url: URL;
+    try { url = new URL(request.url, redirect.origin); }
+    catch { reply(400, "Invalid login callback."); return; }
     if (url.pathname !== redirect.pathname || url.origin !== redirect.origin) {
       reply(404, "Not found."); return;
     }
