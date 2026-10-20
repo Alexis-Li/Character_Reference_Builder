@@ -120,8 +120,8 @@ async function authorize(page, action, user) {
     if (url.pathname === "/api/generate") generations++;
     return route.continue();
   });
-  const page = await context.newPage();
-  await page.addInitScript(() => localStorage.setItem("node-banana-ftux-completed", "true"));
+  await context.addInitScript(() => localStorage.setItem("node-banana-ftux-completed", "true"));
+  let page = await context.newPage();
   await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
   await openSettings(page);
   const native = await state(page);
@@ -139,6 +139,7 @@ async function authorize(page, action, user) {
   const encrypted = await fs.readFile(credentialFile, "utf8");
   if (process.platform === "win32") assert.ok(!encrypted.includes("synthetic-refresh"), "DPAPI must persist ciphertext");
   await fs.writeFile(path.join(runtimeRoot, "synthetic-runtime.txt"), "disposable");
+  await page.close();
   await stopServer(); await removeOwnedDirectory(runtimeRoot, output, "runtime-cleanup-");
   // Enter the real adapter's 30-second renewal window while no process is
   // running. A pre-restart GET must not preemptively renew the stored token.
@@ -147,7 +148,8 @@ async function authorize(page, action, user) {
   await delay(untilRenewal);
   assert.equal((await fs.readFile(refreshAudit, "utf8")).trim(), "", "No stopped process may renew credentials");
   await startServer();
-  await page.reload({ waitUntil: "domcontentloaded" }); await openSettings(page);
+  page = await context.newPage();
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" }); await openSettings(page);
   await page.getByText("登录账号：synthetic-one@example.invalid", { exact: true }).waitFor();
   const restored = await state(page);
   assert.equal(restored.oauth.state, "authenticated"); assert.equal(restored.oauth.confirmationRequired, true);
