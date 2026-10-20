@@ -22,7 +22,7 @@
 | --- | --- | --- |
 | 直接依赖 OMP 或 CC Switch 的完整认证模块 | OMP 依赖 Bun、内部 catalog/utils/native、凭据池及 SQLite；CC Switch 依赖 Rust/Tauri 和 Codex live auth 文件。会带入另一套会话、凭据与恢复策略。 | 不整体引入。 |
 | 抽取 OMP 浏览器／设备协议与 hosted-image 映射，适配现有 Node 边界 | 维护认证与图像协议；fetch、取消、令牌写入和会话归属接回 CRB，允许固定来源对照升级。 | 采用。默认浏览器授权，设备码由用户明确选择。 |
-| 官方 Codex App Server | 本机安装 `codex-cli 0.163.0`，已运行版本及 `app-server generate-ts` 检查。实际生成的 v2 类型包含 `chatgpt`、`chatgptDeviceCode`、按 loginId 取消、账号读取、退出和外部托管令牌；账号读取只返回摘要，不导出 refresh token。托管登录会引入其凭据保存／刷新归属，外部令牌模式仍需 CRB 自己取得和刷新令牌。 | 本轮不把 App Server 作为认证宿主，以维持唯一适配器和现有 Windows DPAPI 合约；未来实际模型调用需要时可评估其外部令牌模式。未启动其登录或读取其认证文件。 |
+| 官方 Codex App Server | 本机安装 `codex-cli 0.163.0`，已运行版本及 `app-server generate-ts` 检查。实际生成的 v2 类型包含 `chatgpt`、`chatgptDeviceCode`、按 loginId 取消、账号读取、退出和外部托管令牌；账号读取只返回摘要，不导出 refresh token。另用全新隔离 `CODEX_HOME` 和 ephemeral 存储启动后取消浏览器事务，仅捕获公开请求参数；没有打开服务商浏览器或授权账号。 | 本轮不把 App Server 作为认证宿主，以维持唯一适配器和现有 Windows DPAPI 合约；未来实际模型调用需要时可评估其外部令牌模式。没有读取其他应用的认证文件。 |
 | 仅照流程重新开发整个 Login | 重复维护已有协议细节，另起状态机。 | 只编写浏览器／Next.js 衔接，沿用现有唯一 `OAuthSessionAdapter`。 |
 
 抽取适配位于 `src/lib/security/codexOAuth.server.ts` 和 `src/app/api/generate/providers/openaiOAuth.ts`，文件头保留固定来源及 MIT 声明，完整许可见 [OMP MIT](../../licenses/oh-my-pi-MIT.txt)。登录交互和生命周期用例参考 CC Switch，许可保留在 [CC Switch MIT](../../licenses/cc-switch-MIT.txt)；未搬入其 Rust 后端或第三方认证文件管理逻辑。
@@ -46,7 +46,7 @@ CRB 的必要差异：一个活动账号、显式切换；服务端拥有浏览�
 | 设备交换 redirect URI | `https://auth.openai.com/deviceauth/callback`（Provider 内部页面，不是本机回调） |
 | 图像工具请求 | `https://chatgpt.com/backend-api/codex/responses` |
 
-所有地址为服务端固定值，禁止携密重定向；浏览器不得传入认证端点或 bearer。浏览器请求最小 `openid profile email offline_access`，保留上游组织摘要／简化登录参数，originator 标识为 `character_reference_builder`，不照搬 connector 权限。设备启动仅发送 client identity。token 响应若不报告 `scope`，实际权限显示未知，不能以请求参数或订阅名称替代。刷新响应不报告 `expires_in` 时由固定 HTTPS 响应内 access JWT 的 `exp` 确定有效期。账号／组织须允许所选 Codex 登录方式；图像工具、模型、额度、费用分别验证。
+所有地址为服务端固定值，禁止携密重定向；浏览器不得传入认证端点或 bearer。浏览器请求沿用原生协议的完整 `openid profile email offline_access api.connectors.read api.connectors.invoke`，保留上游组织摘要／简化登录参数，originator 标识为 `character_reference_builder`。此前自行删去两项 connector scope，没有原生浏览器兼容性证据；在确认页 400 的排查中恢复上游合约。官方 0.163.0 隔离进程以 CRB 名称初始化后，返回的全部公开参数与当前实现一致；脱敏固定夹具及路由回归位于 `src/lib/security/__tests__/fixtures/codex-authorization-0.163.0.json` 和 `codexBrowserOAuth.integration.test.ts`。这证明请求合约一致，单独不能证明 400 根因已消除。新增请求范围由用户在服务商页面确认，不据此开放 connector 调用或认定图像可用。设备启动仅发送 client identity。token 响应若不报告 `scope`，实际权限记录未知，不能以请求参数或订阅名称替代。刷新响应不报告 `expires_in` 时由固定 HTTPS 响应内 access JWT 的 `exp` 确定有效期。账号／组织须允许所选 Codex 登录方式；图像工具、模型、额度、费用分别验证。
 
 两个社区快照使用同一 Codex 原生公共 client ID `app_EMoamEEZ73f0CkXaXp7hrann`；CRB 现在默认内置，`CRB_CODEX_OAUTH_CLIENT_ID` 只保留为兼容部署覆盖项。普通用户不申请独立客户端。MIT 源码许可与服务使用条件分别判断：2026-10-20 读取的[官方 App Server 文档](https://learn.chatgpt.com/docs/app-server#authentication-endpoints)明确说明本地／开源应用可继续使用其认证，而商业或托管服务不在该允许范围，推荐迁移至另行注册的 Sign in with ChatGPT。该说明支持本项目本机集成方向；它不是对抽取协议或所有图像用途的独立法律保证。未来商业／托管产品须重新核对路线，不能复用本次结论。此前将另一商业接入的注册条件套用为当前登录前置，没有真实拒绝证据，已撤回。没有向支持发送消息。
 
@@ -60,4 +60,4 @@ Windows 本机实测 DNS 将 `auth.openai.com` 映射到 `198.18.x.x`，原出�
 
 OAuth 能力与 API Key 分开：最多三张参考、单张 7 MB／合计 20 MB 是本应用保守限制，尚未验证效果；不声明精确 Mask 支持，不继承 API Key 模型参数或价格。有效 SSE 终态和可解码 WebP 才算成功。已提交后断流按结果未知处理，费用仍未知，不自动换号或重发；失败和取消保留现有候选、选择、保存及导出路径。
 
-历史云端结果和当前 Windows 证据见[安全准入验证](../validation/security-gate-issue-10.md)。#10 保持打开；真实浏览器账号、订阅／图像调用以及跨 Windows 用户隔离分别待验收，不再以用户申请客户端作为前置。
+历史云端结果和当前 Windows 证据见[安全准入验证](../validation/security-gate-issue-10.md)。设备码、修正完整 scope 后的真实浏览器登录及同用户重启恢复均由本人确认；#10 保持打开，真实账号其余生命周期、订阅／图像调用以及跨 Windows 用户隔离分别待验收，不再以用户申请客户端作为前置。

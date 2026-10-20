@@ -203,7 +203,7 @@ CLI／自动化认证：令牌取 `CRB_LOCAL_API_TOKEN`，否则读取 `<CRB_TEM
 
 用户转试设备码后，服务商明确要求本人在 [ChatGPT 安全性设置](https://chatgpt.com/#settings/Security) 启用“Codex、Excel、PowerPoint 和 Word”的装置代码登入。这与[官方设备登录说明](https://learn.chatgpt.com/docs/auth#preferred-device-code-authentication-beta)一致，是实际账号开关，不是 CRB 要求用户申请客户端。应用已经具备取得新码及自动轮询的完整路径；用户本人启用后在本应用重试，无需执行其他应用的 CLI 登录命令。用户随后亲自启用该账号设置、在服务商页面输入本应用显示的一次性用户码并确认；提供的脱敏截图显示本应用“账号已连接”、用户／工作区摘要和 `openid profile email offline_access` 实际范围。因此设备码登录的“设置入口 → 服务商确认 → 自动显示账号”已完成真实验收。没有把邮箱、工作区 ID、设备码或截图写入仓库。
 
-### 未闭环与交付边界
+### 当时未闭环与交付边界（最新浏览器复验见第 15 节）
 
 - R-001：人工门槛已移除，浏览器／设备协议均已集成；设备码路线已由用户本人完成真实登录，浏览器确认页 400 失败仍未解决。
 - R-002：设备码真实登录已验收；用户本人启用账号开关并完成确认。真实账号的刷新、拒绝、重新连接、退出／切换及旧会话失效仍待逐项验证；合成生命周期回归不替代这些证据。
@@ -213,3 +213,33 @@ CLI／自动化认证：令牌取 `CRB_LOCAL_API_TOKEN`，否则读取 `<CRB_TEM
 用户随后明确要求已连接区域只显示登录账号和授权有效期。最终界面移除了工作区、授权范围、能力／额度说明，保留必要操作；服务端仍隔离用户与 workspace 并记录授权元数据。更新后停止原应用进程并重新启动，用户本人刷新页面确认“仍已连接，且只显示这两项”，因此真实同用户跨进程恢复和最终显示已验收。没有让用户再次登录，也没有执行真实模型调用。此前截图的较完整摘要属于当时界面，不被错误地当作最终显示要求，也不收进仓库。
 
 本轮代码通过功能分支及 PR 交付，尚无独立审核、主线集成或发布结论。#10 继续打开。
+
+## 15. 2026-10-20 浏览器确认页 400 修复与本人复验
+
+增量基线：`ca525c0e59d1bd7a3cbdb89c8eb174e88d36f8e2..10538aaece9ab242b66dd4e0bf5956a1810b1331`。本节记录本轮新执行的检查，前节的失败观察仍保留为修复前证据。
+
+### 协议差异与修复
+
+在全新隔离 `CODEX_HOME`、`cli_auth_credentials_store="ephemeral"` 的官方 `codex-cli 0.163.0` App Server 中，以 `character_reference_builder` 初始化，仅执行 `account/login/start` 取得 URL 随即按 loginId 取消；没有打开服务商浏览器、授权账号或读取既有认证文件。去掉随机 state／PKCE challenge 后，官方请求与 CRB 的唯一公开参数差异为 scope：原实现删除了 `api.connectors.read api.connectors.invoke`。
+
+修复恢复上游完整 `openid profile email offline_access api.connectors.read api.connectors.invoke`，客户端 ID、IPv4 回调和 CRB originator 保持不变。固定 [官方浏览器源码](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/login/src/server.rs) 与 OMP 快照均使用这六项；实际 CLI 捕获的公开合约保存为 `src/lib/security/__tests__/fixtures/codex-authorization-0.163.0.json`，默认客户端与真实守卫路由回归分别比对全部非随机参数。没有通过更换 User-Agent、关闭 TLS 校验或读取 Cookie 处理错误。请求 connector scope 不会自动新增产品 connector 调用入口，实际授予范围仍只按服务商响应记录。
+
+### 本轮验证
+
+| 检查 | 结果及证据边界 |
+| --- | --- |
+| `npm run test:run`，JSON reporter | Windows 全量 149 文件、3046 项通过、0 失败、1 项 POSIX 文件模式测试跳过；包含新增官方合约回归。浏览器集成文件 18 项通过。 |
+| `npm run build` | 通过，含 Next.js 配置的类型检查。随后增加的仅为兼容性测试和文档，运行代码与构建一致。 |
+| `CRB_VALIDATION_MODE=production node scripts/validation/oauth-ui.cjs` | 通过；实际 UI、路由、短期回调、DPAPI、重启／临时根删除后恢复、自动刷新及退出／切换，外部 Provider 合成，生成请求数 0。 |
+| `CRB_VALIDATION_MODE=development node scripts/validation/oauth-ui.cjs` | 同范围通过，生成请求数 0。 |
+| 本人真实浏览器授权 | 独立本机生产入口 `127.0.0.1:3216` 使用新建私有凭据目录，与正常 3210 登录隔离。用户亲自点击连接并在服务商页面确认后，明确回复“授权成功，应用显示账号已连接”；只读状态检查也返回“账号已连接”。本次确认页 400 已不再出现。 |
+
+真实复验没有读取或复制原账号凭据、发起生成或验证额度／费用。正常 3210 应用已运行修复后构建，原有持久登录未改变。复验结束通过独立应用的正常退出流程清除测试账号，再停止 3216 服务；没有远端撤销账号授权，也未改动正常账号。原始账号标识、令牌、完整授权 URL 和用户截图均不写入仓库。命令输出和官方参数捕获位于 `<CRB_TEMP_ROOT>/scratch/crb-issue-10-browser-oauth/browser-400/`；合成浏览器记录沿用前节的模式子目录。
+
+### 当前验收状态
+
+- R-001：**本次范围已复验关闭**。原先人工登录门槛已移除；完整上游 scope 请求修复后，本人真实浏览器授权成功，设备码路线此前也已成功。这是本机观察与修复后复验，不推断服务商内部为何返回 HTML，也不保证所有网络环境不存在相似错误。
+- R-002：真实浏览器和设备码登录、账号显示及同用户应用重启恢复已有证据；真实过期刷新、拒绝、重连、切换及旧事务失效仍按原验收范围继续。独立测试账号的正常退出仅证明此次本地退出，不代替完整真实生命周期矩阵。
+- R-003／R-004：跨 Windows 用户隔离、真实图像能力、业务结果及额度／费用仍待各自验收。没有执行真实模型调用。
+
+PR #11 待独立审核，尚未合并或发布；#10 继续打开。当前唯一汇总更新前的完整原文另存于 `issue-10-comments-archive.json` 的 `summarySnapshots`，不删除原有历史来源。
