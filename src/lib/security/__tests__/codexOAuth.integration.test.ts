@@ -10,7 +10,7 @@ import { POST as guardedGenerate } from "@/app/api/generate/route";
 import { localApiNextRequest, resetTestLocalSessions } from "@/test/localApiRequest";
 import { evaluateLocalApiRequest } from "../requestGuard.server";
 import { imageCapabilities } from "@/lib/providers/imageCapabilities";
-import { CODEX_IMAGE_ENDPOINT } from "@/app/api/generate/providers/openaiOAuth";
+import { CODEX_IMAGE_EDIT_ENDPOINT, CODEX_IMAGE_GENERATE_ENDPOINT, CODEX_IMAGE_MODEL } from "@/app/api/generate/providers/openaiOAuth";
 
 const CLIENT = "synthetic-permitted-crb-client";
 const routeContext = () => ({ params: Promise.resolve({}) });
@@ -184,30 +184,33 @@ describe("Codex product integration with synthetic credentials", () => {
     expect((await adapter.accessTokenForCall(sessionId, stale)).ok).toBe(false);
   });
 
-  it.each([2, 3])("generates with %i ordered references, isolated credentials, and normalized SSE output", async count => {
+  it.each([0, 2, 3])("uses the official JSON image contract with %i ordered references and isolated credentials", async count => {
     const { adapter } = await connect();
     const image = await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer();
-    const webp = await sharp(image).webp().toBuffer();
+    const output = count === 2 ? image : await sharp(image).webp().toBuffer();
+    const outputMime = count === 2 ? "image/png" : "image/webp";
     const refs = ["target", "retained-view", "auxiliary"].slice(0, count).map(purpose => ({ image: `data:image/png;base64,${image.toString("base64")}`, purpose }));
     const permit = await POST(req("confirm-call", { accountId: adapter.browserView().account!.accountId, allowExternalData: true, allowUnknownCost: true }));
     const grant = (await permit.json()).grant;
-    const event = `data: ${JSON.stringify({ type: "response.completed", response: { output: [{ type: "image_generation_call", result: webp.toString("base64") }], tools: [{ type: "image_generation", model: "synthetic-hosted-image" }] } })}\r\n\r\ndata: [DONE]\r\n\r\n`;
+    const event = JSON.stringify({ created: 1, data: [{ b64_json: output.toString("base64") }] });
     const stream = new ReadableStream<Uint8Array>({ start(controller) { const bytes = new TextEncoder().encode(event); for (let i = 0; i < bytes.length; i += 13) controller.enqueue(bytes.slice(i, i + 13)); controller.close(); } });
-    network.mockResolvedValueOnce(new Response(stream, { headers: { "Content-Type": "text/event-stream" } }));
+    network.mockResolvedValueOnce(new Response(stream, { headers: { "Content-Type": "application/json" } }));
     const response = await generate(localApiNextRequest("http://127.0.0.1:3210/api/generate", { method: "POST", body: JSON.stringify({
       prompt: "Preserve the design and retained view", selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" }, references: refs, dynamicInputs: { image: refs.map(ref => ref.image) }, oauthGrant: grant,
     }) }));
     expect(response.status).toBe(200);
     const result = await response.json();
-    expect(result).toMatchObject({ success: true, execution: "submitted", call: { auth: "oauth", purposes: refs.map(ref => ref.purpose), actualImageModelId: "synthetic-hosted-image", hasMask: false } });
-    expect(result.image).toBe(`data:image/webp;base64,${webp.toString("base64")}`);
+    expect(result).toMatchObject({ success: true, execution: "submitted", call: { auth: "oauth", purposes: count ? refs.map(ref => ref.purpose) : null, hasMask: false } });
+    expect(result.call.actualImageModelId).toBeUndefined(); // Native response does not report it.
+    expect(result.image).toBe(`data:${outputMime};base64,${output.toString("base64")}`);
     const [url, init] = network.mock.calls[3];
-    expect(url).toBe(CODEX_IMAGE_ENDPOINT);
+    expect(url).toBe(count ? CODEX_IMAGE_EDIT_ENDPOINT : CODEX_IMAGE_GENERATE_ENDPOINT);
     expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${TOKENS.access_token}`);
     const wire = JSON.parse(init.body);
-    expect(wire.input[0].content.filter((c: { type: string }) => c.type === "input_image").map((c: { image_url: string }) => c.image_url)).toEqual(refs.map(ref => ref.image));
-    expect(wire.store).toBe(false);
-    expect(wire.tools[0].type).toBe("image_generation");
+    expect(wire).toEqual({ model: CODEX_IMAGE_MODEL, prompt: expect.stringContaining("Preserve the design and retained view"),
+      background: "opaque", quality: "auto", size: "auto",
+      ...(count ? { images: refs.map(ref => ({ image_url: ref.image })) } : {}) });
+    refs.forEach((ref, index) => expect(wire.prompt).toContain(`Reference ${index + 1} purpose: ${ref.purpose}`));
     const replay = await generate(localApiNextRequest("http://127.0.0.1:3210/api/generate", { method: "POST", body: JSON.stringify({ prompt: "again", selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" }, oauthGrant: grant }) }));
     expect((await replay.json()).execution).toBe("not-executed");
     expect(network).toHaveBeenCalledTimes(4);
@@ -216,6 +219,7 @@ describe("Codex product integration with synthetic credentials", () => {
   it.each([
     { body: JSON.stringify({ error: { type: "invalid_request_error", code: "unsupported_value", param: "tools[0].action", message: "private-synthetic-provider-text" } }), contentType: "application/json", expected: "unsupported_value；参数 tools[0].action" },
     { body: JSON.stringify({ error: { code: "private-synthetic-provider-text", param: "private-synthetic-provider-text", message: "private-synthetic-provider-text" } }), contentType: "application/json", expected: "未提供可安全显示" },
+    { body: JSON.stringify({ detail: "The model is not supported; private-synthetic-provider-text" }), contentType: "application/json", expected: "不支持所选图像模型" },
     { body: "<html>private-synthetic-provider-text</html>", contentType: "text/html", expected: "非 JSON 错误页" },
     { body: JSON.stringify({ error: { message: "private-synthetic-provider-text".repeat(2000) } }), contentType: "application/json", expected: "错误响应过大" },
   ])("classifies an HTTP rejection without echoing private text or replaying the request ($expected)", async fixture => {
@@ -246,10 +250,24 @@ describe("Codex product integration with synthetic credentials", () => {
     expect(network).not.toHaveBeenCalled();
   });
 
-  it("records a truncated image stream as unknown without retrying it", async () => {
+  it("records a truncated image JSON response as unknown without retrying it", async () => {
     const { adapter } = await connect();
     const permit = await POST(req("confirm-call", { accountId: adapter.browserView().account!.accountId, allowExternalData: true, allowUnknownCost: true }));
-    network.mockResolvedValueOnce(new Response('data: {"type":"response.created"}\n\n', { headers: { "content-type": "text/event-stream" } }));
+    network.mockResolvedValueOnce(new Response('{"created":1,"data":[', { headers: { "content-type": "application/json" } }));
+    const response = await generate(localApiNextRequest("http://127.0.0.1:3210/api/generate", { method: "POST", body: JSON.stringify({ prompt: "test", selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" }, oauthGrant: (await permit.json()).grant }) }));
+    expect(await response.json()).toMatchObject({ success: false, execution: "unknown", statusUnknown: true });
+    expect(network).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([
+    null,
+    { data: [] },
+    { data: [{ b64_json: "not-base64!" }] },
+    { data: [{ b64_json: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>bad()</script></svg>').toString("base64") }] },
+  ])("rejects missing or unsafe native image data without replay (%j)", async body => {
+    const { adapter } = await connect();
+    const permit = await POST(req("confirm-call", { accountId: adapter.browserView().account!.accountId, allowExternalData: true, allowUnknownCost: true }));
+    network.mockResolvedValueOnce(Response.json(body));
     const response = await generate(localApiNextRequest("http://127.0.0.1:3210/api/generate", { method: "POST", body: JSON.stringify({ prompt: "test", selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" }, oauthGrant: (await permit.json()).grant }) }));
     expect(await response.json()).toMatchObject({ success: false, execution: "unknown", statusUnknown: true });
     expect(network).toHaveBeenCalledTimes(4);

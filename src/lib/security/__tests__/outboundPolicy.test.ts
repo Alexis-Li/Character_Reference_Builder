@@ -88,8 +88,8 @@ function withRedirectOrigins(connection: ProviderConnection, ...origins: string[
 }
 
 describe("outbound request policy", () => {
-  it("supports a fixed protected OAuth image operation through Fake-IP without widening other destinations", async () => {
-    const endpoint = "https://chatgpt.com/backend-api/codex/responses";
+  it.each(["edits", "generations"])("supports fixed protected OAuth image %s through Fake-IP without widening other destinations", async operation => {
+    const endpoint = `https://chatgpt.com/backend-api/codex/images/${operation}`;
     const binding = bindCredentialToDestination({ provider: "chatgpt-codex", role: "image", endpoint,
       credential: SYNTHETIC_KEY, credentialKind: "oauth", credentialSource: "protected-store", registeredOrigins: ["https://chatgpt.com"] });
     const { impl, calls } = recordingFetch(() => okResponse());
@@ -106,6 +106,7 @@ describe("outbound request policy", () => {
       { connection: { ...binding.connection, revoked: true } },
       { url: `${endpoint}?other=1`, connection: { ...binding.connection, endpoint: `${endpoint}?other=1` } },
       { url: "https://chatgpt.com/other", connection: { ...binding.connection, endpoint: "https://chatgpt.com/other" } },
+      { url: "https://chatgpt.com/backend-api/codex/responses", connection: { ...binding.connection, endpoint: "https://chatgpt.com/backend-api/codex/responses" } },
       ...["127.0.0.1", "10.0.0.1", "169.254.169.254", "240.0.0.1"].map(address => ({ resolve: async () => [address] })),
       { resolve: async () => ["198.18.0.172", "10.0.0.1"] },
     ]) expect(await fetchWithConnectionPolicy({ ...input, ...override })).toMatchObject({ ok: false });

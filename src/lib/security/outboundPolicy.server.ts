@@ -82,7 +82,10 @@ const CODEX_AUTH_ENDPOINTS = new Set([
   "https://auth.openai.com/api/accounts/deviceauth/usercode",
   "https://auth.openai.com/api/accounts/deviceauth/token",
 ]);
-const CODEX_IMAGE_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+const CODEX_IMAGE_ENDPOINTS = new Set([
+  "https://chatgpt.com/backend-api/codex/images/edits",
+  "https://chatgpt.com/backend-api/codex/images/generations",
+]);
 
 function sameOrigin(a: string, b: string): boolean {
   try {
@@ -137,7 +140,7 @@ export async function fetchWithConnectionPolicy(
         allowBenchmarkProxy: hop === 0 && maxRedirects === 0 && input.method === "POST" &&
           connection.endpoint === target && (
             (connection.provider === "chatgpt-codex-auth" && connection.role === "catalog" && CODEX_AUTH_ENDPOINTS.has(target)) ||
-            (connection.provider === "chatgpt-codex" && connection.role === "image" && target === CODEX_IMAGE_ENDPOINT &&
+            (connection.provider === "chatgpt-codex" && connection.role === "image" && CODEX_IMAGE_ENDPOINTS.has(target) &&
               connection.credentialKind === "oauth" && connection.credentialSource === "protected-store" && connectionCredentialAllowed)
           ) &&
           process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0",
