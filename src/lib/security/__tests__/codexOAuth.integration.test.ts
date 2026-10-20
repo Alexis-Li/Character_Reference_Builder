@@ -213,6 +213,27 @@ describe("Codex product integration with synthetic credentials", () => {
     expect(network).toHaveBeenCalledTimes(4);
   });
 
+  it.each([
+    { body: JSON.stringify({ error: { type: "invalid_request_error", code: "unsupported_value", param: "tools[0].action", message: "private-synthetic-provider-text" } }), contentType: "application/json", expected: "unsupported_value；参数 tools[0].action" },
+    { body: JSON.stringify({ error: { code: "private-synthetic-provider-text", param: "private-synthetic-provider-text", message: "private-synthetic-provider-text" } }), contentType: "application/json", expected: "未提供可安全显示" },
+    { body: "<html>private-synthetic-provider-text</html>", contentType: "text/html", expected: "非 JSON 错误页" },
+    { body: JSON.stringify({ error: { message: "private-synthetic-provider-text".repeat(2000) } }), contentType: "application/json", expected: "错误响应过大" },
+  ])("classifies an HTTP rejection without echoing private text or replaying the request ($expected)", async fixture => {
+    const { adapter } = await connect();
+    const permit = await POST(req("confirm-call", { accountId: adapter.browserView().account!.accountId, allowExternalData: true, allowUnknownCost: true }));
+    const grant = (await permit.json()).grant;
+    network.mockResolvedValueOnce(new Response(fixture.body, { status: 400, headers: { "Content-Type": fixture.contentType } }));
+    const request = () => generate(localApiNextRequest("http://127.0.0.1:3210/api/generate", { method: "POST", body: JSON.stringify({ prompt: "synthetic", selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" }, oauthGrant: grant }) }));
+    const response = await request();
+    const result = await response.json();
+    expect(result).toMatchObject({ success: false, execution: "submitted", call: { auth: "oauth", stage: "failed" } });
+    expect(result.error).toContain(fixture.expected);
+    expect(JSON.stringify(result)).not.toContain("private-synthetic-provider-text");
+    expect(network).toHaveBeenCalledTimes(4);
+    expect((await (await request()).json()).execution).toBe("not-executed");
+    expect(network).toHaveBeenCalledTimes(4);
+  });
+
   it("rejects Mask before authorization/network and does not inherit API-key capabilities", async () => {
     harness();
     expect(imageCapabilities("openai", "codex-image", "oauth")?.mask).toBe(false);

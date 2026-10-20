@@ -18,6 +18,51 @@ type HostedResponse = { output?: HostedOutput[]; tools?: { type?: string; model?
 type HostedEvent = { type?: string; item?: HostedOutput; response?: HostedResponse };
 type Result = GenerationOutput & { execution: "not-executed" | "submitted" | "unknown"; statusUnknown?: boolean };
 
+/** Only fixed diagnostic vocabulary may leave the Provider boundary. Error
+ * bodies can echo prompts, image data or credentials, so never return them. */
+async function providerRejection(response: Response): Promise<string> {
+  const codes = new Set(["invalid_request_error", "invalid_value", "unsupported_value", "unsupported_parameter",
+    "model_not_found", "model_not_supported", "insufficient_quota", "rate_limit_exceeded", "access_denied"]);
+  const parameters = new Set(["model", "tools", "tools[0].action", "tools.0.action", "tools[0].output_format",
+    "tools.0.output_format", "tool_choice", "input", "instructions", "store", "stream"]);
+  let hint = "服务商未提供可安全显示的具体原因";
+  if (!response.headers.get("content-type")?.includes("application/json")) {
+    await response.body?.cancel().catch(() => {});
+    return "服务商返回非 JSON 错误页，请检查网络或服务商状态";
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return hint;
+  try {
+    let bytes = 0, text = "";
+    const decoder = new TextDecoder();
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 16384) return "服务商错误响应过大，具体内容已省略";
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    const parsed = JSON.parse(text + decoder.decode());
+    const error = parsed?.error;
+    if (!error || typeof error !== "object") return hint;
+    const parts: string[] = [];
+    if (codes.has(error.code)) parts.push(error.code);
+    else if (codes.has(error.type)) parts.push(error.type);
+    if (parameters.has(error.param)) parts.push(`参数 ${error.param}`);
+    // Some native endpoints report only a message. Map known concepts to
+    // static hints; none of the untrusted message text is copied to the UI.
+    if (typeof error.message === "string") {
+      if (/image_generation.*(?:not supported|not available|not allowed)/i.test(error.message)) parts.push("该账号或模型未开放图像工具");
+      else if (/model.*not supported/i.test(error.message)) parts.push("该账号或端点不支持所选承载模型");
+      else if (/unsupported.*output_format/i.test(error.message)) parts.push("图像输出格式参数不受支持");
+      else if (/unsupported.*tool_choice/i.test(error.message)) parts.push("工具选择参数不受支持");
+    }
+    if (parts.length) hint = parts.join("；");
+  } catch { /* Keep the fixed safe fallback, never raw text or parser errors. */ }
+  finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  return hint;
+}
+
 /** Strict SSE framing across arbitrary chunks; bounded, terminal completion required. */
 async function readHostedResponse(response: Response): Promise<HostedResponse> {
   if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) throw new Error("invalid-stream");
@@ -111,7 +156,8 @@ export async function generateWithOpenAIOAuth(
     });
     if (!result.ok) return { success: false, execution: sent ? "unknown" : "not-executed", statusUnknown: sent,
       error: `OAuth 请求被接收方策略拒绝：${result.reason}`, ...(sent ? { call: { ...call, stage: "failed" } } : {}) };
-    if (!result.response.ok) return { success: false, execution: "submitted", error: `OAuth 图像服务返回 HTTP ${result.response.status}；请检查账号与图像工具可用性。`, call: { ...call, stage: "failed" } };
+    if (!result.response.ok) return { success: false, execution: "submitted",
+      error: `OAuth 图像服务返回 HTTP ${result.response.status}（${await providerRejection(result.response)}）；本次不会自动重试。`, call: { ...call, stage: "failed" } };
     const response = await readHostedResponse(result.response);
     const output = response.output?.find(item => item.type === "image_generation_call" && item.result);
     if (!output?.result) return { success: false, execution: "submitted", error: "授权已连接，但该账号未返回图像；图像工具能力尚未通过验收。", call: { ...call, stage: "failed" } };
