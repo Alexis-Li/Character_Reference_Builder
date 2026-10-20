@@ -20,6 +20,8 @@ const repo = path.resolve(__dirname, "../..");
 const output = path.join(process.env.CRB_TEMP_ROOT, "validation", "issue-10-browser-oauth", run);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 let server, log, privateDirectory, privateParent, runtimeRoot, browser;
+let serverGeneration = 0;
+const refreshAudit = path.join(output, "synthetic-refresh-audit.jsonl");
 async function removeOwnedDirectory(directory, parent, prefix) {
   const relative = path.relative(path.resolve(parent), path.resolve(directory));
   assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative) && !relative.includes(path.sep) && relative.startsWith(prefix), "Refuse to remove an unowned directory");
@@ -36,6 +38,7 @@ async function startServer() {
     cwd: repo, windowsHide: true, stdio: ["ignore", log.fd, log.fd],
     env: { ...process.env, NODE_ENV: run, NEXT_TELEMETRY_DISABLED: "1", CRB_PORT: String(port), CRB_TEMP_ROOT: runtimeRoot, CRB_SYNTHETIC_OAUTH_VALIDATION: "1",
       CRB_CODEX_OAUTH_CLIENT_ID: "", CRB_CREDENTIAL_DIRECTORY: privateDirectory,
+      CRB_SYNTHETIC_REFRESH_AUDIT: refreshAudit, CRB_SYNTHETIC_SERVER_GENERATION: String(++serverGeneration),
       NODE_OPTIONS: `--require="${path.join(__dirname, "oauth-provider-fixture.cjs").replaceAll("\\", "/")}"` },
   });
   let launchError;
@@ -98,6 +101,7 @@ async function authorize(page, action, user) {
 
 (async () => {
   await fs.mkdir(output, { recursive: true });
+  await fs.writeFile(refreshAudit, "");
   runtimeRoot = await fs.mkdtemp(path.join(output, "runtime-cleanup-"));
   // Product credentials outlive CRB_TEMP_ROOT. Use an isolated synthetic leaf
   // in the real OS location and remove it in finally, never any existing auth.
@@ -125,6 +129,7 @@ async function authorize(page, action, user) {
   assert.ok((await context.cookies()).some(cookie => cookie.name === "crb_local_session" && cookie.httpOnly && cookie.sameSite === "Strict"));
   const loggedIn = await authorize(page, "连接账号 / 重新连接", "one"); await loggedIn.popup.close();
   const first = await state(page); assert.equal(first.oauth.scopesKnown, true);
+  assert.equal((await fs.readFile(refreshAudit, "utf8")).trim(), "", "Do not refresh before the restart being tested");
   await page.getByRole("button", { name: "设为图像任务默认入口" }).click();
   await page.screenshot({ path: path.join(output, "oauth-settings.png") });
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -134,12 +139,22 @@ async function authorize(page, action, user) {
   const encrypted = await fs.readFile(credentialFile, "utf8");
   if (process.platform === "win32") assert.ok(!encrypted.includes("synthetic-refresh"), "DPAPI must persist ciphertext");
   await fs.writeFile(path.join(runtimeRoot, "synthetic-runtime.txt"), "disposable");
-  await stopServer(); await removeOwnedDirectory(runtimeRoot, output, "runtime-cleanup-"); await startServer();
+  await stopServer(); await removeOwnedDirectory(runtimeRoot, output, "runtime-cleanup-");
+  // Enter the real adapter's 30-second renewal window while no process is
+  // running. A pre-restart GET must not preemptively renew the stored token.
+  const untilRenewal = Math.max(0, first.oauth.expiresAt - Date.now() - 29_000);
+  assert.ok(untilRenewal <= 60_000, "Synthetic expiry must stay short");
+  await delay(untilRenewal);
+  assert.equal((await fs.readFile(refreshAudit, "utf8")).trim(), "", "No stopped process may renew credentials");
+  await startServer();
   await page.reload({ waitUntil: "domcontentloaded" }); await openSettings(page);
   await page.getByText("登录账号：synthetic-one@example.invalid", { exact: true }).waitFor();
   const restored = await state(page);
   assert.equal(restored.oauth.state, "authenticated"); assert.equal(restored.oauth.confirmationRequired, true);
   assert.ok(restored.oauth.expiresAt > Date.now() + 300_000, "Expired credentials must automatically refresh after restart");
+  const refreshes = (await fs.readFile(refreshAudit, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  assert.equal(refreshes.length, 1, "Exactly one renewal must follow restart");
+  assert.equal(refreshes[0].generation, "2", "Renewal must occur in the restarted server");
   const switched = await authorize(page, "切换账号", "two"); await switched.popup.close();
   const cancelling = await authorize(page, "切换账号");
   await page.getByRole("button", { name: "取消连接", exact: true }).click();

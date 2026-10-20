@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param([switch]$CreateTestUser)
 $ErrorActionPreference = 'Stop'
-if (-not $CreateTestUser -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
+if (-not $CreateTestUser -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
   throw 'This orchestrator creates a disposable local user. Run only on a fresh GitHub-hosted Windows runner with -CreateTestUser. It refuses daily-use computers.'
 }
 if (-not $env:CRB_TEMP_ROOT) { throw 'Set CRB_TEMP_ROOT to the project ../.tmp directory.' }

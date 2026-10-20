@@ -2,6 +2,7 @@
 // This file is never imported by the application or selected by product config.
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs");
 assert.equal(process.env.CRB_SYNTHETIC_OAUTH_VALIDATION, "1", "Use oauth-ui.cjs to launch this fixture");
 assert.ok(path.basename(process.env.CRB_CREDENTIAL_DIRECTORY || "").startsWith("crb-oauth-synthetic-"), "Refuse a real credential directory");
 const nativeFetch = global.fetch;
@@ -12,8 +13,8 @@ const token = () => {
   const claims = { iss: "https://auth.openai.com", aud: client, sub: `synthetic-${user}`, email: `synthetic-${user}@example.invalid`,
     exp: Math.floor(Date.now() / 1000) + 3600,
     "https://api.openai.com/auth": { chatgpt_account_id: "synthetic-workspace", chatgpt_user_id: `synthetic-${user}` } };
-  // Short first TTL exercises the actual automatic refresh after process restart.
-  return { access_token: jwt(claims), id_token: jwt(claims), refresh_token: `synthetic-refresh-${user}`, expires_in: 1, scope: "openid profile email offline_access" };
+  // oauth-ui stops the first process before entering the renewal window.
+  return { access_token: jwt(claims), id_token: jwt(claims), refresh_token: `synthetic-refresh-${user}`, expires_in: 60, scope: "openid profile email offline_access" };
 };
 global.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -39,6 +40,8 @@ global.fetch = async (input, init) => {
     if (body.get("grant_type") === "refresh_token") {
       assert.match(body.get("refresh_token"), /^synthetic-refresh-(one|two)$/);
       user = body.get("refresh_token").slice("synthetic-refresh-".length);
+      assert.ok(process.env.CRB_SYNTHETIC_REFRESH_AUDIT && process.env.CRB_SYNTHETIC_SERVER_GENERATION);
+      fs.appendFileSync(process.env.CRB_SYNTHETIC_REFRESH_AUDIT, JSON.stringify({ generation: process.env.CRB_SYNTHETIC_SERVER_GENERATION, event: "refresh" }) + "\n");
       return Response.json({ ...token(), expires_in: 3600, refresh_token: `synthetic-refresh-${user}-rotated` });
     }
   }
