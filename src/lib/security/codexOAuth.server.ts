@@ -27,7 +27,11 @@ export function codexOAuthTarget(): OAuthProviderTarget {
     implementationVersion: "4819e4f6d59049f307329d42b226b218582bdf38",
     issuer: CODEX_ISSUER, authorizationEndpoint: `${CODEX_ISSUER}/oauth/authorize`,
     tokenEndpoint: TOKEN_ENDPOINT, revocationEndpoint: null,
-    clientId, redirectUri: CODEX_BROWSER_REDIRECT, minimumScopes: ["openid", "profile", "email", "offline_access"],
+    // Keep the native browser contract intact. Both pinned OMP and official
+    // Codex 0.163.0 request these connector scopes during consent; a reduced
+    // scope set is not a verified substitute for the native login flow.
+    clientId, redirectUri: CODEX_BROWSER_REDIRECT,
+    minimumScopes: ["openid", "profile", "email", "offline_access", "api.connectors.read", "api.connectors.invoke"],
     authorizationParameters: { id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "character_reference_builder" },
     deviceAuthorizationEndpoint: CODEX_DEVICE_PAGE,
     accountRestrictions: "Local, user-controlled Codex login; account/workspace must allow Codex. Device login may require enabling it in account security settings. Login, subscription access and image tool availability are separate acceptance items.",

@@ -10,6 +10,7 @@ import { createMemoryCredentialStore } from "../credentialStore.server";
 import { GET, POST } from "@/app/api/oauth/route";
 import { GET as bootstrap } from "@/app/api/session/route";
 import { localApiNextRequest, resetTestLocalSessions } from "@/test/localApiRequest";
+import authorizationContract from "./fixtures/codex-authorization-0.163.0.json";
 
 const CLIENT = "synthetic-browser-client";
 const jwt = (claims: unknown) => `synthetic.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.synthetic`;
@@ -70,13 +71,31 @@ afterEach(async () => {
 });
 
 describe("guarded browser login with real loopback callbacks and synthetic Provider responses", () => {
+  it("matches the official CLI native authorization contract with the default client", () => {
+    vi.stubEnv("CRB_CODEX_OAUTH_CLIENT_ID", "");
+    const target = codexOAuthTarget();
+    const adapter = new OAuthSessionAdapter({ target, store: createMemoryCredentialStore(), transports: codexOAuthTransports(target.clientId) });
+    adapters.push(adapter);
+    const result = adapter.startAuthorization("synthetic-contract-session");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    const url = new URL(result.authorizationUrl);
+    expect(`${url.origin}${url.pathname}`).toBe(authorizationContract.endpoint);
+    expect(Object.fromEntries([...url.searchParams].filter(([key]) => !["state", "code_challenge"].includes(key))))
+      .toEqual(authorizationContract.parameters);
+    expect(network).not.toHaveBeenCalled();
+  });
+
   it("defaults to browser PKCE, connects automatically, and restores only CRB credentials", async () => {
     const { adapter, target, store, transports } = setup();
     const { authUrl, callback } = await start();
     expect(network).not.toHaveBeenCalled(); // Opening login never submits a generation.
-    expect(authUrl.origin).toBe(CODEX_ISSUER);
-    expect(authUrl.searchParams.get("scope")).toBe("openid profile email offline_access");
-    expect(authUrl.searchParams.get("originator")).toBe("character_reference_builder");
+    // Compare against the installed official CLI's captured public contract,
+    // not values copied from the implementation under test. Only the test
+    // client and ephemeral callback port differ from the native request.
+    expect(`${authUrl.origin}${authUrl.pathname}`).toBe(authorizationContract.endpoint);
+    expect(Object.fromEntries([...authUrl.searchParams].filter(([key]) => !["state", "code_challenge"].includes(key))))
+      .toEqual({ ...authorizationContract.parameters, client_id: CLIENT, redirect_uri: `${callback.origin}${callback.pathname}` });
     expect(adapter.viewForSession("different-local-session").browser).toBeNull();
     network.mockResolvedValueOnce(Response.json(tokens));
     const response = await send(callback);
