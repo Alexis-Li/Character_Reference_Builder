@@ -21,15 +21,18 @@ jobs:
         with:
           node-version: '24'
       - name: Verify product DPAPI under two Windows identities
+        id: verify
         shell: pwsh
         run: |
           $env:CRB_TEMP_ROOT = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '../.tmp'))
           ./scripts/validation/windows-dpapi.ps1 -CreateTestUser
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = Join-Path $env:CRB_TEMP_ROOT 'validation/windows-dpapi/result.json'
+          "result=$result" >> $env:GITHUB_OUTPUT
       - name: Retain synthetic result only
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-dpapi-result
-          path: '${{ github.workspace }}/../.tmp/validation/windows-dpapi/result.json'
+          path: '${{ steps.verify.outputs.result }}'
           if-no-files-found: error
           retention-days: 7
