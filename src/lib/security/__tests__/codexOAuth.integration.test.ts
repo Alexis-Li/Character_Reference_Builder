@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import { NextRequest } from "next/server";
-import { codexOAuthTarget, codexOAuthTransports, codexTokenResponse, CODEX_ISSUER } from "../codexOAuth.server";
+import { codexOAuthTarget, codexOAuthTransports, codexTokenResponse, CODEX_ISSUER, CODEX_PUBLIC_CLIENT_ID } from "../codexOAuth.server";
 import { configureOAuthProviderTarget, OAuthSessionAdapter, resetOAuthSessionForTest } from "../oauthSession.server";
 import { createMemoryCredentialStore } from "../credentialStore.server";
 import { GET as guardedGet, POST as guardedPost } from "@/app/api/oauth/route";
@@ -37,7 +37,7 @@ function req(action: string, extra: Record<string, unknown> = {}) {
 async function connect() {
   const h = harness();
   network.mockResolvedValueOnce(Response.json(DEVICE));
-  const start = await POST(req("start"));
+  const start = await POST(req("start", { method: "device" }));
   expect(start.status).toBe(200);
   const started = await start.json();
   expect(started.oauth.device.userCode).toBe(DEVICE.user_code);
@@ -65,13 +65,13 @@ beforeEach(() => {
 afterEach(() => { resetOAuthSessionForTest(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("Codex product integration with synthetic credentials", () => {
-  it("requires a permitted client identity and does not inherit the upstream public client", async () => {
+  it("configures native Codex login without requiring the user to register a client", async () => {
     vi.stubEnv("CRB_CODEX_OAUTH_CLIENT_ID", "");
-    expect(codexOAuthTarget()).toBeNull();
+    expect(codexOAuthTarget()).toMatchObject({ clientId: CODEX_PUBLIC_CLIENT_ID, redirectUri: "http://127.0.0.1:1455/auth/callback" });
     configureOAuthProviderTarget(null, {}, createMemoryCredentialStore());
     const response = await POST(req("start"));
     expect(response.status).toBe(409);
-    expect((await response.json()).reason).toBe("client-registration-required");
+    expect((await response.json()).reason).toBe("provider-not-configured");
     expect(network).not.toHaveBeenCalled();
   });
 

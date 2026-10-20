@@ -52,23 +52,27 @@ python scripts/validation/probe_local_storage.py --base-url http://127.0.0.1:321
 
 ## OAuth 产品接入浏览器回归
 
-`oauth-ui.cjs` 验证当前产品的真实回环 HTTP 会话／来源边界及合成 OAuth 设置路径。启动前不要配置真实客户端身份；脚本先检查原生入口未就绪，再拦截授权状态及外部页面为合成值。覆盖连接、轮询、账号摘要、保存默认入口、切换和取消，断言登录不生成；不登录真实账号，不等同真实 Provider 验收。
+`oauth-ui.cjs` 自行启动并停止隔离的开发／生产服务，使用真实设置 UI、特权路由、本机 PKCE 回调和受保护存储；只用 `oauth-provider-fixture.cjs` 的显式 Node preload 替换外部 Provider 的页面及令牌响应。不拦截 `/api/oauth`，覆盖浏览器授权、设备码、账号摘要、保存默认入口、取消、退出、切换、清理测试临时叶目录后的跨进程重启恢复及自动刷新。断言未请求生成，拒绝外部网络；不用真实账号，不等同真实 Provider 验收。
 
 需要可用的 Playwright 与 Chromium。可把验证专用依赖装在 `<CRB_TEMP_ROOT>/validation/`，通过 `CRB_PLAYWRIGHT_MODULE` 指向其 Playwright 模块；`CRB_CHROMIUM_PATH` 可指定本机浏览器。无需修改产品依赖或锁文件。`CRB_TEMP_ROOT` 必须先按本机约定设置。
 
-开发终端：
+项目根目录运行（无需另开服务）：
 
 ```powershell
-$env:CRB_PORT = '3212'
-npm run dev
-```
-
-验证终端（项目根目录）：
-
-```powershell
-$env:CRB_BASE_URL = 'http://127.0.0.1:3212'
+. ./scripts/resolve-temp-root.ps1
+$env:CRB_TEMP_ROOT = [IO.Path]::GetFullPath((Join-Path (Get-Location) '../.tmp'))
 $env:CRB_VALIDATION_MODE = 'development'
 node scripts/validation/oauth-ui.cjs
 ```
 
-停止开发服务，再运行 `npm run build`、`npm run start`；将 `CRB_BASE_URL` 改为 `http://127.0.0.1:3210`、`CRB_VALIDATION_MODE` 改为 `production` 后复跑。退出码 0 表示通过；证据写入 `<CRB_TEMP_ROOT>/validation/issue-10-oauth/<模式>/`。设备用户码及账号摘要全部为合成值，结果 JSON 明确标记拦截范围。云端结果与待本机项目见 [#10 验证第 13 节](../../docs/validation/security-gate-issue-10.md#13-2026-10-05-云端产品接入验证)。
+生产模式先构建：
+
+```powershell
+npm run build
+$env:CRB_VALIDATION_MODE = 'production'
+node scripts/validation/oauth-ui.cjs
+```
+
+默认开发端口 3214、生产端口 3215，可用 `CRB_PORT` 覆盖；已占用时拒绝启动，不接管其他服务。回调端口 1455 也须空闲。脚本覆盖任何客户端 ID 环境设置为内置公共客户端，并使用新建的应用私有 `crb-oauth-synthetic-*` 凭据目录，结束时仅删除其自身目录，不读取默认真实凭据。该隔离凭据目录是测试持久存储合约所必需，位于系统应用数据目录；其余证据、日志和临时材料都在 `CRB_TEMP_ROOT`。
+
+退出码 0 通过，1 为准备／验证失败；`--help` 显示参数。证据写入 `<CRB_TEMP_ROOT>/validation/issue-10-browser-oauth/<模式>/`，包含截图、服务日志和明确区分合成边界的结果 JSON。预加载夹具不被产品代码导入，不改变正常启动。不得将它用于真实登录。历史云端结果及本轮本机验收见 [#10 验证记录](../../docs/validation/security-gate-issue-10.md)。

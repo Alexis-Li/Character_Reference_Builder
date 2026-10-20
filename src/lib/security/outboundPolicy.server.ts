@@ -77,6 +77,11 @@ export interface OutboundRequestInput {
 }
 
 const DEFAULT_MAX_REDIRECTS = 3;
+const CODEX_AUTH_ENDPOINTS = new Set([
+  "https://auth.openai.com/oauth/token",
+  "https://auth.openai.com/api/accounts/deviceauth/usercode",
+  "https://auth.openai.com/api/accounts/deviceauth/token",
+]);
 
 function sameOrigin(a: string, b: string): boolean {
   try {
@@ -124,6 +129,14 @@ export async function fetchWithConnectionPolicy(
     if (!connection.allowNonPublicDestination) {
       const check = await checkNetworkTarget(target, {
         resolve: input.resolve ?? activeAddressResolver(),
+        // These are fixed server-owned HTTPS auth endpoints, never request-
+        // supplied URLs or media. TUN proxies commonly resolve them to 198.18/15.
+        // Keep normal TLS hostname/CA verification and prohibit redirects;
+        // every other non-public destination remains blocked.
+        allowBenchmarkProxy: hop === 0 && maxRedirects === 0 && input.method === "POST" &&
+          connection.provider === "chatgpt-codex-auth" && connection.role === "catalog" &&
+          connection.endpoint === target && CODEX_AUTH_ENDPOINTS.has(target) &&
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0",
       });
       if (!check.ok) {
         return {

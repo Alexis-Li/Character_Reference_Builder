@@ -7,7 +7,7 @@
  * and no name is really resolved.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   anonymousConnection,
   bindCredentialToDestination,
@@ -88,6 +88,35 @@ function withRedirectOrigins(connection: ProviderConnection, ...origins: string[
 }
 
 describe("outbound request policy", () => {
+  it("supports Fake-IP only for fixed HTTPS Codex authentication with no redirects and normal TLS", async () => {
+    const endpoint = "https://auth.openai.com/oauth/token";
+    const connection = anonymousConnection("chatgpt-codex-auth", "catalog", endpoint);
+    const { impl, calls } = recordingFetch(() => okResponse());
+    const input = { connection, url: endpoint, method: "POST", maxRedirects: 0, fetchImpl: impl, resolve: async () => ["198.18.0.73"] };
+    expect((await fetchWithConnectionPolicy(input)).ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    for (const override of [
+      { maxRedirects: 1 }, { method: "GET" },
+      { connection: { ...connection, provider: "openai" } },
+      { connection: { ...connection, role: "output" as const } },
+      { url: "https://auth.openai.com/other", connection: { ...connection, endpoint: "https://auth.openai.com/other" } },
+      { resolve: async () => ["127.0.0.1"] }, { resolve: async () => ["169.254.169.254"] },
+      { resolve: async () => ["10.0.0.1"] }, { resolve: async () => ["240.0.0.1"] },
+      { resolve: async () => ["198.18.0.73", "10.0.0.1"] },
+    ]) expect(await fetchWithConnectionPolicy({ ...input, ...override })).toMatchObject({ ok: false });
+    vi.stubEnv("NODE_TLS_REJECT_UNAUTHORIZED", "0");
+    try { expect(await fetchWithConnectionPolicy(input)).toMatchObject({ ok: false }); } finally { vi.unstubAllEnvs(); }
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not forward authentication material from a Fake-IP target to a redirect", async () => {
+    const endpoint = "https://auth.openai.com/oauth/token";
+    const { impl, calls } = recordingFetch(() => redirectResponse("https://attacker.example/collect"));
+    expect(await fetchWithConnectionPolicy({ connection: anonymousConnection("chatgpt-codex-auth", "catalog", endpoint),
+      url: endpoint, method: "POST", maxRedirects: 0, body: "synthetic-refresh", fetchImpl: impl, resolve: async () => ["198.19.0.1"] })).toMatchObject({ ok: false });
+    expect(calls).toHaveLength(1);
+  });
+
   it("sends the first hop and attaches the credential in the configured header", async () => {
     const { impl, calls } = recordingFetch(() => okResponse());
 

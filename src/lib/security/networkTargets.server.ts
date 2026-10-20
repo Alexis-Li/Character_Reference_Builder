@@ -121,6 +121,8 @@ export function classifyAddress(address: string): AddressClass {
 }
 
 export interface AddressPolicy {
+  /** Narrow fixed-issuer OAuth transport exception for TUN Fake-IP DNS. */
+  allowBenchmarkProxy?: boolean;
   /**
    * Allow loopback destinations. Only the explicitly configured local ComfyUI
    * engine and local test doubles set this; provider media never does.
@@ -150,6 +152,10 @@ export const LOCAL_ENGINE_ADDRESS_CLASSES: readonly AddressClass[] = [
 export function isDisallowedAddress(address: string, policy: AddressPolicy = {}): boolean {
   const kind = classifyAddress(address);
   if (kind === "public") return false;
+  // Only literal IPv4 benchmark addresses, never loopback/private/metadata or
+  // arbitrary reserved ranges. Callers must separately pin HTTPS recipient.
+  if (policy.allowBenchmarkProxy && /^198\.(18|19)\.\d{1,3}\.\d{1,3}$/.test(address) &&
+      address.split(".").every(part => Number(part) <= 255)) return false;
   if (policy.allowedNonPublicClasses?.includes(kind)) return false;
   if (kind === "loopback") return !policy.allowLoopback;
   if (kind === "private" || kind === "unique-local") return !policy.allowPrivate;
