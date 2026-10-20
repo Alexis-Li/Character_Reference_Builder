@@ -19,7 +19,7 @@ const baseUrl = `http://127.0.0.1:${port}`;
 const repo = path.resolve(__dirname, "../..");
 const output = path.join(process.env.CRB_TEMP_ROOT, "validation", "issue-10-browser-oauth", run);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-let server, log, privateDirectory, privateParent, browser;
+let server, log, privateDirectory, privateParent, runtimeRoot, browser;
 async function removeOwnedDirectory(directory, parent, prefix) {
   const relative = path.relative(path.resolve(parent), path.resolve(directory));
   assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative) && !relative.includes(path.sep) && relative.startsWith(prefix), "Refuse to remove an unowned directory");
@@ -34,7 +34,7 @@ async function startServer() {
   log = await fs.open(path.join(output, "server.log"), "a");
   server = spawn(process.execPath, run === "development" ? ["scripts/server.js"] : ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: repo, windowsHide: true, stdio: ["ignore", log.fd, log.fd],
-    env: { ...process.env, NODE_ENV: run, NEXT_TELEMETRY_DISABLED: "1", CRB_PORT: String(port), CRB_SYNTHETIC_OAUTH_VALIDATION: "1",
+    env: { ...process.env, NODE_ENV: run, NEXT_TELEMETRY_DISABLED: "1", CRB_PORT: String(port), CRB_TEMP_ROOT: runtimeRoot, CRB_SYNTHETIC_OAUTH_VALIDATION: "1",
       CRB_CODEX_OAUTH_CLIENT_ID: "", CRB_CREDENTIAL_DIRECTORY: privateDirectory,
       NODE_OPTIONS: `--require="${path.join(__dirname, "oauth-provider-fixture.cjs").replaceAll("\\", "/")}"` },
   });
@@ -98,6 +98,7 @@ async function authorize(page, action, user) {
 
 (async () => {
   await fs.mkdir(output, { recursive: true });
+  runtimeRoot = await fs.mkdtemp(path.join(output, "runtime-cleanup-"));
   // Product credentials outlive CRB_TEMP_ROOT. Use an isolated synthetic leaf
   // in the real OS location and remove it in finally, never any existing auth.
   privateParent = process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData/Local"), "CharacterReferenceBuilder", "validation")
@@ -132,9 +133,8 @@ async function authorize(page, action, user) {
   const credentialFile = path.join(privateDirectory, process.platform === "win32" ? "credentials.dpapi" : "credentials.json");
   const encrypted = await fs.readFile(credentialFile, "utf8");
   if (process.platform === "win32") assert.ok(!encrypted.includes("synthetic-refresh"), "DPAPI must persist ciphertext");
-  const disposable = await fs.mkdtemp(path.join(output, "runtime-cleanup-"));
-  await fs.writeFile(path.join(disposable, "synthetic-runtime.txt"), "disposable");
-  await stopServer(); await removeOwnedDirectory(disposable, output, "runtime-cleanup-"); await startServer();
+  await fs.writeFile(path.join(runtimeRoot, "synthetic-runtime.txt"), "disposable");
+  await stopServer(); await removeOwnedDirectory(runtimeRoot, output, "runtime-cleanup-"); await startServer();
   await page.reload({ waitUntil: "domcontentloaded" }); await openSettings(page);
   await page.getByText("账号：synthetic-one@example.invalid", { exact: true }).waitFor();
   const restored = await state(page);
@@ -177,4 +177,5 @@ async function authorize(page, action, user) {
 }).finally(async () => {
   await browser?.close(); await stopServer();
   if (privateDirectory) await removeOwnedDirectory(privateDirectory, privateParent, "crb-oauth-synthetic-");
+  if (runtimeRoot) await removeOwnedDirectory(runtimeRoot, output, "runtime-cleanup-");
 });
