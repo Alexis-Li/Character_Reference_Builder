@@ -9,7 +9,7 @@ const { randomUUID } = require("node:crypto");
 const assert = require("node:assert/strict");
 const args = process.argv.slice(2);
 if (args.includes("--help") || !args.includes("--live")) {
-  console.log("Usage: node scripts/validation/oauth-live-lifecycle.cjs --live [--check-runtime]\nWindows / Node 24 / CRB_TEMP_ROOT required. Creates a NEW isolated CRB credential store. A user must personally authorize the prepared browser transaction. Performs real token refresh and local logout/switch/cancel checks; no generation. Public status and authorization-link files are written under CRB_TEMP_ROOT. Never pass a token or existing credential directory.");
+  console.log("Usage: node scripts/validation/oauth-live-lifecycle.cjs --live [--denial-only | --check-runtime]\nWindows / Node 24 / CRB_TEMP_ROOT required. Creates a NEW isolated CRB credential store. A user personally approves, or with --denial-only rejects, the prepared browser transaction. Default performs real token refresh and local logout/switch/cancel checks; no generation. Public status and private authorization-link files are written under CRB_TEMP_ROOT. Never pass a token or existing credential directory.");
   if (!args.includes("--check-runtime")) process.exit(args.includes("--help") ? 0 : 2);
 }
 // Resolve the project's extensionless TypeScript imports only in this process.
@@ -32,7 +32,7 @@ assert.ok(!process.env.CRB_SYNTHETIC_OAUTH_VALIDATION && !process.env.NODE_OPTIO
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 let active;
 let output;
-const report = { status: "running", modelRequests: 0, realTokenRefreshRequests: 0 };
+const report = { status: "running", modelRequests: 0, realTokenRefreshRequests: 0, realTokenExchangeRequests: 0 };
 async function checkpoint(phase) {
   report.phase = phase;
   await fsp.writeFile(path.join(output, "result.json"), JSON.stringify(report, null, 2));
@@ -55,7 +55,9 @@ async function awaitLogin(adapter) {
   const store = createProtectedFileCredentialStore(path.join(privateDirectory, "credentials.dpapi"));
   const target = codexOAuthTarget();
   const native = codexOAuthTransports(target.clientId);
-  const transports = { ...native, refresh: async request => { report.realTokenRefreshRequests++; return native.refresh(request); } };
+  const transports = { ...native,
+    exchange: async request => { report.realTokenExchangeRequests++; return native.exchange(request); },
+    refresh: async request => { report.realTokenRefreshRequests++; return native.refresh(request); } };
   const session = `live-validation:${randomUUID()}`;
   active = new OAuthSessionAdapter({ target, store, transports });
   const view = await active.startBrowserAuthorization(session);
@@ -63,6 +65,27 @@ async function awaitLogin(adapter) {
   await fsp.writeFile(path.join(output, "authorization-url.txt"), view.browser.authorizationUrl, { mode: 0o600 });
   console.log(`Supervised lifecycle output: ${output}`);
   await checkpoint("awaiting-user-browser-authorization");
+  if (args.includes("--denial-only")) {
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (active.state !== "logged-out") {
+      assert.ok(Date.now() < deadline && active.state !== "authenticated", "Expected personal rejection, not successful authorization");
+      await delay(250);
+    }
+    assert.equal(active.browserView().failure, "authorization-denied", "No provider denial was received");
+    assert.equal(report.realTokenExchangeRequests, 0, "Denied login attempted token exchange");
+    assert.equal(report.realTokenRefreshRequests, 0, "Denied login attempted token refresh");
+    const restored = new OAuthSessionAdapter({ target, store, transports });
+    await restored.restore();
+    assert.ok(!restored.browserView().account, "Denied login saved a restorable account");
+    let refused = false;
+    try { await fetch(target.redirectUri, { redirect: "manual", signal: AbortSignal.timeout(2000) }); } catch { refused = true; }
+    assert.ok(refused, "Denied login retained its callback listener");
+    report.providerConsentDenial = true; report.denialLeavesNoAccount = true; report.denialClosesCallback = true;
+    report.status = "pass-for-recorded-scope";
+    await checkpoint("completed");
+    await fsp.unlink(path.join(output, "authorization-url.txt"));
+    return;
+  }
   await awaitLogin(active);
   const originalAccount = active.browserView().account.accountId;
   report.realBrowserLogin = true;
