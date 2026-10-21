@@ -2,7 +2,7 @@
 
 日期：2026-09-10。依据：[最小闭环实测](validation/minimum-loop-2026-09-10.md)、[ADR 0001](adr/0001-minimum-loop-foundation.md)。
 
-本文件已于 2026-09-10 发布为 GitHub [总规格 #1](https://github.com/Alexis-Li/Character_Reference_Builder/issues/1) 和开发任务 [#2–#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。全部任务已分配给 `Alexis-Li` 并标记 `ready-for-agent`；编号 CRB-xx 仍是稳定的本地计划标识，远端以 Issue 编号追踪。任务发布不代表功能已实现，也不建立另一个任务系统。截至 2026-09-12，总规格 #1 保持开启，#2–#6 已验收关闭，#7–#9 保持开启。
+本文件已于 2026-09-10 发布为 GitHub [总规格 #1](https://github.com/Alexis-Li/Character_Reference_Builder/issues/1) 和开发任务 [#2–#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。全部任务已分配给 `Alexis-Li` 并标记 `ready-for-agent`；编号 CRB-xx 仍是稳定的本地计划标识，远端以 Issue 编号追踪。任务发布不代表功能已实现，也不建立另一个任务系统。截至 2026-10-21 远端核对，总规格 #1 保持开启，#2–#7 及安全准入 #10 已验收关闭，#8–#9 保持开启。历史验收日期与来源继续保留。
 
 ## 依赖与执行顺序
 
@@ -13,11 +13,11 @@
 | CRB-03 能力化 Provider 及多参考输入契约 | [#4](https://github.com/Alexis-Li/Character_Reference_Builder/issues/4) | P0 | CRB-01 | 已验收关闭（2026-09-11）；真实调用仍由 CRB-07 验证 |
 | CRB-04 请求状态、费用授权及保守备用策略 | [#5](https://github.com/Alexis-Li/Character_Reference_Builder/issues/5) | P0 | CRB-03 | 已验收关闭（2026-09-12） |
 | CRB-05 单部件生成与连续优化的业务界面 | [#6](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6) | P0 | CRB-02、03、04 | 已验收关闭（2026-09-12） |
-| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 | 二次审查问题已修复并通过本地回归；Issue 待复验 |
-| CRB-07 真实资料质量、成本与 Provider 替换验证 | [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8) | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 | 等待真实资料、调用条件、费用授权及人工评审；完整路径仍依赖 CRB-06 |
+| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 | 已验收关闭（2026-09-16）；包含路径清理复验 |
+| CRB-07 真实资料质量、成本与 Provider 替换验证 | [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8) | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 | 进行中（真实验收）；工程依赖与 #10 安全准入已解除，条件与逐样本结论见 Issue |
 | CRB-08 本地 SAM 精确提取专项验证 | [#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues/9) | P1 可选 | 有输入图片；集成依赖 CRB-02 | 待专项验证；不阻塞默认生成 |
 
-CRB-01–CRB-06 已按依赖顺序完成实现与本地验收；CRB-06 已按二次审查结论完成中文文本边界的路径清理整改，远端 Issue 保持开启等待复验。CRB-07 的真实调用在素材、账户和费用授权具备后开始，无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
+CRB-01–CRB-06 已按依赖顺序完成实现并验收关闭；CRB-06 的中文文本边界路径清理已复验。安全准入 #10 已在单账号范围内验收并经 PR #11 合入 main（集成提交 `d7bb658a7bc7c0c51dfcaae78abf7800b43c77ed`）。CRB-07 的真实调用在素材、账户和费用授权具备后开始，无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
 
 [产品需求](product-requirements.md)统一定义功能与交互，本文件维护实施顺序。完整布局、主页、丰富节点库及视觉打磨后置；CRB-01 的启动入口、CRB-04 的状态与费用提示、CRB-05 的最小业务界面及 CRB-06 的可迁移保存与参考包导出均已交付。
 
@@ -85,7 +85,7 @@ CRB-01–CRB-06 已按依赖顺序完成实现与本地验收；CRB-06 已按二
 
 ## CRB-07：真实资料质量、成本与 Provider 替换验证
 
-问题：本轮没有真实生成调用，无法判断个人生产价值或给出默认模型。
+问题：#10 已有合成肩甲的真实调用证据，但没有真实角色 Q01–Q04 质量、连续优化与第二入口的完整结论，尚不能判断个人生产价值或确定默认模型。
 
 范围：执行验证报告 Q01–Q04 矩阵；先一个入口，再第二个兼容入口；记录原画哈希、调用、输出、人工评审、等待和每个合格部件总成本。订阅和 API 独立报告。先与用户确定素材、云端发送范围及费用上限。
 
