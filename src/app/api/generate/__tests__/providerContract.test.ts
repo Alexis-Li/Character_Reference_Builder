@@ -8,6 +8,7 @@
  * behavior or output quality — real-call evidence belongs to CRB-07.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import { generateWithOpenAI } from "../providers/openai";
 import { generateWithGemini } from "../providers/gemini";
@@ -147,6 +148,29 @@ describe("reference input contract", () => {
 });
 
 describe("second compatible entry: OpenAI adapter forwards every reference (P04)", () => {
+  it("records byte hashes and reported usage without treating counters as billing", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({
+      data: [{ b64_json: "cmVzdWx0" }],
+      usage: { input_tokens: 14, output_tokens: 8, total_tokens: 22,
+        input_tokens_details: { image_tokens: 10, text_tokens: 4, token: "private" },
+        access_token: "private", cost: 99 },
+    }) });
+    const request = input({ references: canonicalReferences() });
+    const result = await generateWithOpenAI("evidence", "dummy-not-a-key", request);
+    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(result.call).toMatchObject({
+      requestedModelId: "gpt-image-1",
+      promptSha256: hash(request.prompt),
+      referenceSha256: [hash("synthetic-original"), hash("synthetic-retained-front"), hash("synthetic-auxiliary-back")],
+      outputSha256: [hash("result")],
+      usage: { source: "openai-images", metrics: { input_tokens: 14, output_tokens: 8, total_tokens: 22,
+        "input_tokens_details.image_tokens": 10, "input_tokens_details.text_tokens": 4 } },
+    });
+    expect(result.call!.completedAt).toBeGreaterThanOrEqual(result.call!.at);
+    expect(JSON.stringify(result.call)).not.toContain("private");
+    expect(result.call).not.toHaveProperty("actualCostUsd");
+  });
+
   it("sends two different-purpose references in fixed order", async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ b64_json: "cmVzdWx0" }] }) });
     const result = await generateWithOpenAI("t2", "dummy-not-a-key", input({
@@ -205,6 +229,19 @@ describe("second compatible entry: OpenAI adapter forwards every reference (P04)
 });
 
 describe("first approved entry: Gemini adapter forwards every reference", () => {
+  it("records the wire model and available Gemini counters even when no image is returned", async () => {
+    mockGenerateContent.mockResolvedValueOnce({ candidates: [], usageMetadata: {
+      promptTokenCount: 10, candidatesTokenCount: 0, totalTokenCount: 10,
+      thoughtsTokenCount: -1, cachedContentTokenCount: "0", token: "private",
+    } });
+    const response = await generateWithGemini("evidence-g", "dummy-not-a-key", "preserve", [], "nano-banana-pro");
+    const result = await response.json();
+    expect(result.success).toBe(false);
+    expect(result.call).toMatchObject({ requestedModelId: "gemini-3-pro-image-preview", completedAt: expect.any(Number),
+      usage: { source: "gemini", metrics: { promptTokenCount: 10, candidatesTokenCount: 0, totalTokenCount: 10 } } });
+    expect(JSON.stringify(result.call)).not.toContain("private");
+  });
+
   it("builds one inline part per reference in fixed order with prompt first", async () => {
     const prompt = "Revise back, keep front; keep the waistband width";
     const response = await generateWithGemini(

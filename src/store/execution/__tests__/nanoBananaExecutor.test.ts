@@ -101,6 +101,22 @@ beforeEach(() => {
 });
 
 describe("executeNanoBanana", () => {
+  it("keeps evidence per attempt and links output to its candidate without inventing actual cost", async () => {
+    const node = makeNode();
+    const call = { at: 1, completedAt: 2, auth: "api-key", stage: "succeeded", provider: "gemini",
+      modelId: "nano-banana", referenceSha256: ["hash-original"], outputSha256: ["hash-output"],
+      usage: { source: "gemini", metrics: { totalTokenCount: 10 } } };
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true, image: "data:image/png;base64,cmVzdWx0", call }) });
+    const ctx = makeCtx(node);
+    await executeNanoBanana(ctx);
+    const writes = vi.mocked(ctx.updateNodeData).mock.calls.map(args => args[1]);
+    const record = writes.filter(data => data.requestHistory).at(-1)!.requestHistory![0];
+    const history = writes.find(data => data.imageHistory)!.imageHistory!;
+    expect(record.providerCall).toEqual({ ...call, auth: undefined, authChannel: "api-key" });
+    expect(record.outputCandidateId).toBe(history[0].id);
+    expect(record.actualCostUsd).toBeNull();
+  });
+
   it("uses explicit OAuth consent, ordered references and no API key", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const node = makeNode({ selectedModel: { provider: "openai", modelId: "codex-image", displayName: "Codex", authChannel: "oauth" } });

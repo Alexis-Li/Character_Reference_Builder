@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import { codexOAuthTarget, codexOAuthTransports, codexTokenResponse, CODEX_ISSUER, CODEX_PUBLIC_CLIENT_ID } from "../codexOAuth.server";
 import { configureOAuthProviderTarget, OAuthSessionAdapter, resetOAuthSessionForTest } from "../oauthSession.server";
@@ -210,7 +211,8 @@ describe("Codex product integration with synthetic credentials", () => {
     const refs = ["target", "retained-view", "auxiliary"].slice(0, count).map(purpose => ({ image: `data:image/png;base64,${image.toString("base64")}`, purpose }));
     const permit = await POST(req("confirm-call", { accountId: adapter.browserView().account!.accountId, allowExternalData: true, allowUnknownCost: true }));
     const grant = (await permit.json()).grant;
-    const event = JSON.stringify({ created: 1, data: [{ b64_json: output.toString("base64") }] });
+    const event = JSON.stringify({ created: 1, data: [{ b64_json: output.toString("base64") }],
+      ...(count === 2 ? { usage: { input_tokens: 20, output_tokens: 40, total_tokens: 60, access_token: "private" } } : {}) });
     const stream = new ReadableStream<Uint8Array>({ start(controller) { const bytes = new TextEncoder().encode(event); for (let i = 0; i < bytes.length; i += 13) controller.enqueue(bytes.slice(i, i + 13)); controller.close(); } });
     network.mockResolvedValueOnce(new Response(stream, { headers: { "Content-Type": "application/json" } }));
     const response = await generate(localApiNextRequest("http://127.0.0.1:3210/api/generate", { method: "POST", body: JSON.stringify({
@@ -225,6 +227,13 @@ describe("Codex product integration with synthetic credentials", () => {
     expect(url).toBe(count ? CODEX_IMAGE_EDIT_ENDPOINT : CODEX_IMAGE_GENERATE_ENDPOINT);
     expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${TOKENS.access_token}`);
     const wire = JSON.parse(init.body);
+    expect(result.call).toMatchObject({ requestedModelId: CODEX_IMAGE_MODEL, completedAt: expect.any(Number),
+      promptSha256: createHash("sha256").update(wire.prompt).digest("hex"),
+      referenceSha256: refs.map(() => createHash("sha256").update(image).digest("hex")),
+      outputSha256: [createHash("sha256").update(output).digest("hex")] });
+    if (count === 2) expect(result.call.usage).toEqual({ source: "codex-images", metrics: { input_tokens: 20, output_tokens: 40, total_tokens: 60 } });
+    else expect(result.call.usage).toBeUndefined();
+    expect(JSON.stringify(result.call)).not.toContain("private");
     expect(wire).toEqual({ model: CODEX_IMAGE_MODEL, prompt: expect.stringContaining("Preserve the design and retained view"),
       background: "opaque", quality: "auto", size: "auto",
       ...(count ? { images: refs.map(ref => ({ image_url: ref.image })) } : {}) });

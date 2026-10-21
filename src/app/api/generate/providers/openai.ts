@@ -12,6 +12,7 @@
  * ordering can be cross-checked; filenames never carry credentials.
  */
 
+import { inputEvidence, imageSha256, reportedUsage } from "@/lib/providers/callEvidence.server";
 import { GenerationInput, GenerationOutput } from "@/lib/providers/types";
 import {
   bindCredentialToDestination,
@@ -62,6 +63,8 @@ export async function generateWithOpenAI(
     at: Date.now(),
     provider: "openai",
     modelId,
+    requestedModelId: modelId,
+    ...inputEvidence(input.prompt, sentRefs),
     displayName: input.model.name,
     resolvedFrom: input.modelSource ?? "node-legacy",
     declared: openaiDeclared !== null,
@@ -126,7 +129,7 @@ export async function generateWithOpenAI(
     if (parameters.n) formData.append("n", String(parameters.n));
     if (parameters.background) formData.append("background", String(parameters.background));
     // CRB-03 (P04): send EVERY reference image in fixed order. gpt-image
-    // edits accepts up to 4 inputs via repeated image[] fields; truncating
+    // edits sends repeated image fields (the app guards at 4); truncating
     // to the first image silently dropped retained views and auxiliary
     // references, so inputs are appended as-is and capability gaps are
     // rejected earlier in the route (checkReferenceGaps), never here.
@@ -188,6 +191,7 @@ export async function generateWithOpenAI(
     });
   }
 
+  callBase.completedAt = Date.now();
   if (!response.ok) {
     const errorText = await response.text();
     // Default to a concise, status-based message so we never surface a raw HTML
@@ -229,6 +233,8 @@ export async function generateWithOpenAI(
   }
 
   const data = await response.json();
+  callBase.completedAt = Date.now();
+  Object.assign(callBase, reportedUsage("openai-images", data.usage));
 
   // Extract base64 image from response
   const firstImage = data.data?.[0];
@@ -258,6 +264,6 @@ export async function generateWithOpenAI(
         data: dataUrl,
       },
     ],
-    call: { ...callBase, stage: "succeeded" },
+    call: { ...callBase, outputSha256: [imageSha256(dataUrl)], stage: "succeeded" },
   };
 }

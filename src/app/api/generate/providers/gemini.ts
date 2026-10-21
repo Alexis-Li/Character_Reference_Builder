@@ -4,6 +4,7 @@
  * Handles image generation and video generation using Google's Gemini API models.
  */
 
+import { inputEvidence, imageSha256, reportedUsage } from "@/lib/providers/callEvidence.server";
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
 import { GenerateResponse, ModelType, MODEL_DISPLAY_NAMES } from "@/types";
@@ -95,6 +96,8 @@ export async function generateWithGemini(
     at: Date.now(),
     provider: "gemini",
     modelId: model,
+    requestedModelId: MODEL_MAP[model],
+    ...inputEvidence(prompt, sentRefs),
     displayName: MODEL_DISPLAY_NAMES[model] ?? model,
     resolvedFrom: modelSource ?? "node-legacy",
     declared: geminiDeclared !== null,
@@ -183,7 +186,7 @@ export async function generateWithGemini(
           success: false,
           ...SUBMITTED,
           error: "Rate limit reached. Please wait and try again.",
-          call: { ...callBase, stage: "failed" },
+          call: { ...callBase, completedAt: Date.now(), stage: "failed" },
         },
         { status: 429 }
       );
@@ -193,12 +196,13 @@ export async function generateWithGemini(
         success: false,
         ...SUBMITTED,
         error: message.substring(0, 200),
-        call: { ...callBase, stage: "failed" },
+        call: { ...callBase, completedAt: Date.now(), stage: "failed" },
       },
       { status: 500 }
     );
   }
 
+  Object.assign(callBase, reportedUsage("gemini", response.usageMetadata));
   const geminiDuration = Date.now() - geminiStartTime;
   console.log(`[API:${requestId}] Gemini API completed in ${geminiDuration}ms`);
 
@@ -212,7 +216,7 @@ export async function generateWithGemini(
         success: false,
         ...SUBMITTED,
         error: "No response from AI model",
-        call: { ...callBase, stage: "failed" },
+        call: { ...callBase, completedAt: Date.now(), stage: "failed" },
       },
       { status: 500 }
     );
@@ -228,7 +232,7 @@ export async function generateWithGemini(
         success: false,
         ...SUBMITTED,
         error: "No content in response",
-        call: { ...callBase, stage: "failed" },
+        call: { ...callBase, completedAt: Date.now(), stage: "failed" },
       },
       { status: 500 }
     );
@@ -249,7 +253,7 @@ export async function generateWithGemini(
         success: true,
         ...SUBMITTED,
         image: dataUrl,
-        call: { ...callBase, stage: "succeeded" },
+        call: { ...callBase, completedAt: Date.now(), outputSha256: [imageSha256(dataUrl)], stage: "succeeded" },
       };
       const responseSize = JSON.stringify(responsePayload).length;
       const responseSizeMB = (responseSize / (1024 * 1024)).toFixed(2);
@@ -274,7 +278,7 @@ export async function generateWithGemini(
           success: false,
           ...SUBMITTED,
           error: `Model returned text instead of image: ${text.substring(0, 200)}`,
-          call: { ...callBase, stage: "failed" },
+          call: { ...callBase, completedAt: Date.now(), stage: "failed" },
         },
         { status: 500 }
       );
@@ -286,7 +290,7 @@ export async function generateWithGemini(
       success: false,
       ...SUBMITTED,
       error: "No image in response",
-      call: { ...callBase, stage: "failed" },
+      call: { ...callBase, completedAt: Date.now(), stage: "failed" },
     },
     { status: 500 }
   );

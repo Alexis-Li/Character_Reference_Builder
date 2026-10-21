@@ -80,6 +80,12 @@ export async function executeNanoBanana(
     updateNodeData(node.id, { requestHistory });
   };
 
+  const evidence = (call?: ProviderCallRecord): Pick<CloudRequestRecord, "providerCall"> => {
+    if (!call) return {};
+    const { auth, ...metadata } = call;
+    return { providerCall: { ...metadata, authChannel: auth } };
+  };
+
   const makeRequest = (
     actualEntry: SelectedModel,
     attempt: "primary" | "fallback",
@@ -354,6 +360,7 @@ export async function executeNanoBanana(
                 ? "failed"
                 : "unknown",
             querySupport,
+            ...evidence(serverCall),
             ...(upstreamRequestId ? { upstreamRequestId } : {}),
             failureReason,
             error: errorMessage,
@@ -450,6 +457,8 @@ export async function executeNanoBanana(
         );
       }
 
+      requestRecord = { ...requestRecord, ...evidence(result.call) };
+
       if (result.success && result.image) {
         const timestamp = Date.now();
         const imageId = newCharacterId("cand");
@@ -518,7 +527,7 @@ export async function executeNanoBanana(
           // non-contract provider omits it, the previous record is kept.
           ...(result.call ? { lastCall: result.call } : {}),
         });
-        requestRecord = { ...requestRecord, status: "completed" };
+        requestRecord = { ...requestRecord, status: "completed", outputCandidateId: imageId };
         persistRequest(requestRecord);
 
         // Report the run to the character-project contract when the context
