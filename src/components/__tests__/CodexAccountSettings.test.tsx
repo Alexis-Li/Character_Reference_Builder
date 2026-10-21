@@ -7,6 +7,22 @@ const base = { state: "logged-out", provider: "chatgpt-codex", account: null, sc
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("OAuth account settings", () => {
+  it("requires logout before offering a new login and has no account-switch controls", async () => {
+    const network = vi.fn().mockResolvedValueOnce(Response.json({ available: true, oauth: { ...base,
+      state: "authenticated", account: { accountId: "synthetic", displayName: "Synthetic User" } } }))
+      .mockResolvedValueOnce(Response.json({ oauth: base }));
+    vi.stubGlobal("fetch", network);
+    render(<CodexAccountSettings onSelectModel={vi.fn()} />);
+    await screen.findByText("登录账号：Synthetic User");
+    expect(screen.queryByRole("button", { name: /切换账号/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "连接账号 / 重新连接" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "使用设备码登录" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "退出账号" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "连接账号 / 重新连接" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "使用设备码登录" })).toBeEnabled();
+    expect(JSON.parse(network.mock.calls[1][1].body)).toEqual({ action: "logout" });
+  });
+
   it("opens the default browser flow and automatically reads the connected account without device input", async () => {
     const browser = { authorizationUrl: "https://auth.openai.com/oauth/authorize?state=synthetic", intervalMs: 5, expiresAt: Date.now() + 600_000 };
     const network = vi.fn().mockResolvedValueOnce(Response.json({ oauth: base, available: true }))

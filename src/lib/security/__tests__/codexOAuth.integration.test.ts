@@ -65,6 +65,24 @@ beforeEach(() => {
 afterEach(() => { resetOAuthSessionForTest(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("Codex product integration with synthetic credentials", () => {
+  it("requires explicit logout before browser, device or legacy switch can replace an account", async () => {
+    const { adapter } = await connect();
+    const account = adapter.browserView().account;
+    const calls = network.mock.calls.length;
+    for (const [action, method] of [["start", "browser"], ["start", "device"], ["switch", "device"]]) {
+      const response = await POST(req(action, { method }));
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ reason: "logout-required" });
+      expect(adapter.browserView().account).toEqual(account);
+    }
+    expect(network).toHaveBeenCalledTimes(calls);
+    expect((await POST(req("logout"))).status).toBe(200);
+    network.mockResolvedValueOnce(Response.json(DEVICE));
+    expect((await POST(req("start", { method: "device" }))).status).toBe(200);
+    expect(adapter.browserView()).toMatchObject({ state: "authorization-started", account: null });
+    expect(network).toHaveBeenCalledTimes(calls + 1);
+  });
+
   it("configures native Codex login without requiring the user to register a client", async () => {
     vi.stubEnv("CRB_CODEX_OAUTH_CLIENT_ID", "");
     expect(codexOAuthTarget()).toMatchObject({ clientId: CODEX_PUBLIC_CLIENT_ID, redirectUri: "http://127.0.0.1:1455/auth/callback" });

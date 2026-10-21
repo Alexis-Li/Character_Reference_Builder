@@ -7,7 +7,7 @@ import type { SelectedModel } from "@/types";
 const STATUS: Record<string, string> = {
   unconfigured: "登录服务未配置", "logged-out": "未连接", "authorization-started": "等待服务商授权",
   "callback-received": "正在完成登录", "token-exchange-pending": "正在完成登录",
-  authenticated: "账号已连接", "refresh-pending": "正在刷新授权", "re-authentication-required": "授权失效，请重新连接",
+  authenticated: "账号已连接", "refresh-pending": "正在刷新授权", "re-authentication-required": "授权失效，请退出后重新登录",
   revoked: "已本地断开", "account-switched": "已断开旧账号",
 };
 const FAILURES: Record<string, string> = {
@@ -64,7 +64,7 @@ export function CodexAccountSettings({ onSelectModel }: { onSelectModel: (model:
   async function act(action: string, method: "browser" | "device" = "browser") {
     const started = ++revision.current;
     setBusy(true); setMessage("");
-    const opening = action === "start" || action === "switch";
+    const opening = action === "start";
     setStarting(opening);
     pendingPopup.current?.close();
     const popup = opening ? window.open("about:blank", "_blank") : null;
@@ -118,8 +118,8 @@ export function CodexAccountSettings({ onSelectModel }: { onSelectModel: (model:
     {message && <p role="alert" className="text-sm text-amber-300">{message}</p>}
     {busy && starting && !pending && <button type="button" className={button} onClick={() => act("cancel")}>取消连接</button>}
     <div className="flex flex-wrap gap-2">
-      {!pending && <><button type="button" className={button} disabled={busy || !available} onClick={() => act(connected ? "switch" : "start")}>{connected ? "切换账号" : "连接账号 / 重新连接"}</button>
-        <button type="button" className={button} disabled={busy || !available} onClick={() => act(connected ? "switch" : "start", "device")}>使用设备码{connected ? "切换账号" : "登录"}</button></>}
+      {!pending && !oauth?.account && <><button type="button" className={button} disabled={busy || !available} onClick={() => act("start")}>连接账号 / 重新连接</button>
+        <button type="button" className={button} disabled={busy || !available} onClick={() => act("start", "device")}>使用设备码登录</button></>}
       {oauth?.account && <><button type="button" className={button} disabled={busy} onClick={() => act("logout")}>退出账号</button>
         <button type="button" className={button} disabled={busy} onClick={() => act("revoke")}>本地断开并检查远端授权</button></>}
       {connected && <button type="button" className={button} onClick={() => {

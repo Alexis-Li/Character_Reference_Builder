@@ -90,11 +90,11 @@ Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windo
 
 ## ChatGPT/Codex 账号接入
 
-启动应用，关闭欢迎弹层，打开设置 → Providers → ChatGPT/Codex → **连接账号 / 重新连接**。应用打开服务商浏览器页面；由你亲自登录、选择账号并确认，完成后本机回调自动连接。已连接区域只显示登录账号和授权有效期，保留切换、退出等操作；工作区、授权范围及能力／额度详情不在此展示。浏览器阻止新窗口时点击设置中的授权页面链接。无需申请客户端、填写协议参数或粘贴 token。
+启动应用，关闭欢迎弹层，打开设置 → Providers → ChatGPT/Codex → **连接账号 / 重新连接**。应用打开服务商浏览器页面；由你亲自登录、选择账号并确认，完成后本机回调自动连接。已连接区域只显示登录账号和授权有效期，保留退出等操作，更换账号先退出再重新登录；工作区、授权范围及能力／额度详情不在此展示。浏览器阻止新窗口时点击设置中的授权页面链接。无需申请客户端、填写协议参数或粘贴 token。
 
-本机回调仅在登录期间监听 `127.0.0.1:1455`。端口被其他登录占用时，完成／取消那次登录后重试，或选择 **使用设备码登录**；后者由你在服务商页面输入界面显示的用户码，应用自动等待完成。服务商要求启用装置代码登入时，由你本人在 [ChatGPT 安全性设置](https://chatgpt.com/#settings/Security) 开启“Codex、Excel、PowerPoint 和 Word”的装置代码登入，再回本应用重新获取设备码；不需要运行其他应用的登录命令。取消、退出和切换会使旧回调、刷新及调用许可失效。退出属于本地断开，远端授权状态未知；需要时到服务商账号安全设置检查。项目、候选与人工选择保留。
+本机回调仅在登录期间监听 `127.0.0.1:1455`。端口被其他登录占用时，完成／取消那次登录后重试，或选择 **使用设备码登录**；后者由你在服务商页面输入界面显示的用户码，应用自动等待完成。服务商要求启用装置代码登入时，由你本人在 [ChatGPT 安全性设置](https://chatgpt.com/#settings/Security) 开启“Codex、Excel、PowerPoint 和 Word”的装置代码登入，再回本应用重新获取设备码；不需要运行其他应用的登录命令。取消、退出和重新发起登录会使旧回调、刷新及调用许可失效。应用不提供多账号切换入口，已有账号时须先退出。退出属于本地断开，远端授权状态未知；需要时到服务商账号安全设置检查。项目、候选与人工选择保留。
 
-登录资料会在应用重启后恢复，读取账号或调用前按需自动续期；失效时显示重新连接入口。凭据位于仓库及 `CRB_TEMP_ROOT` 之外的本用户应用目录：Windows 使用 `%LOCALAPPDATA%/CharacterReferenceBuilder/auth` 和 CurrentUser DPAPI；POSIX 使用 `~/.local/share/character-reference-builder/auth`、0700／0600 文件。不导入或修改 Codex、OMP、CC Switch 的现有认证文件。固定社区来源、官方接口比较与使用条件见 [社区复用决策](docs/research/oauth-community-reuse.md)。
+登录资料会在应用重启后恢复，读取账号或调用前按需自动续期；失效时提示退出后重新登录。凭据位于仓库及 `CRB_TEMP_ROOT` 之外的本用户应用目录：Windows 使用 `%LOCALAPPDATA%/CharacterReferenceBuilder/auth` 和 CurrentUser DPAPI；POSIX 使用 `~/.local/share/character-reference-builder/auth`、0700／0600 文件。不导入或修改 Codex、OMP、CC Switch 的现有认证文件。固定社区来源、官方接口比较与使用条件见 [社区复用决策](docs/research/oauth-community-reuse.md)。
 
 连接不生成图片；订阅调用和图像能力分别验收。连接后可选为新图像节点及单部件任务的默认入口并保存，每次生成另行确认资料外发与未知费用。OAuth 图像通道最多三张参考，不支持精确 Mask，不沿用 API Key 价格或能力。真实 Plus 登录及实际图像调用仍需本人参与验收，不能用合成测试代替。
 

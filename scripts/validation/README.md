@@ -52,7 +52,7 @@ python scripts/validation/probe_local_storage.py --base-url http://127.0.0.1:321
 
 ## OAuth 产品接入浏览器回归
 
-`oauth-ui.cjs` 自行启动并停止隔离的开发／生产服务，使用真实设置 UI、特权路由、本机 PKCE 回调和受保护存储；只用 `oauth-provider-fixture.cjs` 的显式 Node preload 替换外部 Provider 的页面及令牌响应。不拦截 `/api/oauth`，覆盖浏览器授权、设备码、账号摘要、保存默认入口、取消、退出、切换、清理测试临时叶目录后的跨进程重启恢复及自动刷新。断言未请求生成，拒绝外部网络；不用真实账号，不等同真实 Provider 验收。
+`oauth-ui.cjs` 自行启动并停止隔离的开发／生产服务，使用真实设置 UI、特权路由、本机 PKCE 回调和受保护存储；只用 `oauth-provider-fixture.cjs` 的显式 Node preload 替换外部 Provider 的页面及令牌响应。不拦截 `/api/oauth`，覆盖浏览器授权、设备码、账号摘要、保存默认入口、取消、退出后重新登录、清理测试临时叶目录后的跨进程重启恢复及自动刷新。断言未请求生成，拒绝外部网络；不用真实账号，不等同真实 Provider 验收。
 
 需要可用的 Playwright 与 Chromium。可把验证专用依赖装在 `<CRB_TEMP_ROOT>/validation/`，通过 `CRB_PLAYWRIGHT_MODULE` 指向其 Playwright 模块；`CRB_CHROMIUM_PATH` 可指定本机浏览器。无需修改产品依赖或锁文件。`CRB_TEMP_ROOT` 必须先按本机约定设置。
 

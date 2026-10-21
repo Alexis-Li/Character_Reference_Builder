@@ -157,8 +157,13 @@ async function authorize(page, action, user) {
   const refreshes = (await fs.readFile(refreshAudit, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
   assert.equal(refreshes.length, 1, "Exactly one renewal must follow restart");
   assert.equal(refreshes[0].generation, "2", "Renewal must occur in the restarted server");
-  const switched = await authorize(page, "切换账号", "two"); await switched.popup.close();
-  const cancelling = await authorize(page, "切换账号");
+  assert.equal(await page.getByRole("button", { name: "切换账号", exact: true }).count(), 0);
+  await page.getByRole("button", { name: "退出账号", exact: true }).click();
+  await page.getByRole("button", { name: "连接账号 / 重新连接", exact: true }).waitFor();
+  const relogged = await authorize(page, "连接账号 / 重新连接", "two"); await relogged.popup.close();
+  await page.getByRole("button", { name: "退出账号", exact: true }).click();
+  await page.getByRole("button", { name: "连接账号 / 重新连接", exact: true }).waitFor();
+  const cancelling = await authorize(page, "连接账号 / 重新连接");
   await page.getByRole("button", { name: "取消连接", exact: true }).click();
   await page.getByText(/已取消等待/).waitFor(); await cancelling.popup.close();
   assert.equal((await state(page)).oauth.account, null);
@@ -182,7 +187,7 @@ async function authorize(page, action, user) {
   assert.equal(denied, true); assert.equal(generations, 0);
   await fs.writeFile(path.join(output, "result.json"), JSON.stringify({ run, status: "pass", generations, foreignOriginDenied: denied,
     native: { available: native.available, state: native.oauth.state }, selectedDefault, restartRestored: true, automaticRefresh: true,
-    scope: "Actual product UI, guarded routes, PKCE callback, protected persistence, process restart, switch/cancel/logout/device login. Provider pages and token endpoints use synthetic fixtures. No real account or model call." }, null, 2));
+    scope: "Actual product UI, guarded routes, PKCE callback, protected persistence, process restart, logout then fresh login/cancel/device login. Provider pages and token endpoints use synthetic fixtures. No real account or model call." }, null, 2));
   console.log(JSON.stringify({ run, status: "pass", generations, restartRestored: true, automaticRefresh: true }));
 })().catch(async error => {
   console.error(error.message); process.exitCode = 1;

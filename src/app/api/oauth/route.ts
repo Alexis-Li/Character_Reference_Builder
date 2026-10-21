@@ -25,6 +25,9 @@ export const POST = withPrivilegedApi(["auth-state-change", "cloud-request", "lo
   try {
     if (action === "start" || action === "switch") {
       if (!adapter.providerTarget) return NextResponse.json({ success: false, reason: "provider-not-configured", error: "登录服务未配置，请重启应用后重试。" }, { status: 409 });
+      // Legacy "switch" requests obey the same explicit logout requirement.
+      // Never replace a connected account as a side effect of starting login.
+      if (adapter.browserView().account) return NextResponse.json({ success: false, reason: "logout-required", error: "请先退出当前账号，再登录其他账号或重新认证。" }, { status: 409 });
       if (body.method !== undefined && body.method !== "browser" && body.method !== "device") return NextResponse.json({ success: false, error: "Unknown login method" }, { status: 400 });
       // Keep this initiating capability usable; older account-bound pages are revoked.
       attachAccountSummary(session.sessionId, null);
