@@ -1,6 +1,7 @@
 import { WorkflowNode, WorkflowNodeData } from "@/types";
 import { WorkflowFile } from "@/store/workflowStore";
 import crypto from "crypto";
+import type { NanoBananaNodeData } from "@/types";
 
 /**
  * Fetch with timeout support using AbortController
@@ -70,6 +71,13 @@ function isHttpUrl(str: string | null | undefined): boolean {
  */
 function isDataUrl(str: string | null | undefined): str is string {
   return typeof str === "string" && str.startsWith("data:");
+}
+
+function selectedImageAssetId(data: NanoBananaNodeData): string | undefined {
+  const history = data.imageHistory ?? [];
+  const item = history.find(item => item.id === data.selectedHistoryId)
+    ?? history[data.selectedHistoryIndex ?? 0];
+  return item ? item.assetId ?? item.id : undefined;
 }
 
 /**
@@ -216,13 +224,13 @@ async function externalizeNodeMedia(
       // cursor and must never reassign the selected asset after truncation.
       // Files are addressed by the candidate's asset id so content dedupe
       // reuses bytes without rewriting candidate identity.
-      const selectedIndex = d.selectedHistoryIndex || 0;
-      const stableSelection =
-        d.selectedHistoryId != null && d.imageHistory?.some((h) => h.id === d.selectedHistoryId)
-          ? d.selectedHistoryId
-          : undefined;
-      const selectedItem = d.imageHistory?.find((h) => h.id === (stableSelection ?? d.imageHistory?.[selectedIndex]?.id));
-      const expectedRef = selectedItem ? (selectedItem.assetId ?? selectedItem.id) : undefined;
+      const expectedRef = selectedImageAssetId(d);
+      if (isDataUrl(outputImage)) {
+        // Keep bytes out of portable text sanitization and keep the stable
+        // selected asset even when a newer unselected candidate exists.
+        outputImageRef = await saveImageAndGetId(outputImage, workflowPath, savedImageIds, "generations", expectedRef ?? outputImageRef);
+        outputImage = null;
+      }
 
       // Handle input images array (these come from connected nodes, save to inputs if present)
       // Skip if corresponding inputImageRef already exists
@@ -971,8 +979,13 @@ async function hydrateNodeMedia(
       let outputImage = d.outputImage;
       const inputImages = [...(d.inputImages || [])];
 
-      if (d.outputImageRef && !d.outputImage) {
-        outputImage = await loadMediaById(d.outputImageRef, workflowPath, loadedMedia, "image");
+      // Older externalized saves left an inline output that path scrubbing
+      // could corrupt. Its independent candidate file remains authoritative.
+      const corruptInline = isDataUrl(outputImage) && outputImage.includes("[local-path-redacted]");
+      const outputRef = d.outputImageRef ?? (corruptInline ? selectedImageAssetId(d) : undefined);
+      if (outputRef && (!outputImage || corruptInline)) {
+        const restored = await loadMediaById(outputRef, workflowPath, loadedMedia, "image");
+        if (restored) outputImage = restored;
       }
 
       // Hydrate input images from refs
