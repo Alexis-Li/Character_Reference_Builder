@@ -66,6 +66,7 @@ export function WorkflowBrowserView({
   const [isLoading, setIsLoading] = useState(false);
   const [loadingWorkflow, setLoadingWorkflow] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [projectPath, setProjectPath] = useState("");
 
   useEffect(() => {
     setDefaultDir(getWorkflowsDirectory());
@@ -182,6 +183,34 @@ export function WorkflowBrowserView({
     [onWorkflowLoaded, onClose]
   );
 
+  const openByPath = (
+    <form
+      className="flex flex-col gap-2 w-full p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!projectPath.trim() || loadingWorkflow) return;
+        void handleSelectWorkflow({ name: "", directoryPath: projectPath.trim(), relativePath: "", lastModified: 0 });
+      }}
+    >
+      <label className="text-sm text-neutral-300">
+        项目目录路径
+        <input
+          value={projectPath}
+          onChange={(event) => setProjectPath(event.target.value)}
+          placeholder="粘贴包含项目 JSON 和资产文件夹的目录"
+          className="block mt-1 w-full rounded bg-neutral-900 border border-neutral-600 px-3 py-2"
+        />
+      </label>
+      <button
+        type="submit"
+        disabled={!projectPath.trim() || loadingWorkflow !== null}
+        className="px-4 py-2 text-sm text-neutral-200 bg-neutral-700 rounded-lg disabled:opacity-40"
+      >
+        {loadingWorkflow === projectPath.trim() ? "正在打开项目…" : "按路径打开项目"}
+      </button>
+    </form>
+  );
+
   // State A: No default directory configured
   if (defaultDir === null) {
     return (
@@ -221,6 +250,8 @@ export function WorkflowBrowserView({
           >
             Choose folder
           </button>
+          {openByPath}
+          {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
         </div>
       </div>
     );
@@ -229,6 +260,7 @@ export function WorkflowBrowserView({
   // State B: Default directory configured — show listing
   return (
     <div className="flex flex-col h-full max-h-[70vh]">
+      {openByPath}
       {/* Header */}
       <div className="px-6 pt-4 pb-3 border-b border-neutral-700/50 flex-shrink-0">
         {onBack && (
