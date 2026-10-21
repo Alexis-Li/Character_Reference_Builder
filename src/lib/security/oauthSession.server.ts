@@ -13,15 +13,15 @@
  * credential store. No automatic fallback across authorization channels
  * happens here: an unavailable OAuth session reports its own state and stops.
  *
- * Production uses the pinned Codex device protocol only when this application
- * has a Provider-permitted client identity. The generic PKCE branch remains
- * available for protocol tests; it is not a second production login system.
+ * Browser PKCE and optional device login feed this same adapter and protected
+ * store. Neither flow imports another application's authentication files.
  */
 
 import * as crypto from "node:crypto";
 import { createMemoryCredentialStore, defaultCredentialStore, type CredentialStore } from "./credentialStore.server";
 import { revokeSessionsForAccount, type AccountSummary } from "./localSession.server";
 import { codexOAuthTarget, codexOAuthTransports } from "./codexOAuth.server";
+import type { CallbackReply } from "./oauthCallback.server";
 
 export type OAuthSessionState =
   | "unconfigured"
@@ -46,6 +46,8 @@ export interface OAuthProviderTarget {
   provider: string;
   issuer: string;
   authorizationEndpoint: string;
+  authorizationParameters?: Readonly<Record<string, string>>;
+  deviceAuthorizationEndpoint?: string;
   tokenEndpoint: string;
   revocationEndpoint: string | null;
   clientId: string;
@@ -74,6 +76,7 @@ export interface TokenExchangeRequest {
   redirectUri: string;
   code: string;
   codeVerifier: string;
+  signal?: AbortSignal;
 }
 
 export interface TokenExchangeResponse {
@@ -111,6 +114,7 @@ export interface OAuthTransports {
   revoke(request: RevokeRequest): Promise<{ ok: boolean; error?: string }>;
   startDevice?(signal: AbortSignal): Promise<DeviceAuthorization>;
   pollDevice?(device: DeviceAuthorization, signal: AbortSignal): Promise<{ pending: true } | { pending: false; response: TokenExchangeResponse }>;
+  listenForCallback?(receive: (url: URL) => Promise<CallbackReply>, signal: AbortSignal): Promise<{ redirectUri: string }>;
 }
 
 export interface DeviceAuthorization {
@@ -185,6 +189,7 @@ export interface BrowserSafeSessionView {
   confirmationRequired: boolean;
   scopesKnown?: boolean;
   device?: DeviceAuthorizationView | null;
+  browser?: { authorizationUrl: string; expiresAt: number; intervalMs: number } | null;
   failure?: string | null;
 }
 
@@ -261,6 +266,9 @@ export class OAuthSessionAdapter {
   private restoreInFlight: Promise<void> | null = null;
   private restored = false;
   private grants = new Map<string, { sessionId: string; generation: number; expiresAt: number }>();
+  private browser: { sessionId: string; state: string; authorizationUrl: string; expiresAt: number } | null = null;
+  private browserController: AbortController | null = null;
+  private browserTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: OAuthAdapterOptions) {
     this.target = options.target;
@@ -341,6 +349,12 @@ export class OAuthSessionAdapter {
     this.device = null;
     this.devicePoll = null;
     this.deviceFailure = null;
+    this.lastFailureState = null;
+    this.browserController?.abort();
+    this.browserController = null;
+    if (this.browserTimer) clearTimeout(this.browserTimer);
+    this.browserTimer = null;
+    this.browser = null;
     this.grants.clear();
     this.transactions.clear();
     this.refreshInFlight = null;
@@ -349,6 +363,79 @@ export class OAuthSessionAdapter {
     this.expiresAtState = null;
     this.confirmationRequiredState = true;
     this.status = status;
+  }
+
+  /** Bind the listener before exposing an authorization URL. Only this caller
+   * may read the transaction; possession of its random state binds callbacks. */
+  async startBrowserAuthorization(sessionId: string): Promise<BrowserSafeSessionView> {
+    if (!this.target || !this.transports.listenForCallback) return this.browserView();
+    const previous = this.summaryState;
+    this.endSession("authorization-started");
+    const generation = this.generation;
+    if (previous) revokeSessionsForAccount(previous.accountId);
+    await this.mutateCredential(async () => {
+      if (previous) await this.store.delete(this.tokenKey(previous.accountId));
+      await this.store.delete(this.activeKey());
+    });
+    if (!this.isCurrent(generation)) return this.viewForSession(sessionId);
+    const controller = new AbortController();
+    this.browserController = controller;
+    try {
+      const listener = await this.transports.listenForCallback(async url => {
+        const attempt = this.browser;
+        if (!attempt || attempt.sessionId !== sessionId || controller.signal.aborted) {
+          return { status: 410, message: "This login has ended. Return to Character Reference Builder." };
+        }
+        const states = url.searchParams.getAll("state");
+        if (states.length !== 1 || states[0] !== attempt.state ||
+            ["iss", "client_id", "error"].some(key => url.searchParams.getAll(key).length > 1)) {
+          return { status: 400, message: "Invalid login callback. The active login is unchanged." };
+        }
+        if (url.searchParams.has("error")) {
+          this.endSession("logged-out"); this.deviceFailure = "authorization-denied";
+          return { status: 400, message: "Login was not authorized. Return to Character Reference Builder and retry.", complete: true };
+        }
+        if (this.status === "token-exchange-pending" || this.status === "callback-received") {
+          return { status: 409, message: "This login callback is already being processed." };
+        }
+        let result: OAuthResult<{ account: OAuthAccountSummary }>;
+        try {
+          result = await this.handleCallback({ state: attempt.state, codes: url.searchParams.getAll("code"),
+            sessionId, issuer: url.searchParams.get("iss"), clientId: url.searchParams.get("client_id"),
+            redirectUri: listener.redirectUri }, controller.signal);
+        } catch {
+          if (this.browser === attempt) { this.endSession("logged-out"); this.deviceFailure = "credential-save-failed"; }
+          return { status: 500, message: "Login could not be saved securely. Return to Character Reference Builder and retry.", complete: true };
+        }
+        if (this.browser !== attempt || controller.signal.aborted) {
+          return { status: 410, message: "This login has ended. Return to Character Reference Builder." };
+        }
+        if (result.ok) {
+          this.browser = null;
+          if (this.browserTimer) clearTimeout(this.browserTimer);
+          this.browserTimer = null;
+          return { status: 200, message: "ChatGPT/Codex connected. Return to Character Reference Builder. You may close this tab.", complete: true };
+        }
+        const failure = result.reason;
+        this.endSession("logged-out"); this.deviceFailure = failure;
+        return { status: 400, message: "Login could not complete. Return to Character Reference Builder and retry.", complete: true };
+      }, controller.signal);
+      if (!this.isCurrent(generation) || controller.signal.aborted) { controller.abort(); return this.viewForSession(sessionId); }
+      const start = this.startAuthorization(sessionId, listener.redirectUri);
+      if (!start.ok) throw new Error(start.reason);
+      const attempt = { sessionId, state: start.state, authorizationUrl: start.authorizationUrl, expiresAt: start.expiresAt };
+      this.browser = attempt;
+      this.browserTimer = setTimeout(() => {
+        if (this.browser === attempt) { this.endSession("logged-out"); this.deviceFailure = "authorization-expired"; }
+      }, AUTHORIZATION_TTL_MS);
+      this.browserTimer.unref?.();
+    } catch (error) {
+      if (this.isCurrent(generation)) {
+        this.endSession("logged-out");
+        this.deviceFailure = (error as NodeJS.ErrnoException)?.code === "EADDRINUSE" ? "callback-port-in-use" : "browser-start-failed";
+      }
+    }
+    return this.viewForSession(sessionId);
   }
 
   async startDeviceAuthorization(sessionId: string): Promise<BrowserSafeSessionView> {
@@ -367,7 +454,7 @@ export class OAuthSessionAdapter {
     try {
       const authorization = await this.transports.startDevice(controller.signal);
       if (!this.isCurrent(generation) || controller.signal.aborted) return this.browserView();
-      if (authorization.verificationUrl !== this.target.authorizationEndpoint) throw new Error("unexpected-device-page");
+      if (authorization.verificationUrl !== (this.target.deviceAuthorizationEndpoint ?? this.target.authorizationEndpoint)) throw new Error("unexpected-device-page");
       this.device = { authorization, sessionId, generation, controller,
         expiresAt: this.clock.now() + authorization.expiresInMs, nextPollAt: this.clock.now() + authorization.intervalMs };
     } catch {
@@ -414,6 +501,7 @@ export class OAuthSessionAdapter {
   viewForSession(sessionId: string): BrowserSafeSessionView {
     const view = this.browserView();
     if (this.device && this.device.sessionId !== sessionId) view.device = null;
+    if (this.browser && this.browser.sessionId !== sessionId) view.browser = null;
     return view;
   }
 
@@ -444,7 +532,7 @@ export class OAuthSessionAdapter {
    * Begin an authorization transaction. The state is one-time, bound to the
    * local session and to this Provider target, and expires with the code.
    */
-  startAuthorization(sessionId: string): OAuthResult<AuthorizationStart> {
+  startAuthorization(sessionId: string, redirectUri = this.target?.redirectUri): OAuthResult<AuthorizationStart> {
     if (!this.target) {
       this.lastFailureState = "provider-not-configured";
       return { ok: false, reason: "provider-not-configured" };
@@ -452,7 +540,7 @@ export class OAuthSessionAdapter {
     const target = this.target;
     let redirect: URL;
     try {
-      redirect = new URL(target.redirectUri);
+      redirect = new URL(redirectUri!);
     } catch {
       this.lastFailureState = "invalid-redirect-uri";
       return { ok: false, reason: "invalid-redirect-uri" };
@@ -464,13 +552,14 @@ export class OAuthSessionAdapter {
 
     const pkce = createPkcePair();
     const state = oneTimeState();
+    this.transactions.clear();
     this.transactions.set(state, {
       state,
       codeVerifier: pkce.verifier,
       codeChallenge: pkce.challenge,
       providerId: target.id,
       sessionId,
-      redirectUri: target.redirectUri,
+      redirectUri: redirect.toString(),
       issuer: target.issuer,
       clientId: target.clientId,
       createdAt: this.clock.now(),
@@ -478,9 +567,10 @@ export class OAuthSessionAdapter {
     });
 
     const authorizationUrl = new URL(target.authorizationEndpoint);
+    for (const [key, value] of Object.entries(target.authorizationParameters ?? {})) authorizationUrl.searchParams.set(key, value);
     authorizationUrl.searchParams.set("response_type", "code");
     authorizationUrl.searchParams.set("client_id", target.clientId);
-    authorizationUrl.searchParams.set("redirect_uri", target.redirectUri);
+    authorizationUrl.searchParams.set("redirect_uri", redirect.toString());
     authorizationUrl.searchParams.set("scope", target.minimumScopes.join(" "));
     authorizationUrl.searchParams.set("state", state);
     authorizationUrl.searchParams.set("code_challenge", pkce.challenge);
@@ -505,7 +595,7 @@ export class OAuthSessionAdapter {
    * code. The state is consumed before the exchange so a replayed callback can
    * never produce a second token.
    */
-  async handleCallback(input: CallbackInput): Promise<OAuthResult<{ account: OAuthAccountSummary }>> {
+  async handleCallback(input: CallbackInput, signal?: AbortSignal): Promise<OAuthResult<{ account: OAuthAccountSummary }>> {
     const target = this.target;
     const generation = this.generation;
     if (!target) {
@@ -525,7 +615,7 @@ export class OAuthSessionAdapter {
     if (transaction.providerId !== target.id) return this.fail("provider-mismatch");
     if (input.issuer !== null && input.issuer !== target.issuer) return this.fail("wrong-issuer");
     if (input.clientId !== null && input.clientId !== target.clientId) return this.fail("wrong-client");
-    if (input.redirectUri !== null && input.redirectUri !== target.redirectUri) {
+    if (input.redirectUri !== null && input.redirectUri !== transaction.redirectUri) {
       return this.fail("wrong-redirect-uri");
     }
     const codes = input.codes.filter((code) => typeof code === "string" && code.length > 0);
@@ -546,9 +636,10 @@ export class OAuthSessionAdapter {
       response = await exchange({
         tokenEndpoint: target.tokenEndpoint,
         clientId: target.clientId,
-        redirectUri: target.redirectUri,
+        redirectUri: transaction.redirectUri,
         code: codes[0],
         codeVerifier: transaction.codeVerifier,
+        ...(signal ? { signal } : {}),
       });
     } catch (error) {
       if (!this.isCurrent(generation)) return this.stale();
@@ -602,7 +693,7 @@ export class OAuthSessionAdapter {
       accountId, displayName: response.account?.name ?? response.account?.email ?? accountId,
       provider: target.provider, ...(response.account?.workspaceId ? { workspaceId: response.account.workspaceId } : {}),
     };
-    await this.mutateCredential(async () => {
+    try { await this.mutateCredential(async () => {
       if (this.isCurrent(commitGeneration)) {
         if (previousAccount && previousAccount.accountId !== accountId) {
           await this.store.delete(this.tokenKey(previousAccount.accountId));
@@ -618,7 +709,18 @@ export class OAuthSessionAdapter {
           await this.store.delete(this.activeKey());
         }
       }
-    });
+    }); } catch {
+      await this.mutateCredential(async () => {
+        if (this.isCurrent(commitGeneration)) {
+          await this.store.delete(this.tokenKey(accountId));
+          await this.store.delete(this.activeKey());
+        }
+      }).catch(() => {});
+      if (this.isCurrent(commitGeneration)) {
+        this.endSession("logged-out"); this.deviceFailure = "credential-save-failed";
+      }
+      throw new Error("credential-save-failed");
+    }
     if (!this.isCurrent(commitGeneration)) return this.stale();
     if (previousAccount && previousAccount.accountId !== accountId) {
       revokeSessionsForAccount(previousAccount.accountId);
@@ -649,6 +751,12 @@ export class OAuthSessionAdapter {
     } finally {
       if (this.refreshInFlight === pending) this.refreshInFlight = null;
     }
+  }
+
+  /** Account reads may renew authentication without granting any model call. */
+  async refreshIfNeeded(): Promise<void> {
+    if (["authenticated", "refresh-pending"].includes(this.status) &&
+        this.expiresAtState !== null && this.expiresAtState <= this.clock.now() + 30_000) await this.refresh();
   }
 
   private async performRefresh(): Promise<OAuthResult<{ tokens: OAuthTokens }>> {
@@ -711,6 +819,10 @@ export class OAuthSessionAdapter {
     await this.mutateCredential(async () => {
       if (this.isCurrent(generation, account)) {
         await this.store.set(this.tokenKey(account.accountId), JSON.stringify(tokens));
+        if (this.isCurrent(generation, account)) {
+          await this.store.set(this.activeKey(), JSON.stringify({ clientId: target.clientId,
+            version: target.implementationVersion, account, scopesKnown: response.tokens?.scopes !== undefined || this.scopesKnown }));
+        }
         if (!this.isCurrent(generation, account)) {
           await this.store.delete(this.tokenKey(account.accountId));
         }
@@ -875,6 +987,7 @@ export class OAuthSessionAdapter {
       scopesKnown: this.scopesKnown,
       device: this.device ? { userCode: this.device.authorization.userCode, verificationUrl: this.device.authorization.verificationUrl,
         intervalMs: this.device.authorization.intervalMs, expiresAt: this.device.expiresAt } : null,
+      browser: this.browser ? { authorizationUrl: this.browser.authorizationUrl, expiresAt: this.browser.expiresAt, intervalMs: 1500 } : null,
       failure: this.deviceFailure ?? this.lastFailureState,
     };
   }
@@ -911,14 +1024,16 @@ export class OAuthSessionAdapter {
   }
 }
 
-let activeAdapter: OAuthSessionAdapter | null = null;
+// Next dev reloads and separately compiled routes must share one session,
+// listener and refresh lock within the local server process.
+const adapterState = globalThis as typeof globalThis & { __crbOAuthAdapter?: OAuthSessionAdapter };
 
 export function oauthSession(): OAuthSessionAdapter {
-  if (!activeAdapter) {
+  if (!adapterState.__crbOAuthAdapter) {
     const target = codexOAuthTarget();
-    activeAdapter = new OAuthSessionAdapter({ target, ...(target ? { transports: codexOAuthTransports(target.clientId) } : {}) });
+    adapterState.__crbOAuthAdapter = new OAuthSessionAdapter({ target, transports: codexOAuthTransports(target.clientId) });
   }
-  return activeAdapter;
+  return adapterState.__crbOAuthAdapter;
 }
 
 /**
@@ -931,13 +1046,13 @@ export function configureOAuthProviderTarget(
   transports?: Partial<OAuthTransports>,
   store?: CredentialStore,
 ): OAuthSessionAdapter {
-  activeAdapter = new OAuthSessionAdapter({ target, transports, store });
-  return activeAdapter;
+  adapterState.__crbOAuthAdapter = new OAuthSessionAdapter({ target, transports, store });
+  return adapterState.__crbOAuthAdapter;
 }
 
 /** Test seam: back to the unconfigured singleton. */
 export function resetOAuthSessionForTest(): void {
-  activeAdapter = new OAuthSessionAdapter({ target: null });
+  adapterState.__crbOAuthAdapter = new OAuthSessionAdapter({ target: null });
 }
 
 /** The account summary shape the local session store keeps (no secrets). */

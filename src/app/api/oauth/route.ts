@@ -5,9 +5,10 @@ import { attachAccountSummary } from "@/lib/security/localSession.server";
 
 export const dynamic = "force-dynamic";
 
-export const GET = withPrivilegedApi(["auth-state-change", "local-file-read"], async (_request, { session }) => {
+export const GET = withPrivilegedApi(["auth-state-change", "cloud-request", "local-file-read", "local-file-write"], async (_request, { session }) => {
   const adapter = oauthSession();
   await adapter.restore();
+  await adapter.refreshIfNeeded();
   const oauth = adapter.viewForSession(session.sessionId);
   if (oauth.account) attachAccountSummary(session.sessionId, accountSummaryOf(oauth.account));
   return NextResponse.json({ success: true, oauth, available: Boolean(adapter.providerTarget),
@@ -23,10 +24,15 @@ export const POST = withPrivilegedApi(["auth-state-change", "cloud-request", "lo
   const action = body.action;
   try {
     if (action === "start" || action === "switch") {
-      if (!adapter.providerTarget) return NextResponse.json({ success: false, reason: "client-registration-required", error: "该服务商尚未向本应用开放授权，当前无法连接。接入状态与后续操作见登录验证记录。" }, { status: 409 });
+      if (!adapter.providerTarget) return NextResponse.json({ success: false, reason: "provider-not-configured", error: "登录服务未配置，请重启应用后重试。" }, { status: 409 });
+      // Legacy "switch" requests obey the same explicit logout requirement.
+      // Never replace a connected account as a side effect of starting login.
+      if (adapter.browserView().account) return NextResponse.json({ success: false, reason: "logout-required", error: "请先退出当前账号，再登录其他账号或重新认证。" }, { status: 409 });
+      if (body.method !== undefined && body.method !== "browser" && body.method !== "device") return NextResponse.json({ success: false, error: "Unknown login method" }, { status: 400 });
       // Keep this initiating capability usable; older account-bound pages are revoked.
       attachAccountSummary(session.sessionId, null);
-      await adapter.startDeviceAuthorization(session.sessionId);
+      if (body.method === "device") await adapter.startDeviceAuthorization(session.sessionId);
+      else await adapter.startBrowserAuthorization(session.sessionId);
     } else if (action === "poll") {
       await adapter.pollDeviceAuthorization(session.sessionId);
     } else if (action === "cancel" || action === "logout") {

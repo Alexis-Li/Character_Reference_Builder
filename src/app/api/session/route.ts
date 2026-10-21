@@ -62,8 +62,9 @@ export async function GET(request: Request) {
 
   await oauthSession().restore();
   const account = oauthSession().browserView();
-  // Device transactions belong only to the initiating capability.
+  // Pending transactions belong only to the initiating capability.
   account.device = null;
+  account.browser = null;
   const issued = issueBrowserSession(origin, account.account);
   const response = NextResponse.json({
     success: true,

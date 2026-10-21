@@ -12,7 +12,7 @@ $resolvedRepoRoot = (Get-Item -LiteralPath $RepoRoot).FullName
 $tempRoot = Get-CrbTempRoot -RepoRoot $resolvedRepoRoot
 $mutexName = "Local\CharacterReferenceBuilder.Server.$Port"
 $createdNew = $false
-$serverMutex = [System.Threading.Mutex]::new($false, $mutexName, [ref]$createdNew)
+$serverMutex = [System.Threading.Mutex]::new($true, $mutexName, [ref]$createdNew)
 
 if (-not $createdNew) {
   Write-Error "A managed Character Reference Builder server is already running on port $Port."

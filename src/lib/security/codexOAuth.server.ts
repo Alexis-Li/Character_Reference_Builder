@@ -7,6 +7,7 @@
 import type { OAuthProviderTarget, OAuthTransports, TokenExchangeResponse } from "./oauthSession.server";
 import { anonymousConnection, bindCredentialToDestination } from "./providerConnection";
 import { fetchWithConnectionPolicy } from "./outboundPolicy.server";
+import { listenOAuthCallback } from "./oauthCallback.server";
 
 export const CODEX_ISSUER = "https://auth.openai.com";
 export const CODEX_DEVICE_PAGE = `${CODEX_ISSUER}/codex/device`;
@@ -14,19 +15,26 @@ const DEVICE_START = `${CODEX_ISSUER}/api/accounts/deviceauth/usercode`;
 const DEVICE_POLL = `${CODEX_ISSUER}/api/accounts/deviceauth/token`;
 const TOKEN_ENDPOINT = `${CODEX_ISSUER}/oauth/token`;
 const DEVICE_REDIRECT = `${CODEX_ISSUER}/deviceauth/callback`;
+export const CODEX_PUBLIC_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+export const CODEX_BROWSER_REDIRECT = "http://127.0.0.1:1455/auth/callback";
 
-/** No reuse of another application's client identity without permission. */
-export function codexOAuthTarget(): OAuthProviderTarget | null {
-  const clientId = process.env.CRB_CODEX_OAUTH_CLIENT_ID?.trim();
-  if (!clientId) return null;
+/** Codex public native client, as used by the pinned community login flow. */
+export function codexOAuthTarget(): OAuthProviderTarget {
+  const clientId = process.env.CRB_CODEX_OAUTH_CLIENT_ID?.trim() || CODEX_PUBLIC_CLIENT_ID;
   return {
     id: "crb-codex-device-v1", provider: "chatgpt-codex",
     implementationSource: "can1357/oh-my-pi",
     implementationVersion: "4819e4f6d59049f307329d42b226b218582bdf38",
-    issuer: CODEX_ISSUER, authorizationEndpoint: CODEX_DEVICE_PAGE,
+    issuer: CODEX_ISSUER, authorizationEndpoint: `${CODEX_ISSUER}/oauth/authorize`,
     tokenEndpoint: TOKEN_ENDPOINT, revocationEndpoint: null,
-    clientId, redirectUri: DEVICE_REDIRECT, minimumScopes: [],
-    accountRestrictions: "Requires a Provider-authorized client identity and account/workspace with Codex device authorization and image tool access; actual scopes, quota and model availability remain unknown until reported.",
+    // Keep the native browser contract intact. Both pinned OMP and official
+    // Codex 0.163.0 request these connector scopes during consent; a reduced
+    // scope set is not a verified substitute for the native login flow.
+    clientId, redirectUri: CODEX_BROWSER_REDIRECT,
+    minimumScopes: ["openid", "profile", "email", "offline_access", "api.connectors.read", "api.connectors.invoke"],
+    authorizationParameters: { id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "character_reference_builder" },
+    deviceAuthorizationEndpoint: CODEX_DEVICE_PAGE,
+    accountRestrictions: "Local, user-controlled Codex login; account/workspace must allow Codex. Device login may require enabling it in account security settings. Login, subscription access and image tool availability are separate acceptance items.",
   };
 }
 
@@ -49,11 +57,11 @@ export function codexTokenResponse(raw: unknown, clientId: string): TokenExchang
   const data = record(raw);
   const access = jwt(data.access_token);
   const identity = jwt(data.id_token);
-  const auth = record(access["https://api.openai.com/auth"] ?? identity["https://api.openai.com/auth"] ?? {});
-  const profile = record(access["https://api.openai.com/profile"] ?? {});
-  const subject = text(identity.sub) ?? text(auth.chatgpt_user_id);
+  const auth = { ...record(identity["https://api.openai.com/auth"] ?? {}), ...record(access["https://api.openai.com/auth"] ?? {}) };
+  const profile = { ...record(identity["https://api.openai.com/profile"] ?? {}), ...record(access["https://api.openai.com/profile"] ?? {}) };
+  const subject = text(identity.sub) ?? text(access.sub) ?? text(auth.chatgpt_user_id);
   const workspaceId = text(auth.chatgpt_account_id);
-  const expiresIn = Number(data.expires_in);
+  const expiresIn = data.expires_in === undefined ? Number(access.exp) - Math.floor(Date.now() / 1000) : Number(data.expires_in);
   if (!text(data.access_token) || !subject || !workspaceId || !Number.isFinite(expiresIn) || expiresIn <= 0 ||
       (identity.iss !== undefined && identity.iss !== CODEX_ISSUER) ||
       (identity.aud !== undefined && !(Array.isArray(identity.aud) ? identity.aud.includes(clientId) : identity.aud === clientId))) {
@@ -84,15 +92,16 @@ async function send(url: string, body: BodyInit, form: boolean, signal?: AbortSi
 }
 
 export function codexOAuthTransports(clientId: string): OAuthTransports {
-  const exchange = async (code: string, verifier: string, signal?: AbortSignal) => {
+  const exchange = async (code: string, verifier: string, redirectUri: string, signal?: AbortSignal) => {
     const response = await send(TOKEN_ENDPOINT, new URLSearchParams({
-      grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: DEVICE_REDIRECT,
+      grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: redirectUri,
     }), true, signal);
     if (!response.ok) return { ok: false, error: `token-exchange-http-${response.status}` };
     return codexTokenResponse(await response.json(), clientId);
   };
   return {
-    exchange: (request) => exchange(request.code, request.codeVerifier),
+    exchange: (request) => exchange(request.code, request.codeVerifier, request.redirectUri, request.signal),
+    listenForCallback: (receive, signal) => listenOAuthCallback(CODEX_BROWSER_REDIRECT, receive, signal),
     async startDevice(signal) {
       const response = await send(DEVICE_START, JSON.stringify({ client_id: clientId }), false, signal);
       if (!response.ok) throw new Error(`device-start-http-${response.status}`);
@@ -112,7 +121,7 @@ export function codexOAuthTransports(clientId: string): OAuthTransports {
       const data = record(await response.json());
       const code = text(data.authorization_code), verifier = text(data.code_verifier);
       if (!code || !verifier) throw new Error("invalid-device-token-response");
-      return { pending: false as const, response: await exchange(code, verifier, signal) };
+      return { pending: false as const, response: await exchange(code, verifier, DEVICE_REDIRECT, signal) };
     },
     async refresh(request) {
       // Refresh material is in the form body, scoped to this fixed recipient.

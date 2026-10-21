@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ProjectSetupModal } from "@/components/ProjectSetupModal";
 import { ProviderSettings } from "@/types";
+import { createDefaultNodeData } from "@/store/utils/nodeDefaults";
 
 // Mock the workflow store
 const mockSetUseExternalImageStorage = vi.fn();
@@ -29,7 +30,7 @@ global.confirm = mockConfirm;
 
 // Ensure localStorage is always available in this test environment
 const localStorageMock = {
-  getItem: vi.fn(() => null),
+  getItem: vi.fn<Storage["getItem"]>(() => null),
   setItem: vi.fn(),
   removeItem: vi.fn(),
   clear: vi.fn(),
@@ -483,6 +484,33 @@ describe("ProjectSetupModal", () => {
   });
 
   describe("Save Behavior", () => {
+    it("keeps the OAuth default when choosing it in Providers then saving the Project tab", async () => {
+      const saved = new Map<string, string>();
+      localStorageMock.getItem.mockImplementation((key: string) => saved.get(key) ?? null);
+      localStorageMock.setItem.mockImplementation((key: string, value: string) => { saved.set(key, value); });
+      mockFetch.mockImplementation(async (url: string) => ({ ok: true, json: async () => url === "/api/oauth"
+        ? { available: true, oauth: { state: "authenticated", account: { displayName: "synthetic@example.invalid" }, expiresAt: Date.now() + 60000 } }
+        : url.startsWith("/api/workflow") ? { exists: true, isDirectory: true } : {} }));
+      const onSave = vi.fn();
+      try {
+        render(<ProjectSetupModal isOpen onClose={vi.fn()} onSave={onSave} mode="new" />);
+        fireEvent.change(screen.getByPlaceholderText("my-project"), { target: { value: "oauth-project" } });
+        fireEvent.change(screen.getByPlaceholderText("/Users/username/projects/my-project"), { target: { value: "/synthetic/projects" } });
+        fireEvent.click(screen.getByRole("button", { name: "Providers", exact: true }));
+        fireEvent.click(await screen.findByRole("button", { name: "设为图像任务默认入口", exact: true }));
+        fireEvent.click(screen.getByRole("button", { name: "Project", exact: true }));
+        fireEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+        await waitFor(() => expect(onSave).toHaveBeenCalled());
+        // The real node factory must inherit the channel; a UI message alone
+        // does not prove a new part task will use the account just selected.
+        expect(createDefaultNodeData("nanoBanana")).toMatchObject({ selectedModel: {
+          provider: "openai", modelId: "codex-image", authChannel: "oauth" } });
+      } finally {
+        localStorageMock.getItem.mockReset().mockReturnValue(null);
+        localStorageMock.setItem.mockReset();
+      }
+    });
+
     it("should call onSave with project details when form is valid", async () => {
       mockFetch.mockImplementation((url: string) => {
         if (url === "/api/env-status") {

@@ -52,23 +52,48 @@ python scripts/validation/probe_local_storage.py --base-url http://127.0.0.1:321
 
 ## OAuth 产品接入浏览器回归
 
-`oauth-ui.cjs` 验证当前产品的真实回环 HTTP 会话／来源边界及合成 OAuth 设置路径。启动前不要配置真实客户端身份；脚本先检查原生入口未就绪，再拦截授权状态及外部页面为合成值。覆盖连接、轮询、账号摘要、保存默认入口、切换和取消，断言登录不生成；不登录真实账号，不等同真实 Provider 验收。
+`oauth-ui.cjs` 自行启动并停止隔离的开发／生产服务，使用真实设置 UI、特权路由、本机 PKCE 回调和受保护存储；只用 `oauth-provider-fixture.cjs` 的显式 Node preload 替换外部 Provider 的页面及令牌响应。不拦截 `/api/oauth`，覆盖浏览器授权、设备码、账号摘要、保存默认入口、取消、退出后重新登录、清理测试临时叶目录后的跨进程重启恢复及自动刷新。断言未请求生成，拒绝外部网络；不用真实账号，不等同真实 Provider 验收。
 
 需要可用的 Playwright 与 Chromium。可把验证专用依赖装在 `<CRB_TEMP_ROOT>/validation/`，通过 `CRB_PLAYWRIGHT_MODULE` 指向其 Playwright 模块；`CRB_CHROMIUM_PATH` 可指定本机浏览器。无需修改产品依赖或锁文件。`CRB_TEMP_ROOT` 必须先按本机约定设置。
 
-开发终端：
+项目根目录运行（无需另开服务）：
 
 ```powershell
-$env:CRB_PORT = '3212'
-npm run dev
-```
-
-验证终端（项目根目录）：
-
-```powershell
-$env:CRB_BASE_URL = 'http://127.0.0.1:3212'
+. ./scripts/resolve-temp-root.ps1
+$env:CRB_TEMP_ROOT = [IO.Path]::GetFullPath((Join-Path (Get-Location) '../.tmp'))
 $env:CRB_VALIDATION_MODE = 'development'
 node scripts/validation/oauth-ui.cjs
 ```
 
-停止开发服务，再运行 `npm run build`、`npm run start`；将 `CRB_BASE_URL` 改为 `http://127.0.0.1:3210`、`CRB_VALIDATION_MODE` 改为 `production` 后复跑。退出码 0 表示通过；证据写入 `<CRB_TEMP_ROOT>/validation/issue-10-oauth/<模式>/`。设备用户码及账号摘要全部为合成值，结果 JSON 明确标记拦截范围。云端结果与待本机项目见 [#10 验证第 13 节](../../docs/validation/security-gate-issue-10.md#13-2026-10-05-云端产品接入验证)。
+生产模式先构建：
+
+```powershell
+npm run build
+$env:CRB_VALIDATION_MODE = 'production'
+node scripts/validation/oauth-ui.cjs
+```
+
+默认开发端口 3214、生产端口 3215，可用 `CRB_PORT` 覆盖；已占用时拒绝启动，不接管其他服务。回调端口 1455 也须空闲。脚本覆盖任何客户端 ID 环境设置为内置公共客户端，并使用新建的应用私有 `crb-oauth-synthetic-*` 凭据目录，结束时仅删除其自身目录，不读取默认真实凭据。该隔离凭据目录是测试持久存储合约所必需，位于系统应用数据目录；其余证据、日志和临时材料都在 `CRB_TEMP_ROOT`。
+
+退出码 0 通过，1 为准备／验证失败；`--help` 显示参数。证据写入 `<CRB_TEMP_ROOT>/validation/issue-10-browser-oauth/<模式>/`，包含截图、服务日志和明确区分合成边界的结果 JSON。预加载夹具不被产品代码导入，不改变正常启动。不得将它用于真实登录。历史云端结果及本轮本机验收见 [#10 验证记录](../../docs/validation/security-gate-issue-10.md)。
+
+重启续期检查使用 60 秒合成有效期：停止首个服务后进入 30 秒续期窗口，再启动新进程。独立合成审计只记录服务代次与刷新事件，断言重启前没有刷新、重启后仅一次且来自第二代服务；不会把重启前已续期的令牌当作重启后刷新成功。
+
+## Windows 跨用户凭据隔离
+
+`.github/workflows/windows-dpapi.yml` 在一次性 `windows-2025` GitHub-hosted runner 运行真实产品 DPAPI 存储。通过 GitHub Actions 手动触发或匹配路径的 PR 触发；不在日常电脑执行用户创建。`windows-dpapi.ps1` 必须同时具备 `-CreateTestUser`、GitHub Actions、Windows 和 `RUNNER_ENVIRONMENT=github-hosted` 标志，自托管 runner 也被拒绝。
+
+测试只用新建合成值，验证第二个 SID 可读取同一密文、该身份自身 DPAPI 可用、无法解密原用户密文、产品读取为空且原用户仍能解密。临时普通用户及任务叶目录按 SID／路径检查后清理，结果 JSON 保留七天，不上传凭据。首次产物上传曾因包含 `..` 的路径失败，工作流已改用规范化绝对结果路径；只有整项成功的运行可作为验收证据。
+
+## 本人监督的真实 OAuth 生命周期
+
+```powershell
+$env:CRB_TEMP_ROOT = [IO.Path]::GetFullPath((Join-Path (Get-Location) '../.tmp'))
+node scripts/validation/oauth-live-lifecycle.cjs --live
+```
+
+需要 Windows／Node 24；不带 `--live` 时拒绝执行，`--help` 说明参数，`--check-runtime` 只加载生产模块。脚本使用全新应用私有凭据目录及独立回调，授权链接留在任务私有文件，由本人打开并完成登录；不读取日常账号或其他应用认证文件，不发起模型请求。缩短的仅是第一次恢复读取的过期元数据，真实 token、HTTPS 交换、轮换和并发单飞保持生产实现；报告明确标注受控过期触发，不声称自然等待到期。
+
+脚本还在真实刷新返回后暂存结果，开始新登录代次再释放，验证旧结果／许可失效，最后本地退出并确认不可恢复；不等同切到第二个真实账号。添加 `--denial-only` 时只等待本人在服务商页面拒绝，要求真实拒绝回调、零交换／刷新、无账号和回调释放。服务商取消按钮若直接回到 ChatGPT 而不回调，该检查会因本地等待到期失败；本人取消的观察和未收到拒绝回调应分别记录，不能把超时改写为 `access_denied` 验收通过。
+
+结果位于 `<CRB_TEMP_ROOT>/scratch/crb-issue-10-acceptance/live-lifecycle-*/`。私有授权链接成功后删除，凭据经该隔离适配器正常退出清除；不远端撤销，不改变日常登录。退出码 0 表示所记录范围通过，1 为准备／验证失败；不同账号、拒绝回调和图像能力各自验收。

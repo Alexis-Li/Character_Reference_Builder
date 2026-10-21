@@ -267,8 +267,8 @@ describe("OAuth session adapter", () => {
     const h = createHarness();
 
     const first = authorizationStart(h.session);
-    const second = authorizationStart(h.session);
     await h.session.handleCallback(callbackFor(first.state));
+    const second = authorizationStart(h.session);
     await h.session.handleCallback(callbackFor(second.state));
 
     expect(h.exchanges).toHaveLength(2);
