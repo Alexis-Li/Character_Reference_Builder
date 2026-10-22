@@ -222,8 +222,7 @@ async function externalizeNodeMedia(
       // Handle output image - AI generated, save to generations.
       // The selection is a stable candidate id; the index is only a view
       // cursor and must never reassign the selected asset after truncation.
-      // Files are addressed by the candidate's asset id so content dedupe
-      // reuses bytes without rewriting candidate identity.
+      // Files are addressed by the candidate's asset id to preserve identity.
       const expectedRef = selectedImageAssetId(d);
       if (isDataUrl(outputImage)) {
         // Keep bytes out of portable text sanitization and keep the stable
@@ -977,15 +976,20 @@ async function hydrateNodeMedia(
     case "nanoBanana": {
       const d = data as import("@/types").NanoBananaNodeData;
       let outputImage = d.outputImage;
+      let outputImageRef = d.outputImageRef;
       const inputImages = [...(d.inputImages || [])];
 
       // Older externalized saves left an inline output that path scrubbing
-      // could corrupt. Its independent candidate file remains authoritative.
+      // could corrupt, or a ref from a previously viewed candidate. Resolve
+      // the selected asset first: bytes from a stale ref must never be cached
+      // or saved under the selected candidate's identity. A missing selected
+      // file stays unresolved rather than falling back to another candidate.
       const corruptInline = isDataUrl(outputImage) && outputImage.includes("[local-path-redacted]");
-      const outputRef = d.outputImageRef ?? (corruptInline ? selectedImageAssetId(d) : undefined);
-      if (outputRef && (!outputImage || corruptInline)) {
-        const restored = await loadMediaById(outputRef, workflowPath, loadedMedia, "image");
-        if (restored) outputImage = restored;
+      if (!outputImage || corruptInline) {
+        outputImageRef = selectedImageAssetId(d) ?? outputImageRef;
+        outputImage = outputImageRef
+          ? await loadMediaById(outputImageRef, workflowPath, loadedMedia, "image") || null
+          : null;
       }
 
       // Hydrate input images from refs
@@ -1002,6 +1006,7 @@ async function hydrateNodeMedia(
         ...d,
         inputImages,
         outputImage,
+        outputImageRef,
       };
       break;
     }
