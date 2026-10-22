@@ -159,6 +159,36 @@ describe("CRB-06 real project files", () => {
     ]);
   });
 
+  it("retains call hashes, channel, unknown billing and candidate identity across a real disk save", async () => {
+    const filePath = path.join(projectDirectory, "evidence.json");
+    const source = workflow(projectDirectory);
+    const record = { id: "request", status: "completed", createdAt: 1, updatedAt: 2, actualCostUsd: null,
+      outputCandidateId: "candidate-front", providerCall: { at: 1, completedAt: 2,
+        authChannel: "oauth", requestedModelId: "gpt-image-2", referenceSha256: [digest(SOURCE)],
+        outputSha256: [digest(FRONT)], usage: { source: "codex-images", metrics: { input_tokens: 10 } } } };
+    source.nodes![1].data!.requestHistory = [record];
+    await savePortableWorkflow(projectDirectory, filePath, source);
+    const reopened = await readRecoverableJson<PersistableWorkflow>(filePath);
+    expect(reopened.nodes![1].data!.requestHistory).toEqual([record]);
+    expect(reopened.assetManifest?.assets.find(asset => asset.id === record.outputCandidateId)?.sha256).toBe(record.providerCall.outputSha256[0]);
+  });
+
+  it("persists an inconclusive OpenAI request without inventing usage, output or billing", async () => {
+    const filePath = path.join(projectDirectory, "unknown-request.json");
+    const source = workflow(projectDirectory);
+    const record = { id: "unknown-request", status: "unknown", createdAt: 1, updatedAt: 2,
+      actualCostUsd: null, querySupport: "unsupported", providerCall: {
+        at: 1, completedAt: 2, stage: "failed", provider: "openai", authChannel: "api-key",
+        requestedModelId: "gpt-image-1", promptSha256: "prompt-hash", referenceSha256: [digest(SOURCE)],
+      } };
+    source.nodes![1].data!.requestHistory = [record];
+    await savePortableWorkflow(projectDirectory, filePath, source);
+    const reopened = await readRecoverableJson<PersistableWorkflow>(filePath);
+    expect(reopened.nodes![1].data!.requestHistory).toEqual([record]);
+    expect(reopened.characterProject?.selection).toEqual(source.characterProject?.selection);
+    expect(await fs.readFile(path.join(projectDirectory, "generations/blob-front.png"))).toEqual(FRONT);
+  });
+
   it("loads after directory migration and reports one missing image without clearing other assets", async () => {
     const filePath = path.join(projectDirectory, "project.json");
     await savePortableWorkflow(projectDirectory, filePath, workflow(projectDirectory));

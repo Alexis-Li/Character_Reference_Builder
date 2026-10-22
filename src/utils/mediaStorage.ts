@@ -1,6 +1,7 @@
 import { WorkflowNode, WorkflowNodeData } from "@/types";
 import { WorkflowFile } from "@/store/workflowStore";
 import crypto from "crypto";
+import type { NanoBananaNodeData } from "@/types";
 
 /**
  * Fetch with timeout support using AbortController
@@ -70,6 +71,15 @@ function isHttpUrl(str: string | null | undefined): boolean {
  */
 function isDataUrl(str: string | null | undefined): str is string {
   return typeof str === "string" && str.startsWith("data:");
+}
+
+function selectedImageAssetId(data: NanoBananaNodeData): string | undefined {
+  // null is an explicit user clear; an absent id belongs to older index-based saves.
+  if (data.selectedHistoryId === null) return undefined;
+  const history = data.imageHistory ?? [];
+  const item = history.find(item => item.id === data.selectedHistoryId)
+    ?? history[data.selectedHistoryIndex ?? 0];
+  return item ? item.assetId ?? item.id : undefined;
 }
 
 /**
@@ -214,15 +224,14 @@ async function externalizeNodeMedia(
       // Handle output image - AI generated, save to generations.
       // The selection is a stable candidate id; the index is only a view
       // cursor and must never reassign the selected asset after truncation.
-      // Files are addressed by the candidate's asset id so content dedupe
-      // reuses bytes without rewriting candidate identity.
-      const selectedIndex = d.selectedHistoryIndex || 0;
-      const stableSelection =
-        d.selectedHistoryId != null && d.imageHistory?.some((h) => h.id === d.selectedHistoryId)
-          ? d.selectedHistoryId
-          : undefined;
-      const selectedItem = d.imageHistory?.find((h) => h.id === (stableSelection ?? d.imageHistory?.[selectedIndex]?.id));
-      const expectedRef = selectedItem ? (selectedItem.assetId ?? selectedItem.id) : undefined;
+      // Files are addressed by the candidate's asset id to preserve identity.
+      const expectedRef = selectedImageAssetId(d);
+      if (isDataUrl(outputImage)) {
+        // Keep bytes out of portable text sanitization and keep the stable
+        // selected asset even when a newer unselected candidate exists.
+        outputImageRef = await saveImageAndGetId(outputImage, workflowPath, savedImageIds, "generations", expectedRef ?? outputImageRef);
+        outputImage = null;
+      }
 
       // Handle input images array (these come from connected nodes, save to inputs if present)
       // Skip if corresponding inputImageRef already exists
@@ -969,10 +978,21 @@ async function hydrateNodeMedia(
     case "nanoBanana": {
       const d = data as import("@/types").NanoBananaNodeData;
       let outputImage = d.outputImage;
+      let outputImageRef = d.outputImageRef;
       const inputImages = [...(d.inputImages || [])];
 
-      if (d.outputImageRef && !d.outputImage) {
-        outputImage = await loadMediaById(d.outputImageRef, workflowPath, loadedMedia, "image");
+      // Older externalized saves left an inline output that path scrubbing
+      // could corrupt, or a ref from a previously viewed candidate. Resolve
+      // the selected asset first: bytes from a stale ref must never be cached
+      // or saved under the selected candidate's identity. A missing selected
+      // file stays unresolved rather than falling back to another candidate.
+      const corruptInline = isDataUrl(outputImage) && outputImage.includes("[local-path-redacted]");
+      if (!outputImage || corruptInline) {
+        const hasSelection = typeof d.selectedHistoryId === "string" || typeof d.selectedHistoryIndex === "number";
+        outputImageRef = (hasSelection ? selectedImageAssetId(d) : undefined) ?? outputImageRef;
+        outputImage = outputImageRef
+          ? await loadMediaById(outputImageRef, workflowPath, loadedMedia, "image") || null
+          : null;
       }
 
       // Hydrate input images from refs
@@ -989,6 +1009,7 @@ async function hydrateNodeMedia(
         ...d,
         inputImages,
         outputImage,
+        outputImageRef,
       };
       break;
     }

@@ -4,6 +4,7 @@
  * 83086188ae0614bd882818ff1aa23f3194962012/codex-rs/codex-api/src/{images.rs,endpoint/images.rs}.
  * JSON image requests, no automatic replay, endpoint fallback or account rotation.
  */
+import { inputEvidence, imageSha256, reportedUsage } from "@/lib/providers/callEvidence.server";
 import type { GenerationInput, GenerationOutput } from "@/lib/providers/types";
 import { imageCapabilities, checkReferenceGaps, effectiveReferences, summarizePurposes, type ProviderCallRecord } from "@/lib/providers/imageCapabilities";
 import { oauthSession } from "@/lib/security/oauthSession.server";
@@ -118,13 +119,15 @@ export async function generateWithOpenAIOAuth(
     referenceCount: references.length, ...purposes, hasMask: false, auth: "oauth",
   };
   const referenceRoles = references.flatMap((ref, index) => ref.purpose ? [`Reference ${index + 1} purpose: ${ref.purpose}`] : []);
+  const wirePrompt = [INSTRUCTIONS, ...referenceRoles, input.prompt].join("\n\n");
+  Object.assign(call, inputEvidence(wirePrompt, references), { requestedModelId: CODEX_IMAGE_MODEL });
   let sent = false;
   try {
     const result = await fetchWithConnectionPolicy({ connection: binding.connection, url: endpoint,
       method: "POST", credential: binding.credential, placement: { header: "Authorization", prefix: "Bearer " },
       headers: { "Content-Type": "application/json", "Accept": "application/json", "ChatGPT-Account-Id": account.workspaceId,
         "originator": "character_reference_builder" },
-      body: JSON.stringify({ model: CODEX_IMAGE_MODEL, prompt: [INSTRUCTIONS, ...referenceRoles, input.prompt].join("\n\n"),
+      body: JSON.stringify({ model: CODEX_IMAGE_MODEL, prompt: wirePrompt,
         background: "opaque", quality: "auto", size: "auto",
         ...(references.length ? { images: references.map(ref => ({ image_url: ref.image })) } : {}) }),
       signal: AbortSignal.timeout(180_000), maxRedirects: 0,
@@ -135,10 +138,11 @@ export async function generateWithOpenAIOAuth(
       },
     });
     if (!result.ok) return { success: false, execution: sent ? "unknown" : "not-executed", statusUnknown: sent,
-      error: `OAuth 请求被接收方策略拒绝：${result.reason}`, ...(sent ? { call: { ...call, stage: "failed" } } : {}) };
+      error: `OAuth 请求被接收方策略拒绝：${result.reason}`, ...(sent ? { call: { ...call, completedAt: Date.now(), stage: "failed" } } : {}) };
     if (!result.response.ok) return { success: false, execution: "submitted",
-      error: `OAuth 图像服务返回 HTTP ${result.response.status}（${await providerRejection(result.response)}）；本次不会自动重试。`, call: { ...call, stage: "failed" } };
-    const response = await readJson(result.response, 48 * 1024 * 1024) as { data?: { b64_json?: unknown }[] };
+      error: `OAuth 图像服务返回 HTTP ${result.response.status}（${await providerRejection(result.response)}）；本次不会自动重试。`, call: { ...call, completedAt: Date.now(), stage: "failed" } };
+    const response = await readJson(result.response, 48 * 1024 * 1024) as { data?: { b64_json?: unknown }[]; usage?: unknown };
+    Object.assign(call, reportedUsage("codex-images", response?.usage));
     if (!Array.isArray(response?.data) || response.data.length !== 1) throw new Error("invalid-image-result");
     const encoded = response.data[0]?.b64_json;
     if (typeof encoded !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error("invalid-output-image");
@@ -147,12 +151,12 @@ export async function generateWithOpenAIOAuth(
     for (const mime of ["image/png", "image/jpeg", "image/webp"]) {
       if (await isDecodableRaster(mime, bytes)) return { success: true, execution: "submitted",
         outputs: [{ type: "image", data: `data:${mime};base64,${encoded}` }],
-        call: { ...call, stage: "succeeded" } };
+        call: { ...call, completedAt: Date.now(), outputSha256: [imageSha256(`data:${mime};base64,${encoded}`)], stage: "succeeded" } };
     }
     throw new Error("invalid-output-image");
   } catch {
     return { success: false, execution: sent ? "unknown" : "not-executed", statusUnknown: sent,
       error: sent ? "OAuth 图像请求未取得完整有效结果，上游状态未知。请保留已选版本，确认后再重试。" : "OAuth 账号或网络状态已改变，请重新连接或确认；本次图像请求未提交。",
-      ...(sent ? { call: { ...call, stage: "failed" } } : {}) };
+      ...(sent ? { call: { ...call, completedAt: Date.now(), stage: "failed" } } : {}) };
   }
 }

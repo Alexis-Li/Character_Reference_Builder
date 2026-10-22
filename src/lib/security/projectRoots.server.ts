@@ -4,8 +4,8 @@
  * A write target is only authorized when it sits below a root the application
  * has actually recorded: the role project data root, the disposable temp root,
  * an operator-configured root, or a directory the user pointed the app at
- * (native folder picker, or a project path the app has read/written in this
- * process). A request cannot authorize its own destination — that was the
+ * (native folder picker, or the explicit open-project action). Ordinary reads
+ * and writes cannot authorize their own destination — that was the
  * difference between "confined to the project" and "confined to whatever the
  * caller names".
  *
@@ -44,8 +44,8 @@ function normalize(candidate: string): string {
 
 /**
  * Operator-declared roots, comma separated. The only way to authorize a
- * directory the app has never seen, and therefore a deliberate configuration
- * decision rather than a request-supplied one.
+ * directory without an interactive selection/open action, and therefore a
+ * deliberate configuration decision rather than an ordinary write request.
  */
 function configuredRoots(): string[] {
   const raw = process.env.CRB_PROJECT_ROOTS?.trim();
@@ -59,9 +59,9 @@ function configuredRoots(): string[] {
 
 /**
  * Record a directory the user pointed the application at. Called from the
- * folder picker and from operator configuration — never from a bare request
- * body, because a request that can name its own write destination has not been
- * confined to anything.
+ * folder picker or the protected explicit project-open action, after directory
+ * and workflow validation. Never called by an ordinary read/save/media request:
+ * naming a write destination alone must not grant access to it.
  */
 export function registerProjectRoot(root: string | null | undefined): string | null {
   if (!root || root.trim().length === 0) return null;

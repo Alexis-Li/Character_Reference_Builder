@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as fs from "fs/promises";
-import * as path from "path";
 import { logger } from "@/utils/logger";
 import { joinWorkflowPath, validateWorkflowPath } from "@/utils/pathValidation";
 import {
-  auditProjectAssets,
-  readRecoverableJson,
   savePortableWorkflow,
   type PersistableWorkflow,
 } from "@/lib/projectFiles.server";
 import { withPrivilegedApi } from "@/lib/security/requestGuard.server";
 import { checkWriteTarget } from "@/lib/security/projectWriteScope.server";
+import { loadWorkflowDirectory } from "@/lib/workflowDirectory.server";
 import { redactSecretsInText } from "@/lib/security/secretRedaction";
 
 export const maxDuration = 300; // 5 minute timeout for large workflow files
@@ -210,6 +208,13 @@ export const GET = withPrivilegedApi(["local-file-read"], async (request: NextRe
     );
   }
 
+  if (shouldLoad) {
+    const result = await loadWorkflowDirectory(directoryPath);
+    return result.success
+      ? NextResponse.json(result)
+      : NextResponse.json({ success: false, error: result.error }, { status: result.status });
+  }
+
   try {
     const stats = await fs.stat(directoryPath);
     const isDirectory = stats.isDirectory();
@@ -220,72 +225,6 @@ export const GET = withPrivilegedApi(["local-file-read"], async (request: NextRe
         exists: true,
         isDirectory: false,
       });
-    }
-
-    // If load=true, find and return a workflow JSON from the directory
-    if (shouldLoad) {
-      const entries = await fs.readdir(directoryPath);
-      const jsonFiles = Array.from(new Set(
-        entries
-          .filter((file) => file.endsWith(".json") || file.endsWith(".json.previous"))
-          .map((file) => file.replace(/\.previous$/, "")),
-      ));
-
-      // Gather candidates with mtime for deterministic selection (newest first)
-      const candidates: { jsonFile: string; filePath: string; mtime: number }[] = [];
-      for (const jsonFile of jsonFiles) {
-        try {
-          const filePath = joinWorkflowPath(directoryPath, jsonFile);
-          let stat;
-          try {
-            stat = await fs.stat(filePath);
-          } catch {
-            stat = await fs.stat(`${filePath}.previous`);
-          }
-          candidates.push({ jsonFile, filePath, mtime: stat.mtimeMs });
-        } catch {
-          continue;
-        }
-      }
-      candidates.sort((a, b) => b.mtime - a.mtime);
-
-      for (const { jsonFile, filePath } of candidates) {
-        try {
-          const parsed = await readRecoverableJson<PersistableWorkflow>(filePath);
-
-          if (
-            typeof parsed.version === "number" &&
-            Array.isArray(parsed.nodes) &&
-            Array.isArray(parsed.edges)
-          ) {
-            const filename = path.basename(jsonFile, ".json");
-            const assetWarnings = await auditProjectAssets(directoryPath, parsed.assetManifest);
-            logger.info('file.load', 'Workflow loaded from directory', {
-              directoryPath,
-              filename: jsonFile,
-              assetWarningCount: assetWarnings.length,
-            });
-            return NextResponse.json({
-              success: true,
-              workflow: parsed,
-              filename,
-              assetWarnings,
-            });
-          }
-        } catch {
-          // Skip files that can't be read or parsed
-          continue;
-        }
-      }
-
-      logger.warn('file.load', 'No valid workflow file found in directory', {
-        directoryPath,
-        jsonFilesChecked: jsonFiles.length,
-      });
-      return NextResponse.json(
-        { success: false, error: "No workflow file found in directory" },
-        { status: 404 }
-      );
     }
 
     logger.info('file.load', 'Directory validation successful', {

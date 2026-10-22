@@ -67,6 +67,12 @@ export interface CloudRequestRecord {
   upstreamRequestId?: string;
   failureReason?: CloudFailureReason;
   error?: string;
+  /** Per-attempt evidence, retained even after another run replaces lastCall.
+   * authChannel avoids the credential-shaped `auth` field in portable files. */
+  providerCall?: Omit<import("@/lib/providers/imageCapabilities").ProviderCallRecord, "auth"> & {
+    authChannel: import("@/lib/providers/imageCapabilities").ProviderAuthChannel;
+  };
+  outputCandidateId?: string;
 }
 
 /**

@@ -207,6 +207,10 @@ function scrubLocalPaths(value: string): string {
 }
 
 function sanitizePortableString(value: string): string {
+  // Encoded raster bytes are opaque media, not free text or filesystem paths.
+  // In particular JPEG /9j/ and random PNG // sequences must survive unchanged.
+  // Credential-shaped object keys are still dropped by sanitizePortableValue.
+  if (/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]*={0,2}$/.test(value)) return value;
   const httpUrl = /https?:\/\/[^\s\r\n\t"'<>，。；！？、（）【】《》“”‘’]+/gi;
   let result = "";
   let cursor = 0;

@@ -84,7 +84,7 @@ const MB = 1024 * 1024;
  * - Gemini image models accept multiple inline reference images; vendor
  *   composition guidance recommends up to 3, and inline request data is
  *   capped around 20MB in total.
- * - OpenAI gpt-image edits accept up to 4 input images via `image[]`,
+ * - OpenAI gpt-image edits use an application guard of 4 input images,
  *   each below 50MB, plus an optional mask.
  * CRB-07 real calls confirm or correct these numbers; entries here are the
  * single place to update. Per-model deviations get their own entry below
@@ -460,4 +460,14 @@ export interface ProviderCallRecord {
   stage: ProviderCallStage;
   carrierModelId?: string;
   actualImageModelId?: string;
+  /** Model id sent on the wire; an alias is not a reported output model. */
+  requestedModelId?: string;
+  /** End of the observed attempt, including failure/unknown outcomes. */
+  completedAt?: number;
+  /** SHA-256 of the exact outgoing UTF-8 prompt and ordered decoded images. */
+  promptSha256?: string;
+  referenceSha256?: (string | null)[];
+  outputSha256?: (string | null)[];
+  /** Only numeric, allowlisted Provider counters. Missing never means zero. */
+  usage?: { source: "openai-images" | "codex-images" | "gemini"; metrics: Record<string, number> };
 }
