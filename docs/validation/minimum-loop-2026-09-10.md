@@ -211,13 +211,25 @@ ChatGPT/Codex OAuth 可继续用作当前账户、最多三参考、无 Mask 的
 
 ## 9. 2026-10-22 外部复核返修
 
-[PR #12 review-02](https://github.com/Alexis-Li/Character_Reference_Builder/pull/12#issuecomment-6318880289) 对 `d7bb658a7bc7c0c51dfcaae78abf7800b43c77ed..c3c4815ba72cb78e15e78b8d9ae2f37db4fc46c0` 给出需修改结论，取代此前作者自审的无阻塞判断。以下为修复与本轮自测，尚待审核方对新提交增量复验，不声明审核通过、集成或发布。
+[PR #12 review-02](https://github.com/Alexis-Li/Character_Reference_Builder/pull/12#issuecomment-6318880289) 对 `d7bb658a7bc7c0c51dfcaae78abf7800b43c77ed..c3c4815ba72cb78e15e78b8d9ae2f37db4fc46c0` 给出需修改结论，取代此前作者自审的无阻塞判断。以下保留该轮修复与自测；随后 [review-03](https://github.com/Alexis-Li/Character_Reference_Builder/pull/12#issuecomment-6331594101) 在 `de184c0da8ed6b15933e650b4143a01d3162b639` 复验关闭原 R-004／R-005，并新增 R-006–R-008，返修见第 10 节。未集成或发布。
 
-- **R-004（P1，已修复待复验）**：旧项目选中候选 B，却留有 A 的输出引用；恢复损坏／缺失内嵌输出时优先读 A，随后可能以 B 的资产 id 保存 A。现在先解析选中候选的资产并同步输出引用；B 缺失时保持未解析，清除损坏内嵌输出，不退回 A，不缓存或写入错误字节。提交：`2260b9a50d4f8acf4815df424dd198ab1c45e113`。
-- **R-005（P2，已修复待复验）**：OpenAI API Key 分支遇到 fetch 或响应体异常，先前由外层 catch 返回 unknown 而丢掉已有调用元数据。现在适配器保留请求模型、提示词／顺序参考哈希及本地结束时间，并明确返回执行状态 unknown；路由不能因存在 call 而将其降为已提交失败。未知路径仍不自动重试，缺失 usage、输出和实际费用不伪造。`completedAt` 是本地等待结束，不是上游最终完成证明。提交：`840e0e62ab7e78b5bc25015be5503bf9b605c5c3`。
+- **R-004（P1，review-03 已复验关闭原范围）**：旧项目选中候选 B，却留有 A 的输出引用；恢复损坏／缺失内嵌输出时优先读 A，随后可能以 B 的资产 id 保存 A。现在先解析选中候选的资产并同步输出引用；B 缺失时保持未解析，清除损坏内嵌输出，不退回 A，不缓存或写入错误字节。提交：`2260b9a50d4f8acf4815df424dd198ab1c45e113`。
+- **R-005（P2，review-03 已复验关闭原范围）**：OpenAI API Key 分支遇到 fetch 或响应体异常，先前由外层 catch 返回 unknown 而丢掉已有调用元数据。现在适配器保留请求模型、提示词／顺序参考哈希及本地结束时间，并明确返回执行状态 unknown；路由不能因存在 call 而将其降为已提交失败。未知路径仍不自动重试，缺失 usage、输出和实际费用不伪造。`completedAt` 是本地等待结束，不是上游最终完成证明。提交：`840e0e62ab7e78b5bc25015be5503bf9b605c5c3`。
 
 本轮新增合成回归，修复前的三项恢复检查及六项异常路由检查均失败，修复后通过。恢复检查经过实际 store 打开／缓存／选择／保存和临时磁盘文件，覆盖损坏或空内嵌输出、旧引用 A／选中 B、B 缺失；核对两份原文件 SHA-256、选择及资产清单。异常检查覆盖 generations 和 edits 两条请求的超时、成功响应 JSON 解析异常、错误响应体截断；每例只调用一次拦截 transport，保留元数据并返回 unknown。另验证执行器保留选定图、不使用已授权备用，以及未知请求证据的真实磁盘持久化。
 
 Windows 本机本轮执行：受影响五文件 88 项通过；`npm run test:run` 为 152 文件、3083 通过、1 跳过；`npm run build` 通过。在修复后的生产构建中，另用纯色 JPEG 实际浏览器打开“旧引用 A／选中 B／内嵌损坏”项目并保存：界面显示 B，两份 JPEG 哈希未变，选中 id、输出引用与资产清单均对应 B，无图像请求。日志、合成浏览器项目和截图仅留任务专属 `CRB_TEMP_ROOT`。
 
-没有新增真实 Provider 调用或费用，API 实测仍按用户决定取消；本轮不重新判断 Q01–Q04 图片质量。第 8 节十一回 OAuth 记录及 Q03 指定细节未达预期的观察继续有效；R-003 已按用户决定更正为模型效果记录，不属于工程待修项。不能以工程返修测试替代图像效果、经济性或专业模型师验收。Issue #8 保持 OPEN，PR #12 保持草稿，工程增量审核针对 R-004／R-005 等实现差异，不要求修好云端模型输出才能合入。
+没有新增真实 Provider 调用或费用，API 实测仍按用户决定取消；本轮不重新判断 Q01–Q04 图片质量。第 8 节十一回 OAuth 记录及 Q03 指定细节未达预期的观察继续有效；R-003 已按用户决定更正为模型效果记录，不属于工程待修项。不能以工程返修测试替代图像效果、经济性或专业模型师验收。Issue #8 保持 OPEN，PR #12 保持草稿，工程增量审核不要求修好云端模型输出才能合入。
+
+## 10. 2026-10-22 选择清空与路径打开返修
+
+响应 [review-03](https://github.com/Alexis-Li/Character_Reference_Builder/pull/12#issuecomment-6331594101)，R-006–R-008 已实现并自测，待审核方增量复验。工程比较范围为 `de184c0da8ed6b15933e650b4143a01d3162b639..e4a9b2a0459fc2c7769645eaf98e9466008ea425`，完整 PR 基线仍为 `d7bb658a7bc7c0c51dfcaae78abf7800b43c77ed`；以下是本轮 Windows / Node 24.16.0 / npm 11.13.0 实际执行结果。
+
+- **R-006**：`selectedHistoryId: null` 表达用户明确清空，不回退到第一张历史候选；旧项目显式索引或有效输出引用仍可恢复。真实 store 清空 → 保存 → 重开后，节点输出、领域选择与下游图片输入均保持为空，历史及原候选文件保留。提交 `63e9d46d4436d7af3ca76a094fb068080c056767`。
+- **R-007**：按路径打开使用受保护的 `POST /api/workflow/open`；确认有效项目且通过目录边界检查后，仅登记用户指定的项目目录。普通 GET、项目保存和媒体写入不自授权；源码／静态／构建目录、遍历和链接路径仍拒绝。真实表单和路由检查证明未预先授权的迁移项目可继续保存 JSON 与图片，兄弟目录仍不可写。
+- **R-008**：加载不存在或非目录路径返回失败；组件也验证工作流基本结构，并在失败时保留输入、窗口和当前项目，不触发加载／关闭回调。共享加载实现保留最新有效 JSON 与 `.previous` 恢复行为。
+
+复跑入口为 `npm run test:run -- src/store/__tests__/legacyMediaRecovery.integration.test.ts src/utils/__tests__/mediaStorage.test.ts src/components/__tests__/WorkflowBrowserView.test.tsx src/app/api/workflow/__tests__/route.test.ts src/app/api/workflow/open/__tests__/route.integration.test.tsx src/lib/security/__tests__/projectWriteScope.test.ts src/lib/security/__tests__/guardCoverage.test.ts`，七文件 66 项通过。新增清空及三类不完整响应检查在修复前失败，修复后通过；未授权目录和真实路由／组件／磁盘链路另有新增集成回归。`npm run test:run` 为 153 文件、3104 通过、1 跳过；`npm run build` 通过。所有命令按项目约定配置 `CRB_TEMP_ROOT`。
+
+修复后的生产构建另经实际浏览器验证：不存在／普通文件路径保留表单及错误；在隔离运行根之外的项目按路径打开并保存成功；点击清空、保存、重开后保持无输出。磁盘记录确认历史仍在、领域选择为空、无调用历史，只登记该项目目录。日志、合成项目和截图留在任务专属 `CRB_TEMP_ROOT`，不提交私人资料。本轮没有真实云端请求，不改变第 8 节模型效果及费用边界，未合并或关闭任务。
