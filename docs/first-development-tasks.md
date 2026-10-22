@@ -2,30 +2,32 @@
 
 日期：2026-09-10。依据：[最小闭环实测](validation/minimum-loop-2026-09-10.md)、[ADR 0001](adr/0001-minimum-loop-foundation.md)。
 
-本文件已于 2026-09-10 发布为 GitHub [总规格 #1](https://github.com/Alexis-Li/Character_Reference_Builder/issues/1) 和开发任务 [#2–#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。全部任务已分配给 `Alexis-Li` 并标记 `ready-for-agent`；编号 CRB-xx 仍是稳定的本地计划标识，远端以 Issue 编号追踪。任务发布不代表功能已实现，也不建立另一个任务系统。截至 2026-10-21 远端核对，总规格 #1 保持开启，#2–#7 及安全准入 #10 已验收关闭，#8–#9 保持开启。历史验收日期与来源继续保留。
+本文件于 2026-09-10 发布为 GitHub [总规格 #1](https://github.com/Alexis-Li/Character_Reference_Builder/issues/1) 和开发任务 [#2–#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。CRB-xx 是稳定的计划标识，本文保留任务拆分、依赖和交付要求；单项范围、有效决定与实时状态由对应 Issue 维护。任务发布不代表功能已实现，也不建立另一个任务系统。
 
 ## 依赖与执行顺序
 
-| 任务 | Issue | 优先级 | 依赖 | 当前状态 |
-| --- | --- | --- | --- | --- |
-| CRB-01 建立可复现的原型基线与 Windows 启动入口 | [#2](https://github.com/Alexis-Li/Character_Reference_Builder/issues/2) | P0 | 无 | 已验收关闭（2026-09-11） |
-| CRB-02 角色项目、资产版本及人工选定结果 | [#3](https://github.com/Alexis-Li/Character_Reference_Builder/issues/3) | P0 | CRB-01 | 已验收关闭（2026-09-11） |
-| CRB-03 能力化 Provider 及多参考输入契约 | [#4](https://github.com/Alexis-Li/Character_Reference_Builder/issues/4) | P0 | CRB-01 | 已验收关闭（2026-09-11）；真实调用仍由 CRB-07 验证 |
-| CRB-04 请求状态、费用授权及保守备用策略 | [#5](https://github.com/Alexis-Li/Character_Reference_Builder/issues/5) | P0 | CRB-03 | 已验收关闭（2026-09-12） |
-| CRB-05 单部件生成与连续优化的业务界面 | [#6](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6) | P0 | CRB-02、03、04 | 已验收关闭（2026-09-12） |
-| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 | 已验收关闭（2026-09-16）；包含路径清理复验 |
-| CRB-07 真实资料质量、成本与 Provider 替换验证 | [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8) | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 | 进行中（真实验收）；工程依赖与 #10 安全准入已解除，条件与逐样本结论见 Issue |
-| CRB-08 本地 SAM 精确提取专项验证 | [#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues/9) | P1 可选 | 有输入图片；集成依赖 CRB-02 | 待专项验证；不阻塞默认生成 |
+| 任务 | Issue | 优先级 | 依赖 |
+| --- | --- | --- | --- |
+| CRB-01 建立可复现的原型基线与 Windows 启动入口 | [#2](https://github.com/Alexis-Li/Character_Reference_Builder/issues/2) | P0 | 无 |
+| CRB-02 角色项目、资产版本及人工选定结果 | [#3](https://github.com/Alexis-Li/Character_Reference_Builder/issues/3) | P0 | CRB-01 |
+| CRB-03 能力化 Provider 及多参考输入契约 | [#4](https://github.com/Alexis-Li/Character_Reference_Builder/issues/4) | P0 | CRB-01；真实调用由 CRB-07 验证 |
+| CRB-04 请求状态、费用授权及保守备用策略 | [#5](https://github.com/Alexis-Li/Character_Reference_Builder/issues/5) | P0 | CRB-03 |
+| CRB-05 单部件生成与连续优化的业务界面 | [#6](https://github.com/Alexis-Li/Character_Reference_Builder/issues/6) | P0 | CRB-02、03、04 |
+| CRB-06 可迁移保存、恢复和参考包导出 | [#7](https://github.com/Alexis-Li/Character_Reference_Builder/issues/7) | P0 | CRB-02；整体集成依赖 CRB-05 |
+| CRB-07 真实资料质量、成本与 Provider 替换验证 | [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8) | P0 验收 | CRB-03、04 可开始调用；整体验收依赖 CRB-05、06 |
+| CRB-08 本地 SAM 精确提取专项验证 | [#9](https://github.com/Alexis-Li/Character_Reference_Builder/issues/9) | P1 可选 | 有输入图片；集成依赖 CRB-02；不阻塞默认生成 |
 
-CRB-01–CRB-06 已按依赖顺序完成实现并验收关闭；CRB-06 的中文文本边界路径清理已复验。安全准入 #10 已在单账号范围内验收并经 PR #11 合入 main（集成提交 `d7bb658a7bc7c0c51dfcaae78abf7800b43c77ed`）。CRB-07 的真实调用在素材、账户和费用授权具备后开始，无需等待整个 MVP 才观察首个样本效果，但不能用早期单次出图代替闭环验收。
+真实调用可在所需工程路径、素材、账户和费用授权具备后开始，无需等待整个 MVP 才观察首个样本，但不能用早期单次出图代替闭环验收；账号与本机安全条件见 [#10](https://github.com/Alexis-Li/Character_Reference_Builder/issues/10)。
 
-2026-10-21 用户调整当前阶段：取消 API 测试，先继续 OAuth 样本验证；未来 API 候选可能为 OpenRouter，尚不做接入或调用。原有第二入口替换／混用要求保留为后续阶段，不能据此宣称已通过；当前 OAuth 验收不再等待 OpenAI API Key 配置。
+## 证据与历史入口
 
-同日已完成获准的十一回 OAuth 提交，覆盖 Q01、Q02、Q03 和独立 Q04 对照；保存重开、导出哈希及 Q03 正面保留已核对。Q03 指定后腰皮标的模型输出未达预期，按 2026-10-22 用户确认归为模型效果限制（历史 R-003），从工程缺陷及合入阻塞项移除；保留未达标事实，不宣称全样本效果通过。效果实验可以交付负面结论，不要求无限重试。评审为用户委托 Agent 的视觉判断，不是模型师生产验收。费用、纯操作基线、第二入口与审核／集成状态仍分别记录，详见[最新脱敏结论](validation/minimum-loop-2026-09-10.md#8-2026-10-21-遮挡正背面依据与隔离对照)。
+- 安装、构建与 Windows 启动：[CRB-01 基线](crb-01-baseline.md)；单部件操作：[CRB-05 验证](validation/part-reference-issue-6.md)；真实目录、迁移与中文路径复验：[CRB-06 验证](validation/portable-project-issue-7.md)。
+- 安全与 OAuth：[安全准入验证](validation/security-gate-issue-10.md)，审核／集成来源见 [PR #11](https://github.com/Alexis-Li/Character_Reference_Builder/pull/11)。
+- 真实 Q01–Q04、十一回 OAuth 调用、API 阶段范围调整、R-003 模型限制分类及视觉评审边界：[样本结论与有效决定](validation/minimum-loop-2026-09-10.md#8-2026-10-21-遮挡正背面依据与隔离对照)；Q01 的原始输入与记录见该文第 7 节。第二入口、实际费用、纯操作基线及生产评审的未验证事实仍保留在来源与 Issue 中。
+- R-004／R-005 的返修与本机证据：[外部复核返修](validation/minimum-loop-2026-09-10.md#9-2026-10-22-外部复核返修)；后续 R-006–R-008：[选择清空与路径打开返修](validation/minimum-loop-2026-09-10.md#10-2026-10-22-选择清空与路径打开返修)；完整交付、审核和集成来源见 [PR #12](https://github.com/Alexis-Li/Character_Reference_Builder/pull/12)。历史验证按其日期和基线读取，实时进度查 Issue。
+- 本轮去重前的发布、关闭日期及进度快照可在[固定历史版本](https://github.com/Alexis-Li/Character_Reference_Builder/blob/0b2946725aa953dd84eb16d5a5ed8b528806b6d6/docs/first-development-tasks.md)恢复；不继续维护第二份任务状态表。
 
-2026-10-22 按 PR #12 外部复核修复旧输出引用误覆盖候选（R-004）及 OpenAI 异常路径丢失证据（R-005）；本轮构建、3083 通过／1 跳过的全量回归及合成项目浏览器保存核对完成，待审核方增量复验。没有新增真实云端调用，见[返修记录](validation/minimum-loop-2026-09-10.md#9-2026-10-22-外部复核返修)。
-
-[产品需求](product-requirements.md)统一定义功能与交互，本文件维护实施顺序。完整布局、主页、丰富节点库及视觉打磨后置；CRB-01 的启动入口、CRB-04 的状态与费用提示、CRB-05 的最小业务界面及 CRB-06 的可迁移保存与参考包导出均已交付。
+[产品需求](product-requirements.md)统一定义完整功能与交互，本文件维护实施顺序。完整布局、主页、丰富节点库及视觉打磨后置；首批包含 CRB-01 的启动入口、CRB-04 的状态与费用提示、CRB-05 的最小业务界面及 CRB-06 的可迁移保存与参考包导出。
 
 音频和视频永久不属于产品范围，不是首批隐藏、后续再启用的能力。上游快照中的相关实现只作为待清理迁移残留处理；后续任务不得为其新增界面、快捷键、工作流或 Provider 入口。LLM 与 ComfyUI 分别按图像理解、推理和可选执行后端的价值评估。
 
@@ -91,7 +93,7 @@ CRB-01–CRB-06 已按依赖顺序完成实现并验收关闭；CRB-06 的中文
 
 ## CRB-07：真实资料质量、成本与 Provider 替换验证
 
-问题：#10 已有合成肩甲的真实调用证据，但没有真实角色 Q01–Q04 质量、连续优化与第二入口的完整结论，尚不能判断个人生产价值或确定默认模型。
+问题：工程测试或单次合成样本调用不足以判断真实角色 Q01–Q04 的质量、连续优化与第二入口，也不能确定个人生产价值或默认模型；实际证据与缺口见上方入口。
 
 范围：执行验证报告 Q01–Q04 矩阵；先一个入口，再第二个兼容入口；记录原画哈希、调用、输出、人工评审、等待和每个合格部件总成本。订阅和 API 独立报告。先与用户确定素材、云端发送范围及费用上限。
 

@@ -4,7 +4,7 @@
 
 产品优先级：**保持原设计 > 补充不可见信息 > 美化画面**。
 
-CRB-01–CRB-06 已验收关闭；本机 Windows 应用具备角色资产版本、能力化 Provider、保守请求恢复、单部件生成／连续优化，以及可迁移保存、恢复和参考包导出。账号安全准入 #10 已通过 PR #11 集成至 `main`；真实角色质量、成本与第二入口仍由 CRB-07（#8）验收。远端状态核对日期：2026-10-21。
+本机 Windows 应用提供角色资产版本、能力化 Provider、保守请求恢复、单部件生成／连续优化、可迁移保存与参考包导出，以及 ChatGPT/Codex 单账号登录与恢复。真实角色质量、成本和 Provider 适用范围见[验证记录](docs/validation/minimum-loop-2026-09-10.md)；任务范围与当前进度查看对应 [Issue](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。
 
 产品范围聚焦图像参考的理解、生成、编辑、比较与交付。音频和视频的导入、生成、编辑、工作流节点、Provider 能力与输出均不属于产品范围；源码中仍可能存在随上游快照导入的相关实现，它们是待清理的迁移残留，不代表候选能力或后续路线。LLM 用于图像理解、推理和业务任务，ComfyUI 仅作为可选执行后端单独评估。
 
@@ -13,7 +13,7 @@ CRB-01–CRB-06 已验收关闭；本机 Windows 应用具备角色资产版本�
 - [产品需求](docs/product-requirements.md)：功能、前端交互、范围与验收的唯一入口。
 - [最小闭环验证](docs/validation/minimum-loop-2026-09-10.md)：实测结果与未通过项。
 - [技术选型](docs/adr/0001-minimum-loop-foundation.md) / [首批开发任务](docs/first-development-tasks.md)：原型决定和执行顺序。
-- [文档索引](docs/README.md)：文档职责与状态。
+- [文档索引](docs/README.md)：文档职责与证据入口。
 - [领域词汇表](CONTEXT.md)：角色项目、部件、参考图等统一术语。
 - [协作约定](AGENTS.md)：项目规则和工程 Skill 配置入口。
 - [GitHub 仓库](https://github.com/Alexis-Li/Character_Reference_Builder) / [Issues](https://github.com/Alexis-Li/Character_Reference_Builder/issues)。
