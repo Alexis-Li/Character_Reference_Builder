@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "repository": "Alexis-Li/Character_Reference_Builder",
+  "pullRequestNumber": 12,
+  "archivedOn": "2026-10-22",
+  "purpose": "Complete source of dev-04 before replacing it with the maintained current summary. Other review/development comments remain unchanged on GitHub; historical reports are only collapsed.",
+  "comments": [
+    {
+      "id": 6331910076,
+      "nodeId": "IC_kwDOUTmd9c8AAAABeWlHvA",
+      "issueUrl": "https://api.github.com/repos/Alexis-Li/Character_Reference_Builder/issues/12",
+      "url": "https://github.com/Alexis-Li/Character_Reference_Builder/pull/12#issuecomment-6331910076",
+      "author": {
+        "login": "Alexis-Li",
+        "id": 54360685,
+        "node_id": "MDQ6VXNlcjU0MzYwNjg1",
+        "url": "https://api.github.com/users/Alexis-Li",
+        "html_url": "https://github.com/Alexis-Li",
+        "type": "User"
+      },
+      "createdAt": "2026-10-22T03:24:56Z",
+      "updatedAt": "2026-10-22T03:24:56Z",
+      "body": "<!-- crb-report kind=development key=dev-04 -->\n## review-03 返修交付 · 2026-10-22\n\n**R-006／R-007／R-008 已修复并自测，待审核方增量复验。** 响应 [review-03](https://github.com/Alexis-Li/Character_Reference_Builder/pull/12#issuecomment-6331594101)；该审核已复验关闭原 R-004／R-005，本次保留其回归，不由作者宣布新问题审核通过。\n\n- 完整 PR 比较基线：`d7bb658a7bc7c0c51dfcaae78abf7800b43c77ed..521ac32b23b735f310b9acd011567889b8f333ae`；目标 `main` 仍在基线。\n- 本轮返修：`de184c0da8ed6b15933e650b4143a01d3162b639..521ac32b23b735f310b9acd011567889b8f333ae`，本地／远端均可用且一致。\n- 验证代码：`e4a9b2a0459fc2c7769645eaf98e9466008ea425`；其后仅维护验证文档，src／依赖未变。\n- 来源：[Issue #8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8)、现行产品需求、[验证记录第 10 节](https://github.com/Alexis-Li/Character_Reference_Builder/blob/521ac32b23b735f310b9acd011567889b8f333ae/docs/validation/minimum-loop-2026-09-10.md#10-2026-10-22-选择清空与路径打开返修)。\n- 本轮验证性质：实际执行；合成图片、真实本机磁盘／受保护路由、组件与生产构建浏览器。没有真实 Provider 请求或私人素材质量重评。\n\n| 问题 | 修复及验证 |\n| --- | --- |\n| R-006 · P2 | 明确的 null 选择不再回退到历史首项；缺少选择及输出引用时不擅自选图。真实 store 清空 → 保存 → 重开后输出、领域选择、下游图片输入仍为空，历史和候选文件哈希保持；旧索引／输出引用兼容测试通过。修复提交 `63e9d46d4436d7af3ca76a094fb068080c056767`。 |\n| R-007 · P2 | 新增受保护的显式项目打开操作 `POST /api/workflow/open`，校验有效项目及目录边界后登记该目录。普通 GET 和项目／媒体保存不自授权；源码、静态、构建、遍历及链接路径仍拒绝。实际表单打开未预先登记且位于默认根外的项目后，JSON 与图片都能保存，兄弟目录仍不可写。 |\n| R-008 · P2 | load=true 对不存在／非目录返回失败；组件另验证工作流基本结构。失败不调用加载／关闭回调，保留表单、路径及当前项目；覆盖真实路由响应、损坏 JSON 及旧式不完整成功响应。共享加载保留 .previous 恢复。 |\n\n### 检查\n\nWindows / Node 24.16.0 / npm 11.13.0；所有命令按仓库约定配置 `CRB_TEMP_ROOT`。\n\n- 修复前：新增清空与三类不完整响应检查共 4 项失败；修复后通过。原 review-03 的未授权目录触发条件由新增真实路由／表单／写盘回归覆盖。\n- 七个受影响测试文件：**66 通过**，包括原 R-004 恢复、写入边界和全路由守卫覆盖。\n- `npm run test:run`：**153 文件、3104 通过、1 跳过**。\n- `npm run build`：**通过**。\n- 实际生产浏览器：不存在路径、普通文件都保留输入与错误；隔离运行根之外的迁移项目按路径打开后保存成功；清空、保存、重开后仍无输出。磁盘复核选择为空、历史保留、调用历史为空且只登记该项目目录。\n- UTF-8、相对链接、私人标识和 `git diff --check`：通过。日志、合成项目与截图留在任务专属 `<CRB_TEMP_ROOT>/scratch/crb-issue-8/`；可提交测试入口列在验证记录第 10 节。\n\n### 剩余事项\n\n本轮三项状态为**已修复待复验**，尚未取得审核方对当前 HEAD 的增量通过结论。PR 保持 OPEN/Draft，#8 保持 OPEN，未集成或发布。Q03 仍按用户决定归为模型效果限制；没有新增云端调用，API 实测继续取消。实际账单、操作基线、生产模型师适用性及后续第二入口仍按原范围分别待验证。\n",
+      "bodySha256": "82193bc94e87dc31f3e3e28e80f74d8e9d97dec4a88f4fbbfaf3d908d9a0e465"
+    }
+  ]
+}
