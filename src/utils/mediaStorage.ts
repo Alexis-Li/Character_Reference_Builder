@@ -74,6 +74,8 @@ function isDataUrl(str: string | null | undefined): str is string {
 }
 
 function selectedImageAssetId(data: NanoBananaNodeData): string | undefined {
+  // null is an explicit user clear; an absent id belongs to older index-based saves.
+  if (data.selectedHistoryId === null) return undefined;
   const history = data.imageHistory ?? [];
   const item = history.find(item => item.id === data.selectedHistoryId)
     ?? history[data.selectedHistoryIndex ?? 0];
@@ -986,7 +988,8 @@ async function hydrateNodeMedia(
       // file stays unresolved rather than falling back to another candidate.
       const corruptInline = isDataUrl(outputImage) && outputImage.includes("[local-path-redacted]");
       if (!outputImage || corruptInline) {
-        outputImageRef = selectedImageAssetId(d) ?? outputImageRef;
+        const hasSelection = typeof d.selectedHistoryId === "string" || typeof d.selectedHistoryIndex === "number";
+        outputImageRef = (hasSelection ? selectedImageAssetId(d) : undefined) ?? outputImageRef;
         outputImage = outputImageRef
           ? await loadMediaById(outputImageRef, workflowPath, loadedMedia, "image") || null
           : null;

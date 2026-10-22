@@ -51,4 +51,35 @@ describe("saved image bytes remain usable for refinement", () => {
     expect(saved.note).toBe("[local-path-redacted]");
     expect(saved).not.toHaveProperty("access_token");
   });
+
+  it.each(["index", "ref"])("still recovers legacy %s-only selection", async kind => {
+    const saved = workflow("unused");
+    const data = saved.nodes[0].data as NanoBananaNodeData;
+    data.outputImage = null;
+    delete data.selectedHistoryId;
+    if (kind === "ref") {
+      delete data.selectedHistoryIndex;
+      data.outputImageRef = "selected-blob";
+    }
+    const image = "data:image/png;base64,aGVsbG8=";
+    const fetch = vi.fn().mockResolvedValue(Response.json({ success: true, image }));
+    vi.stubGlobal("fetch", fetch);
+    const reopened = await hydrateWorkflowMedia(saved, "E:/projects/saved");
+    expect((reopened.nodes[0].data as NanoBananaNodeData).outputImage).toBe(image);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0][0]).toContain("imageId=selected-blob");
+  });
+
+  it("does not select history when a legacy project has neither selection nor output reference", async () => {
+    const saved = workflow("unused");
+    const data = saved.nodes[0].data as NanoBananaNodeData;
+    data.outputImage = null;
+    delete data.selectedHistoryId;
+    delete data.selectedHistoryIndex;
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const reopened = await hydrateWorkflowMedia(saved, "E:/projects/saved");
+    expect((reopened.nodes[0].data as NanoBananaNodeData).outputImage).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

@@ -95,4 +95,28 @@ describe("R-004 legacy output reference disagrees with the selected candidate", 
     expect(digest(await fs.readFile(path.join(directory, "generations/blob-a.jpg")))).toBe(digest(a));
     await expect(fs.stat(path.join(directory, "generations/blob-b.jpg"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("preserves an explicit clear through save, reopen and downstream input resolution (R-006)", async () => {
+    const workflow = legacy(dataUrl(b));
+    workflow.nodes.push({ id: "consumer", type: "nanoBanana", position: { x: 100, y: 0 },
+      data: { inputImages: [], outputImage: null } } as WorkflowFile["nodes"][number]);
+    workflow.edges.push({ id: "image-edge", source: "gen", target: "consumer", sourceHandle: "image", targetHandle: "image" });
+    await useWorkflowStore.getState().loadWorkflow(workflow, directory);
+    useWorkflowStore.getState().clearNodeSelection("gen");
+    expect(await useWorkflowStore.getState().saveToFile()).toBe(true);
+    const saved = await readRecoverableJson<PersistableWorkflow>(path.join(directory, "legacy-recovery.json"));
+    expect(saved.nodes![0].data).toMatchObject({ outputImage: null, selectedHistoryId: null });
+    expect(saved.nodes![0].data).not.toHaveProperty("outputImageRef");
+
+    useWorkflowStore.getState().clearWorkflow();
+    await useWorkflowStore.getState().loadWorkflow(saved as WorkflowFile, directory);
+    const reopened = useWorkflowStore.getState();
+    expect((reopened.nodes[0].data as NanoBananaNodeData).outputImage).toBeNull();
+    expect((reopened.nodes[0].data as NanoBananaNodeData).selectedHistoryId).toBeNull();
+    expect(reopened.characterProject?.selection).toEqual({});
+    expect(reopened.getConnectedInputs("consumer").images).toEqual([]);
+    expect((reopened.nodes[0].data as NanoBananaNodeData).imageHistory).toHaveLength(2);
+    expect(digest(await fs.readFile(path.join(directory, "generations/blob-a.jpg")))).toBe(digest(a));
+    expect(digest(await fs.readFile(path.join(directory, "generations/blob-b.jpg")))).toBe(digest(b));
+  });
 });
