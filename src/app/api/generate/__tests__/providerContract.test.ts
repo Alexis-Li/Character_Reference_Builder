@@ -148,6 +148,35 @@ describe("reference input contract", () => {
 });
 
 describe("second compatible entry: OpenAI adapter forwards every reference (P04)", () => {
+  it.each([
+    ["timeout", false], ["timeout", true],
+    ["invalid-json", false], ["invalid-json", true],
+    ["truncated-error-body", false], ["truncated-error-body", true],
+  ] as const)("retains unknown execution evidence for %s (edits %s)", async (failure, edits) => {
+    const secret = "synthetic-secret-must-not-leak";
+    if (failure === "timeout") fetchMock.mockRejectedValueOnce(new DOMException(secret, "TimeoutError"));
+    else if (failure === "invalid-json") fetchMock.mockResolvedValueOnce({ ok: true, json: async () => { throw new SyntaxError(secret); } });
+    else fetchMock.mockResolvedValueOnce({ ok: false, status: 502, text: async () => { throw new TypeError(secret); } });
+    const prompt = "Preserve the selected front; revise the rear";
+    const references = edits ? canonicalReferences() : [];
+    const response = await callPost(postRequest({ prompt, references,
+      selectedModel: { provider: "openai", modelId: "gpt-image-1", displayName: "GPT Image" },
+    }, {}, "OPENAI_API_KEY"));
+    const result = await response.json();
+    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(result).toMatchObject({ success: false, execution: "unknown", statusUnknown: true,
+      querySupport: "unsupported", call: { provider: "openai", requestedModelId: "gpt-image-1",
+        stage: "failed", promptSha256: hash(prompt), referenceCount: references.length,
+        referenceSha256: edits ? [hash("synthetic-original"), hash("synthetic-retained-front"), hash("synthetic-auxiliary-back")] : [],
+      } });
+    expect(result.call.completedAt).toBeGreaterThanOrEqual(result.call.at);
+    expect(result.call).not.toHaveProperty("usage");
+    expect(result.call).not.toHaveProperty("outputSha256");
+    expect(result).not.toHaveProperty("actualCostUsd");
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("records byte hashes and reported usage without treating counters as billing", async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({
       data: [{ b64_json: "cmVzdWx0" }],

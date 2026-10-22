@@ -598,7 +598,7 @@ export const POST = withPrivilegedApi(
         return NextResponse.json<GenerateResponse>(
           {
             success: false,
-            ...(result.call ? SUBMITTED : UNKNOWN_EXECUTION),
+            ...(result.execution === "unknown" || !result.call ? UNKNOWN_EXECUTION : SUBMITTED),
             error: redactSecretsInText(result.error || "Generation failed"),
             ...(result.call ? { call: result.call } : {}),
           },
