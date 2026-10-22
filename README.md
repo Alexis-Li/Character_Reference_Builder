@@ -96,7 +96,7 @@ Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windo
 
 登录资料会在应用重启后恢复，读取账号或调用前按需自动续期；失效时提示退出后重新登录。凭据位于仓库及 `CRB_TEMP_ROOT` 之外的本用户应用目录：Windows 使用 `%LOCALAPPDATA%/CharacterReferenceBuilder/auth` 和 CurrentUser DPAPI；POSIX 使用 `~/.local/share/character-reference-builder/auth`、0700／0600 文件。不导入或修改 Codex、OMP、CC Switch 的现有认证文件。固定社区来源、官方接口比较与使用条件见 [社区复用决策](docs/research/oauth-community-reuse.md)。
 
-连接不生成图片；订阅调用和图像能力分别验收。连接后可选为新图像节点及单部件任务的默认入口并保存，每次生成另行确认资料外发与未知费用。OAuth 图像通道最多三张参考，不支持精确 Mask，不沿用 API Key 价格或能力。本人参与的真实登录、刷新和合成肩甲两参考调用已在 #10 验收；真实角色的连续优化、质量与成本仍由 #8 验证，不能用合成测试代替。
+连接不生成图片；订阅调用和图像能力分别验收。连接后可选为新图像节点及单部件任务的默认入口并保存，每次生成另行确认资料外发与未知费用。OAuth 图像通道最多三张参考，不支持精确 Mask，不沿用 API Key 价格或能力。本人参与的真实登录、刷新和合成肩甲两参考调用已在 #10 验收；真实角色的连续优化与用户可用性结论、模型效果限制见[真实样本验证](docs/validation/minimum-loop-2026-09-10.md#11-2026-10-22-用户验收与指标调整)，费用／额度不可得时保留未知。
 
 ## 单部件参考工作区
 
@@ -112,7 +112,7 @@ Windows 用户双击 `start-windows.cmd` 启动本机页面，双击 `stop-windo
 
 ChatGPT/Codex 默认浏览器登录、可选设备码、持久恢复和单账号生命周期已通过 #10 验收并集成，来源及证据边界见[安全准入验证](docs/validation/security-gate-issue-10.md#16-2026-10-20-剩余验收与独立审核)。更换账号先退出再登录；没有“普通用户必须先申请独立 client ID”的前置条件。费用／额度未知，真实角色质量与第二入口不包含在 #10 的通过结论中。
 
-CRB-05 Edge 浏览器交互、CRB-06 真实临时目录保存／迁移／导出，以及本机特权请求、接收方、媒体与写入边界另有历史验证记录，相关历史回归结果见各记录。CRB-06 路径清理覆盖中文标点附近的 UNC、Windows 扩展路径、盘符、`file:` URL、POSIX 绝对路径，保持 HTTPS 来源及相对资产引用。CRB-01 干净安装与 Windows 启停的基线证据不替代本次新增 DPAPI 验收。导入前 P04–P07 是历史缺口，工程路径由 CRB-02–CRB-06 闭合；真实质量和费用仍待 CRB-07，实时执行状态见 [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8)。
+CRB-05 Edge 浏览器交互、CRB-06 真实临时目录保存／迁移／导出，以及本机特权请求、接收方、媒体与写入边界另有历史验证记录，相关历史回归结果见各记录。CRB-06 路径清理覆盖中文标点附近的 UNC、Windows 扩展路径、盘符、`file:` URL、POSIX 绝对路径，保持 HTTPS 来源及相对资产引用。CRB-01 干净安装与 Windows 启停的基线证据不替代本次新增 DPAPI 验收。导入前 P04–P07 是历史缺口，工程路径由 CRB-02–CRB-06 闭合；现有真实样本已由用户确认可用，费用／额度未知，第二入口实测仍未完成，实时执行状态见 [#8](https://github.com/Alexis-Li/Character_Reference_Builder/issues/8)。
 
 复跑入口见 [验证脚本说明](scripts/validation/README.md)。候选探针针对外置快照，新增 OAuth 浏览器脚本针对当前产品且使用合成授权响应；均不调用真实云端生成。安装与启动命令见上文。
 
