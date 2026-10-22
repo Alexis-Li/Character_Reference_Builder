@@ -7,7 +7,7 @@ beforeEach(() => localStorage.removeItem(WORKFLOWS_DIRECTORY_KEY));
 afterEach(() => vi.unstubAllGlobals());
 
 describe("opening a saved project by directory path", () => {
-  it("loads through the existing workflow route without a native picker or generation", async () => {
+  it("opens explicitly for editing without a native picker or generation", async () => {
     const workflow = { version: 1, nodes: [], edges: [] };
     const fetch = vi.fn().mockResolvedValue({ json: async () => ({ success: true, workflow }) });
     vi.stubGlobal("fetch", fetch);
@@ -17,7 +17,10 @@ describe("opening a saved project by directory path", () => {
     fireEvent.change(screen.getByLabelText("项目目录路径"), { target: { value: "  E:/projects/wolf copy  " } });
     fireEvent.click(screen.getByText("按路径打开项目"));
     await waitFor(() => expect(loaded).toHaveBeenCalledWith(workflow, "E:/projects/wolf copy"));
-    expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/workflow?path=E%3A%2Fprojects%2Fwolf%20copy&load=true");
+    expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/workflow/open", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directoryPath: "E:/projects/wolf copy" }),
+    });
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -40,5 +43,22 @@ describe("opening a saved project by directory path", () => {
     render(<WorkflowBrowserView onWorkflowLoaded={vi.fn()} />);
     await screen.findByText("E:/projects");
     expect(screen.getByLabelText("项目目录路径")).toBeVisible();
+  });
+
+  it.each([
+    { success: true, exists: false, isDirectory: false },
+    { success: true, exists: true, isDirectory: false },
+    { success: true, workflow: { version: 1 } },
+  ])("retains the dialog for incomplete load results: %j (R-008)", async result => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ json: async () => result }));
+    const loaded = vi.fn(), close = vi.fn();
+    render(<WorkflowBrowserView onWorkflowLoaded={loaded} onClose={close} />);
+    fireEvent.change(screen.getByLabelText("项目目录路径"), { target: { value: "E:/projects/invalid" } });
+    fireEvent.click(screen.getByText("按路径打开项目"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to load workflow");
+    expect(screen.getByLabelText("项目目录路径")).toHaveValue("E:/projects/invalid");
+    expect(screen.getByText("按路径打开项目")).toBeEnabled();
+    expect(loaded).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
   });
 });

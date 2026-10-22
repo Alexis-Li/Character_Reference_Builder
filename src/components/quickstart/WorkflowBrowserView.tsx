@@ -19,7 +19,7 @@ interface WorkflowListEntry {
 
 interface WorkflowBrowserViewProps {
   onBack?: () => void;
-  onWorkflowLoaded: (workflow: WorkflowFile, directoryPath: string) => void;
+  onWorkflowLoaded: (workflow: WorkflowFile, directoryPath: string) => void | Promise<void>;
   onClose?: () => void;
 }
 
@@ -114,74 +114,52 @@ export function WorkflowBrowserView({
     }
   }, []);
 
-  const handleBrowseOther = useCallback(async () => {
+  const openWorkflow = useCallback(async (directoryPath: string, explicitOpen = false) => {
+    setLoadingWorkflow(directoryPath);
+    setError(null);
     try {
-      const browseRes = await fetch("/api/browse-directory");
-      const browseResult = await browseRes.json();
-
-      if (
-        !browseResult.success ||
-        browseResult.cancelled ||
-        !browseResult.path
-      ) {
-        if (!browseResult.success && !browseResult.cancelled) {
-          setError(browseResult.error || "Failed to open directory picker");
-        }
-        return;
-      }
-
-      const dirPath = browseResult.path;
-
-      setLoadingWorkflow(dirPath);
-      const loadRes = await fetch(
-        `/api/workflow?path=${encodeURIComponent(dirPath)}&load=true`
+      const res = await fetch(
+        explicitOpen ? "/api/workflow/open" : `/api/workflow?path=${encodeURIComponent(directoryPath)}&load=true`,
+        explicitOpen ? {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ directoryPath }),
+        } : undefined,
       );
-      const loadResult = await loadRes.json();
-      setLoadingWorkflow(null);
-
-      if (!loadResult.success) {
-        setError(loadResult.error || "No workflow file found in directory");
+      const result = await res.json();
+      const workflow = result.workflow;
+      if (res.ok === false || !result.success || !workflow || typeof workflow.version !== "number" ||
+        !Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) {
+        setError(result.error || "Failed to load workflow");
         return;
       }
-
-      reportAssetWarnings(loadResult.assetWarnings as ProjectAssetWarning[] | undefined);
-      onWorkflowLoaded(loadResult.workflow as WorkflowFile, dirPath);
+      reportAssetWarnings(result.assetWarnings as ProjectAssetWarning[] | undefined);
+      await onWorkflowLoaded(workflow as WorkflowFile, directoryPath);
       onClose?.();
     } catch {
+      setError("Failed to load workflow");
+    } finally {
       setLoadingWorkflow(null);
-      setError("Failed to open workflow");
     }
   }, [onWorkflowLoaded, onClose]);
 
-  const handleSelectWorkflow = useCallback(
-    async (entry: WorkflowListEntry) => {
-      setLoadingWorkflow(entry.directoryPath);
-      setError(null);
-      try {
-        const res = await fetch(
-          `/api/workflow?path=${encodeURIComponent(entry.directoryPath)}&load=true`
-        );
-        const result = await res.json();
-
-        if (!result.success) {
-          setError(result.error || "Failed to load workflow");
-          setLoadingWorkflow(null);
-          return;
+  const handleBrowseOther = useCallback(async () => {
+    try {
+      const res = await fetch("/api/browse-directory");
+      const result = await res.json();
+      if (!result.success || result.cancelled || !result.path) {
+        if (!result.success && !result.cancelled) {
+          setError(result.error || "Failed to open directory picker");
         }
-
-        reportAssetWarnings(result.assetWarnings as ProjectAssetWarning[] | undefined);
-        onWorkflowLoaded(
-          result.workflow as WorkflowFile,
-          entry.directoryPath
-        );
-        onClose?.();
-      } catch {
-        setError("Failed to load workflow");
-        setLoadingWorkflow(null);
+        return;
       }
-    },
-    [onWorkflowLoaded, onClose]
-  );
+      await openWorkflow(result.path);
+    } catch {
+      setError("Failed to open directory picker");
+    }
+  }, [openWorkflow]);
+
+  const handleSelectWorkflow = (entry: WorkflowListEntry) => openWorkflow(entry.directoryPath);
 
   const openByPath = (
     <form
@@ -189,7 +167,7 @@ export function WorkflowBrowserView({
       onSubmit={(event) => {
         event.preventDefault();
         if (!projectPath.trim() || loadingWorkflow) return;
-        void handleSelectWorkflow({ name: "", directoryPath: projectPath.trim(), relativePath: "", lastModified: 0 });
+        void openWorkflow(projectPath.trim(), true);
       }}
     >
       <label className="text-sm text-neutral-300">
