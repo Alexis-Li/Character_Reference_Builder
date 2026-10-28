@@ -9,7 +9,8 @@
 | 产品功能、交互、范围与产品验收要求 | [产品需求](../product-requirements.md)，唯一产品需求正文 |
 | 单项任务的范围、AC、依赖、有效决定、当前状态与未完成工作 | GitHub Issue；最新评论给出整体状态、下一步和责任方，已接受的产品变更同步回正文 |
 | 首批实施顺序与依赖说明 | [开发任务](../first-development-tasks.md)；保留稳定 CRB 编号，实时状态由 Issue 维护 |
-| 实现差异、审核问题、日常测试与集成结果 | PR；直接在分支交付时写入 Issue 报告 |
+| 实现差异、审核问题与日常测试 | PR；获准直接分支交付时按需写入普通 Issue 评论 |
+| 最终集成 SHA、覆盖的 AC 与待验收项 | Issue 进展评论或整理／关闭时的状态评论 |
 | 安装、操作、恢复及用户必须知道的限制 | 根目录 [README](../../README.md) 或按需建立的使用指南 |
 | 领域术语／架构取舍 | [CONTEXT.md](../../CONTEXT.md)／`docs/adr/`，遵循[领域文档约定](domain.md) |
 | 社区来源、许可、候选比较和接入证据 | `docs/research/` 中现有主题；注明调查日期与固定版本 |
@@ -19,16 +20,16 @@
 | 代码和普通文档的演变过程 | Git 历史；建立正式版本发布流程后，版本变化进入维护中的 changelog／release notes |
 | 原始运行日志、合成夹具、报告草稿和一次性辅助脚本 | `CRB_TEMP_ROOT` 中任务专属目录；不是长期文档或用户资产 |
 
-需求文档持续保留已交付和未交付的完整产品行为；代码与验证说明已实现和已证明什么。两者有差距时标明缺口，不以当前实现静默缩减需求，也不因任务关闭将需求移出正文。Issue 的范围变更须保留决策依据，不能靠改写摘要消除尚未满足的验收条件。
+需求文档持续保留已交付和未交付的完整产品行为；代码与验证说明已实现和已证明什么。两者有差距时标明缺口，不以当前实现静默缩减需求，也不因任务关闭将需求移出正文。Issue 的范围变更先与用户确定替代决定，再在所属位置改写；不能靠改写摘要自行消除尚未满足的验收条件。
 
 ## 编辑与收口
 
-- README 是首次使用者的操作入口。行为变化时修改对应完整流程，保留有助于选择、安装、操作或恢复的内容。内部算法、Issue 时间线、逐轮修复过程和测试数量放回其证据来源；内部改动不强制修改 README。
+- README 是首次使用者的操作入口。行为变化时修改对应完整流程，保留有助于选择、安装、操作或恢复的内容。逐条判断新增文字支持哪个用户决定、操作或恢复动作；仅解释过去修复或内部实现且不影响这些动作的内容不进入 README、使用指南或 UI 文案。内部算法、Issue 时间线、逐轮修复过程和测试数量放回其证据来源；内部改动不强制修改 README。
 - 同一事实有一个权威解释，其他入口放简短摘要或链接。README 只保留使用者需要的现有能力和限制，开发任务只保留 CRB 编号、拆分、依赖与来源；不在索引、README、开发任务重复维护 Issue 的实时进度或逐轮报告。产品需求不新增版本副本、补充约束文件或另一份前端规格；本项目不因参考仓库有双语 README 或 proposal 目录而新增平行文档。
 - 先查已有主题，普通修复、一次通过的测试或 Issue 关闭不要求创建验收文档。只有未来决策或复验需要、且代码／测试／tracker 不能充分保存的知识才进入长期记录。
-- 长期记录先写当前结论、适用范围和实质限制，再给证据。更新错误结论时保留必要来源，避免以调试流水账替代最终解释；历史验收绑定原基线，不冒充新运行。
+- 文档、Issue 与评论写当前事实。需求或决定经用户确定替代方案后原地改写；自己的错误或过时评论直接编辑，不追加更正流水账或标注“按要求删除”。有效决定在替代前继续适用。长期记录先写结论、适用范围和实质限制，再给必要证据；历史验收绑定原基线，不冒充新运行。
 - 已完成计划中的有效约束迁入现役需求或决策，剩余任务迁入 Issue；不留下看似仍在执行的待办副本。尚未完成的真实计划继续保留。
-- 合并或移除记录前逐项核对需求、交互、输入输出、异常、验收、研究来源和人工决定的去向，更新反向链接。已提交材料核验可访问的不可变 Git 版本；Git 不保存远端评论和未跟踪产物。
+- 合并或移除记录前逐项核对需求、交互、输入输出、异常、验收、研究来源和有效决定的去向，更新反向链接。已提交材料核验可访问的不可变 Git 版本；Git 不保存远端评论和未跟踪产物。
 - 新文件使用稳定、说明用途的名称；已有对外引用不为统一命名而改名。仅独立决策和实测记录按编号或日期命名。目录职责变化同步 [文档索引](../README.md)。
 
 ## 验证证据的最小内容
@@ -47,7 +48,7 @@
 
 ## 归档与清理边界
 
-普通关闭保留 tracker 原记录。需要合并／替换评论时，执行 [Issue 归档流程](issue-tracker.md#归档与清理)：先保存来源身份、完整正文和唯一证据，再核验发布结果及可恢复性。归档不等于验收通过，也不要求为每个已关闭 Issue 建 JSON 包或历史目录。
+用户要求整理或关闭 Issue 时，执行 [Issue 归档流程](issue-tracker.md#归档与清理)：将未来决策或回归所需知识迁入现有维护位置，核验发布与链接后汇成一条状态评论，并在授权内清理其余评论。无需逐条原文归档或创建 JSON 包；既有历史记录和评论归档保留为已发布引用的来源。清理不等于验收通过；必要内容尚未发布时保留源评论并说明下一步。
 
 临时目录按仓库与任务区分，例如 `<CRB_TEMP_ROOT>/scratch/crb-issue-<编号>/`。`../.tmp/` 可能被隔壁项目共享，删除前核对规范化路径、创建者、用途及是否仍被使用；不递归清空临时根目录，不删除未知或共享材料。需要保留的未发布证据注明原因及后续动作。
 
@@ -59,6 +60,15 @@
 
 ## 参考与适配
 
-本规则于 2026-10-19 参考 `Alexis_Script_Plugin_Package` 的 `545829787e07af8e5ca0884f459b4e3285648d12` 基线：`AGENTS.md`、`docs/development-conventions.md`、`docs/agents/issue-tracker.md`、`docs/project-history/README.md` 及 Issue／PR 模板。采用记录归属、按基线审核、证据留存和先保全后清理的约定；保留本项目唯一产品需求、现有验证目录和 `CRB_TEMP_ROOT`，不引入其多宿主布局、双语文档要求或专用报告工具。上述规则可在本仓库独立执行，不依赖隔壁 checkout。
+本轮于 2026-10-28 核对插件仓库 [Issue #65](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/65) 及其[完成记录](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/65#issuecomment-6265022996)，并在该基础上对照 [Issue #83](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/83) 及其[完成记录](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/issues/83#issuecomment-6459924081)。#65 集成基线为 `e497d526164f143cb53a4730f4912f24b30ac7ee`；#83 完成基线为 `c4b2f24fc2c2c54846686a40fc512f6a743270b0`，来源记录的集成目标均为其开发分支，不据此认定已合入其 `main`。
 
-2026-10-22 按 [Issue #13](https://github.com/Alexis-Li/Character_Reference_Builder/issues/13)，参考 StoUTextureSync `500c53866809ef668bb9d7896df20778b4afc5eb` 的 [Agent 指引](https://github.com/Alexis-Li/StoUTextureSync/blob/500c53866809ef668bb9d7896df20778b4afc5eb/AGENTS.md)与[开发流程](https://github.com/Alexis-Li/StoUTextureSync/blob/500c53866809ef668bb9d7896df20778b4afc5eb/docs/workflow.md)，采用 feature／fix 分支、整体状态收尾、按当前 HEAD 发布审核和显式关闭；保留 CRB 完整需求正文、分层验收、原始来源及任务临时目录边界，不采用关闭时默认删除评论或将已交付需求移出正文的做法。
+| 对照范围 | CRB 的现行归属与取舍 |
+| --- | --- |
+| #65 分支、小改动、完整 HEAD 审核与合并记录 | [交付流程](issue-tracker.md#分支与交付边界)：小改动直接在当前分支，不要求独立 PR 或报告；其余按 feature／fix 分支交付，集成 SHA 记录于 Issue，核实远端自动删分支设置后清理已集成本地分支与 worktree |
+| #65 当前决定、普通评论、状态评论及收尾 | [接手规则](issue-tracker.md#报告与接手)与[归档流程](issue-tracker.md#归档与清理)：确认替代决定后原地改写；只在整理／关闭时汇总，有用知识先迁入并发布，再清理其余评论；既有归档保留，不新增逐条原文归档义务 |
+| #83 设计、修复、选测与停止条件 | [设计与验证](issue-tracker.md#开发前设计)：按规模设计、确认意见、保护旧行为、第三轮反复问题转根因诊断；保留必需检查，证据充分后停止 |
+| 根规则、开发约定、历史维护与模板 | 根 AGENTS 只作入口；本文件维护信息归属、用户文档写法和证据留存；Issue／PR 模板链接权威流程，不重复维护任务状态 |
+| 领域与标签 | 保持 CRB single-context 与现有标签映射；标签使用前核实远端，不照搬集合仓库的多上下文、宿主布局或标签状态 |
+| MtoU 检查与工具 | 采用外部检查缺前置条件不得假通过的原则；CRB 使用自身脚本、四类证据及资产／付费约束，不移植 Maya／UE 测试、集合仓库 CI 或状态评论工具，不声称本轮已整改运行代码或远端配置 |
+
+对照的固定来源包括 #83 完成基线下的 [AGENTS](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/blob/c4b2f24fc2c2c54846686a40fc512f6a743270b0/AGENTS.md)、[开发约定](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/blob/c4b2f24fc2c2c54846686a40fc512f6a743270b0/docs/development-conventions.md)、[Issue 流程](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/blob/c4b2f24fc2c2c54846686a40fc512f6a743270b0/docs/agents/issue-tracker.md)、[历史维护](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/blob/c4b2f24fc2c2c54846686a40fc512f6a743270b0/docs/project-history/README.md)与 [MtoU 规则](https://github.com/Alexis-Li/Alexis_Script_Plugin_Package/blob/c4b2f24fc2c2c54846686a40fc512f6a743270b0/composite/MtoULiveLink/AGENTS.md)。本项目完整产品需求持续保留在唯一正文，不引入双语文档或 proposal 副本；所有规则可脱离隔壁 checkout 独立执行。
